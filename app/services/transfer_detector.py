@@ -1,10 +1,10 @@
 from datetime import timedelta
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models.account import Account
+from app.models.account import Account, LIABILITY_TYPES
 from app.models.transaction import Transaction
 from app.models.transfer_link import TransferLink
 from app.schemas.transfer import TransferCandidate
@@ -15,6 +15,12 @@ TRANSFER_KEYWORDS = [
     "venmo", "paypal", "internal", "payment", "pymt", "pmt",
     "autopay", "auto pay", "credit", "thank you", "online pmt",
     "direct debit", "standing order",
+]
+
+PAYMENT_KEYWORDS = [
+    "payment", "pymt", "pmt", "autopay", "auto pay",
+    "thank you", "online pmt", "direct debit", "standing order",
+    "ach", "transfer",
 ]
 
 
@@ -190,3 +196,56 @@ def list_transfer_links(db: Session) -> list[TransferLink]:
     return db.execute(
         select(TransferLink).order_by(TransferLink.date.desc())
     ).scalars().all()
+
+
+def scan_and_flag_payments(db: Session) -> int:
+    """Scan liability accounts for payment-like transactions and flag them
+    as transfers.  Returns the number of newly flagged transactions."""
+    liability_accounts = db.execute(
+        select(Account).where(
+            Account.account_type.in_([t.value for t in LIABILITY_TYPES])
+        )
+    ).scalars().all()
+
+    if not liability_accounts:
+        return 0
+
+    acct_ids = [a.id for a in liability_accounts]
+    unflagged = db.execute(
+        select(Transaction).where(
+            Transaction.account_id.in_(acct_ids),
+            Transaction.amount > 0,
+            Transaction.is_transfer.is_(False),
+            Transaction.transfer_link_id.is_(None),
+        )
+    ).scalars().all()
+
+    count = 0
+    for txn in unflagged:
+        desc_lower = txn.description.lower()
+        if any(kw in desc_lower for kw in PAYMENT_KEYWORDS):
+            txn.is_transfer = True
+            count += 1
+
+    if count:
+        db.commit()
+    return count
+
+
+def list_unmatched_transfers(db: Session) -> list[dict]:
+    """Return transactions flagged as transfers but not yet linked."""
+    txns = db.execute(
+        select(Transaction).where(
+            Transaction.is_transfer.is_(True),
+            Transaction.transfer_link_id.is_(None),
+        ).order_by(Transaction.date.desc())
+    ).scalars().all()
+
+    results = []
+    for txn in txns:
+        acct = db.get(Account, txn.account_id)
+        results.append({
+            "txn": txn,
+            "account": acct,
+        })
+    return results

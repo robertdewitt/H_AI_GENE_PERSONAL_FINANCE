@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -11,6 +11,8 @@ from app.services.transfer_detector import (
     detect_transfers,
     link_transfer,
     list_transfer_links,
+    list_unmatched_transfers,
+    scan_and_flag_payments,
     unlink_transfer,
 )
 
@@ -19,15 +21,21 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templa
 
 
 @router.get("", response_class=HTMLResponse)
-def transfers_page(request: Request, db: Session = Depends(get_db)):
+def transfers_page(
+    request: Request,
+    scanned: int | None = Query(None),
+    linked: int | None = Query(None, alias="linked_count"),
+    db: Session = Depends(get_db),
+):
     candidates = detect_transfers(db)
-    linked = list_transfer_links(db)
+    confirmed = list_transfer_links(db)
+    unmatched = list_unmatched_transfers(db)
 
-    linked_details = []
-    for link in linked:
+    confirmed_details = []
+    for link in confirmed:
         from_txn = db.get(Transaction, link.from_transaction_id)
         to_txn = db.get(Transaction, link.to_transaction_id)
-        linked_details.append({
+        confirmed_details.append({
             "link": link,
             "from_txn": from_txn,
             "to_txn": to_txn,
@@ -37,7 +45,10 @@ def transfers_page(request: Request, db: Session = Depends(get_db)):
 
     return templates.TemplateResponse(request, "transfers/review.html", {
         "candidates": candidates,
-        "linked": linked_details,
+        "linked": confirmed_details,
+        "unmatched": unmatched,
+        "scanned": scanned,
+        "linked_count": linked,
     })
 
 
@@ -56,6 +67,15 @@ def create_link(
         confidence=confidence,
     )
     return RedirectResponse(url="/transfers", status_code=303)
+
+
+@router.post("/scan-payments")
+def scan_payments(db: Session = Depends(get_db)):
+    """Scan liability accounts for payment-like transactions and flag them."""
+    count = scan_and_flag_payments(db)
+    return RedirectResponse(
+        url=f"/transfers?scanned={count}", status_code=303,
+    )
 
 
 @router.post("/bulk-link")
@@ -78,7 +98,7 @@ def bulk_link(
             if result:
                 linked_count += 1
     return RedirectResponse(
-        url=f"/transfers?linked={linked_count}", status_code=303,
+        url=f"/transfers?linked_count={linked_count}", status_code=303,
     )
 
 

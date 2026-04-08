@@ -4,12 +4,69 @@
 {% block content %}
 <hgroup>
     <h1>Transfer Detection</h1>
-    <p>Review detected transfers between your accounts</p>
+    <p>Review transfers and payments across your accounts</p>
 </hgroup>
 
-<h2>Detected Candidates ({{ candidates|length }})</h2>
+{% if scanned is not none %}
+<article style="margin-bottom:1rem">
+    <strong>Payment scan complete:</strong> {{ scanned }} transaction{{ "s" if scanned != 1 }} flagged as transfers.
+</article>
+{% endif %}
+
+{% if linked_count is not none %}
+<article style="margin-bottom:1rem">
+    <strong>Bulk link complete:</strong> {{ linked_count }} transfer pair{{ "s" if linked_count != 1 }} confirmed.
+</article>
+{% endif %}
+
+<div style="display:flex;gap:0.5rem;margin-bottom:1.5rem;flex-wrap:wrap">
+    <form method="post" action="/transfers/scan-payments" style="margin:0">
+        <button type="submit" class="outline" style="margin:0">Scan for Payments &amp; Transfers</button>
+    </form>
+    <small style="align-self:center;color:var(--pico-muted-color)">
+        Finds payment-like transactions on credit cards, loans, and mortgages and flags them as transfers.
+    </small>
+</div>
+
+<h2>Unmatched Transfers ({{ unmatched|length }})</h2>
+{% if unmatched %}
+<p>These transactions are flagged as transfers but not yet linked to a matching transaction in another account.
+   Once you add the corresponding account and import its transactions, the system can pair them automatically.</p>
+<div style="overflow-x:auto">
+<table>
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Account</th>
+            <th>Description</th>
+            <th style="text-align:right">Amount</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for item in unmatched %}
+        <tr>
+            <td style="white-space:nowrap">{{ item.txn.date.strftime("%b %d, %Y") }}</td>
+            <td>{{ item.account.name if item.account else "Unknown" }}</td>
+            <td>{{ item.txn.description }}</td>
+            <td style="text-align:right;white-space:nowrap" class="txn-amount {% if item.txn.amount >= 0 %}positive{% else %}negative{% endif %}">
+                {{ item.txn.formatted_amount }}
+            </td>
+            <td><a href="/transactions/{{ item.txn.id }}/edit" style="font-size:0.85rem">Edit</a></td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% else %}
+<p style="color:var(--pico-muted-color)">No unmatched transfers. Use "Scan for Payments" above to detect them, or flag transactions manually.</p>
+{% endif %}
+
+<hr>
+
+<h2>Detected Pairs ({{ candidates|length }})</h2>
 {% if candidates %}
-<p>These transaction pairs look like transfers between your accounts. Confirm or dismiss each one.</p>
+<p>These transaction pairs across different accounts look like transfers. Confirm or dismiss each one.</p>
 
 <div style="margin-bottom:1.5rem;display:flex;gap:0.5rem;align-items:center">
     <form method="post" action="/transfers/bulk-link" style="margin:0;display:flex;gap:0.5rem;align-items:center">
@@ -24,7 +81,7 @@
 </div>
 
 {% for candidate in candidates %}
-<div class="transfer-card" style="border:1px solid var(--pico-muted-border-color);border-radius:8px;padding:1rem;margin-bottom:0.75rem">
+<div style="border:1px solid var(--pico-muted-border-color);border-radius:8px;padding:1rem;margin-bottom:0.75rem">
     <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
         <div style="flex:1;min-width:200px">
             <strong>{{ candidate.from_account_name }}</strong><br>
@@ -52,8 +109,8 @@
 {% endfor %}
 {% else %}
 <div class="empty-state">
-    <h3>No transfer candidates detected</h3>
-    <p>Import transactions from multiple accounts for the system to detect transfers between them.</p>
+    <p>No transfer pairs detected. Pairs are matched across <strong>different accounts</strong> &mdash;
+       import transactions from at least two accounts for automatic matching.</p>
 </div>
 {% endif %}
 
@@ -101,6 +158,6 @@
 </table>
 </div>
 {% else %}
-<p class="neutral">No confirmed transfers yet.</p>
+<p style="color:var(--pico-muted-color)">No confirmed transfers yet.</p>
 {% endif %}
 {% endblock %}
