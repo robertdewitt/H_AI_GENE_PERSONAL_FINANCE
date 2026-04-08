@@ -98,9 +98,11 @@ def account_detail(
     balance = get_account_balance(db, account_id)
     total_txn_count = get_transaction_count(db, account_id)
 
-    # Efficient paginated query instead of loading all transactions
     from sqlalchemy import select as sa_select
+    from sqlalchemy import func as sa_func
     from app.models.transaction import Transaction
+    from app.models.category import Category
+
     recent_txns = db.execute(
         sa_select(Transaction)
         .where(Transaction.account_id == account_id)
@@ -108,11 +110,46 @@ def account_detail(
         .limit(50)
     ).scalars().all()
 
+    # Category spending summary for this account
+    cat_rows = db.execute(
+        sa_select(
+            Category.name,
+            sa_func.count(Transaction.id).label("txn_count"),
+            sa_func.sum(Transaction.amount).label("total"),
+        )
+        .join(Category, Transaction.category_id == Category.id)
+        .where(Transaction.account_id == account_id)
+        .group_by(Category.name)
+        .order_by(sa_func.sum(Transaction.amount))
+    ).all()
+    category_summary = [
+        {"name": r.name, "count": r.txn_count, "total": r.total}
+        for r in cat_rows
+    ]
+
+    uncategorized = db.execute(
+        sa_select(
+            sa_func.count(Transaction.id),
+            sa_func.sum(Transaction.amount),
+        )
+        .where(
+            Transaction.account_id == account_id,
+            Transaction.category_id.is_(None),
+        )
+    ).one()
+    if uncategorized[0]:
+        category_summary.append({
+            "name": "Uncategorized",
+            "count": uncategorized[0],
+            "total": uncategorized[1] or 0,
+        })
+
     return templates.TemplateResponse(request, "accounts/detail.html", {
         "account": acct,
         "balance": balance,
         "transactions": recent_txns,
         "total_transactions": total_txn_count,
+        "category_summary": category_summary,
     })
 
 

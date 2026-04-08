@@ -42,6 +42,39 @@
 <blockquote>{{ account.notes }}</blockquote>
 {% endif %}
 
+{% if category_summary %}
+<h2>Spending by Category</h2>
+<div class="grid">
+    <div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Category</th>
+                    <th style="text-align:right">Transactions</th>
+                    <th style="text-align:right">Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for cs in category_summary %}
+                <tr>
+                    <td>{{ cs.name }}</td>
+                    <td style="text-align:right">{{ "{:,}".format(cs.count) }}</td>
+                    <td style="text-align:right" class="txn-amount {% if cs.total >= 0 %}positive{% else %}negative{% endif %}">
+                        {{ "${:,.2f}".format(cs.total) }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div>
+        <div class="chart-container" style="height:300px">
+            <canvas id="catChart"></canvas>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <h2>Recent Transactions</h2>
 {% if transactions %}
 <table>
@@ -91,5 +124,38 @@
     <h3>No transactions</h3>
     <p><a href="/import">Import a file</a> to add transactions to this account.</p>
 </div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if category_summary %}
+<script>
+const catColors = ['#2563eb','#16a34a','#f59e0b','#8b5cf6','#ec4899','#06b6d4','#84cc16','#f97316','#ef4444','#6366f1','#14b8a6','#d946ef','#fb923c','#a3e635','#38bdf8','#818cf8'];
+const catCtx = document.getElementById('catChart');
+if (catCtx) {
+    new Chart(catCtx.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+            labels: [{% for cs in category_summary %}"{{ cs.name }}"{% if not loop.last %},{% endif %}{% endfor %}],
+            datasets: [{
+                data: [{% for cs in category_summary %}{{ "%.2f"|format(cs.total|abs) }}{% if not loop.last %},{% endif %}{% endfor %}],
+                backgroundColor: catColors.slice(0, {{ category_summary|length }}),
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'bottom', labels: { boxWidth: 12 } },
+                tooltip: {
+                    callbacks: {
+                        label: function(ctx) { return ctx.label + ': $' + ctx.parsed.toLocaleString(undefined, {minimumFractionDigits:2}); }
+                    }
+                }
+            }
+        }
+    });
+}
+</script>
 {% endif %}
 {% endblock %}

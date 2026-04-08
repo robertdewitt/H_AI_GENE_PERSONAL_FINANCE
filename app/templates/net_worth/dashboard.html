@@ -63,6 +63,39 @@
         </table>
     </div>
 </div>
+
+{% if category_summary %}
+<h2>Transaction Summary by Category</h2>
+<div class="grid">
+    <div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Category</th>
+                    <th style="text-align:right">Transactions</th>
+                    <th style="text-align:right">Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for cs in category_summary %}
+                <tr>
+                    <td>{{ cs.name }}</td>
+                    <td style="text-align:right">{{ "{:,}".format(cs.count) }}</td>
+                    <td style="text-align:right" class="txn-amount {% if cs.total >= 0 %}positive{% else %}negative{% endif %}">
+                        {{ "${:,.2f}".format(cs.total) }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div>
+        <div class="chart-container" style="height:350px">
+            <canvas id="spendingChart"></canvas>
+        </div>
+    </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
@@ -146,6 +179,33 @@ new Chart(pieCtx, {
         }
     }
 });
+{% endif %}
+
+{% if category_summary %}
+const spendColors = ['#2563eb','#16a34a','#f59e0b','#8b5cf6','#ec4899','#06b6d4','#84cc16','#f97316','#ef4444','#6366f1','#14b8a6','#d946ef','#fb923c','#a3e635','#38bdf8','#818cf8'];
+const spendCtx = document.getElementById('spendingChart');
+if (spendCtx) {
+    new Chart(spendCtx.getContext('2d'), {
+        type: 'bar',
+        data: {
+            labels: [{% for cs in category_summary %}"{{ cs.name }}"{% if not loop.last %},{% endif %}{% endfor %}],
+            datasets: [{
+                label: 'Total',
+                data: [{% for cs in category_summary %}{{ "%.2f"|format(cs.total) }}{% if not loop.last %},{% endif %}{% endfor %}],
+                backgroundColor: [{% for cs in category_summary %}{% if cs.total >= 0 %}'rgba(22,163,74,0.7)'{% else %}'rgba(220,38,38,0.7)'{% endif %}{% if not loop.last %},{% endif %}{% endfor %}],
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            indexAxis: 'y',
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { ticks: { callback: function(v) { return '$' + v.toLocaleString(); } } }
+            }
+        }
+    });
+}
 {% endif %}
 </script>
 {% endblock %}

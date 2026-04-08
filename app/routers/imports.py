@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.models.account import Account
+from app.services.categorizer import categorize_batch
 from app.services.import_service import import_transactions, preview_file
 
 router = APIRouter(prefix="/import", tags=["import"])
@@ -89,7 +90,11 @@ def confirm_import(
         is_liability=is_liability,
     )
 
+    # Auto-categorize the newly imported transactions
+    cat_stats = categorize_batch(db, limit=batch.row_count + 100)
+
     return RedirectResponse(
-        url=f"/accounts/{account_id}?imported={batch.row_count}",
+        url=f"/accounts/{account_id}?imported={batch.row_count}"
+            f"&categorized={cat_stats['rules'] + cat_stats['keywords'] + cat_stats['llm']}",
         status_code=303,
     )

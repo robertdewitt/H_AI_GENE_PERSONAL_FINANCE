@@ -210,8 +210,8 @@ def import_transactions(
             default=str,
         )
 
-        # Flip sign for liabilities: a positive charge becomes negative
-        if is_liability and amount_val > 0:
+        # Flip sign for liabilities so charges are negative and payments positive
+        if is_liability:
             amount_val = -amount_val
 
         txn = Transaction(
