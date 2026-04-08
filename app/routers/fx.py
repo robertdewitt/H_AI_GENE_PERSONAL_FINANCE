@@ -26,6 +26,8 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templa
 
 @router.get("", response_class=HTMLResponse)
 def fx_page(request: Request, db: Session = Depends(get_db)):
+    from sqlalchemy import func as sa_func
+
     pairs = list_available_pairs(db)
     recent = db.execute(
         select(CurrencyRate)
@@ -33,11 +35,24 @@ def fx_page(request: Request, db: Session = Depends(get_db)):
         .limit(50)
     ).scalars().all()
 
+    base = "USD"
+    key_quotes = ["GBP", "EUR", "JPY"]
+    bootstrap_status = {}
+    for q in key_quotes:
+        count = db.execute(
+            select(sa_func.count(CurrencyRate.id)).where(
+                CurrencyRate.base_currency == base,
+                CurrencyRate.quote_currency == q,
+            )
+        ).scalar() or 0
+        bootstrap_status[f"{base}/{q}"] = {"count": count}
+
     return templates.TemplateResponse(request, "fx/dashboard.html", {
         "pairs": pairs,
         "recent_rates": recent,
         "currencies": COMMON_CURRENCIES,
         "fetch_result": None,
+        "bootstrap_status": bootstrap_status,
     })
 
 

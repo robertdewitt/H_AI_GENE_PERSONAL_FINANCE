@@ -69,10 +69,22 @@ class Transaction(Base):
             return self.amount_base
         return self.amount
 
+    CURRENCY_SYMBOLS = {
+        "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥",
+        "CAD": "C$", "AUD": "A$", "CHF": "Fr", "CNY": "¥",
+        "INR": "₹", "BRL": "R$", "KRW": "₩", "SEK": "kr",
+        "MXN": "$", "NZD": "NZ$",
+    }
+
+    @property
+    def currency_symbol(self) -> str:
+        return self.CURRENCY_SYMBOLS.get(self.original_currency, self.original_currency)
+
     @property
     def formatted_amount(self) -> str:
+        sym = self.currency_symbol
         prefix = "+" if self.amount >= 0 else ""
-        return f"{prefix}${self.amount:,.2f}"
+        return f"{prefix}{sym}{self.amount:,.2f}"
 
     @property
     def formatted_amount_base(self) -> str:

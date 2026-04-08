@@ -12,7 +12,7 @@
     <div class="summary-card">
         <div class="label">Current Balance ({{ account.currency }})</div>
         <div class="value {% if balance >= 0 %}positive{% else %}negative{% endif %}">
-            {{ account.currency }} {{ "{:,.2f}".format(balance) }}
+            {{ account.currency_symbol }}{{ "{:,.2f}".format(balance) }}
         </div>
     </div>
     <div class="summary-card">
@@ -60,7 +60,7 @@
                     <td>{{ cs.name }}</td>
                     <td style="text-align:right">{{ "{:,}".format(cs.count) }}</td>
                     <td style="text-align:right" class="txn-amount {% if cs.total >= 0 %}positive{% else %}negative{% endif %}">
-                        {{ "${:,.2f}".format(cs.total) }}
+                        {{ account.currency_symbol }}{{ "{:,.2f}".format(cs.total) }}
                     </td>
                 </tr>
                 {% endfor %}
@@ -82,6 +82,7 @@
         <tr>
             <th>Date</th>
             <th>Description</th>
+            <th>Category</th>
             <th>CCY</th>
             <th style="text-align:right">Amount</th>
             <th style="text-align:right">Balance</th>
@@ -91,11 +92,17 @@
     <tbody>
         {% for txn in transactions %}
         <tr>
-            <td>{{ txn.date.strftime("%b %d, %Y") }}</td>
+            <td style="white-space:nowrap">{{ txn.date.strftime("%b %d, %Y") }}</td>
             <td>
                 {{ txn.description }}
                 {% if txn.is_transfer %}<span class="badge badge-transfer">Transfer</span>{% endif %}
-                {% if txn.category %}<span class="badge">{{ txn.category.name }}</span>{% endif %}
+            </td>
+            <td>
+                {% if txn.category %}
+                <span class="badge">{{ txn.category.name }}</span>
+                {% else %}
+                <span style="color:var(--pico-muted-color)">—</span>
+                {% endif %}
             </td>
             <td>
                 {{ txn.original_currency }}
@@ -103,12 +110,12 @@
                 <small title="Rate: {{ txn.exchange_rate }}">(FX)</small>
                 {% endif %}
             </td>
-            <td style="text-align:right" class="txn-amount {% if txn.amount >= 0 %}positive{% else %}negative{% endif %}">
+            <td style="text-align:right;white-space:nowrap" class="txn-amount {% if txn.amount >= 0 %}positive{% else %}negative{% endif %}">
                 {{ txn.formatted_amount }}
             </td>
             <td style="text-align:right">
                 {% if txn.balance_after is not none %}
-                {{ "{:,.2f}".format(txn.balance_after) }}
+                {{ account.currency_symbol }}{{ "{:,.2f}".format(txn.balance_after) }}
                 {% else %}&mdash;{% endif %}
             </td>
             <td><a href="/transactions/{{ txn.id }}/edit" style="font-size:0.85rem">Edit</a></td>
@@ -149,7 +156,7 @@ if (catCtx) {
                 legend: { position: 'bottom', labels: { boxWidth: 12 } },
                 tooltip: {
                     callbacks: {
-                        label: function(ctx) { return ctx.label + ': $' + ctx.parsed.toLocaleString(undefined, {minimumFractionDigits:2}); }
+                        label: function(ctx) { return ctx.label + ': {{ account.currency_symbol }}' + ctx.parsed.toLocaleString(undefined, {minimumFractionDigits:2}); }
                     }
                 }
             }

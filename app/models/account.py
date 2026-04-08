@@ -85,6 +85,17 @@ class Account(Base):
         "ImportBatch", back_populates="account", cascade="all, delete-orphan"
     )
 
+    CURRENCY_SYMBOLS = {
+        "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥",
+        "CAD": "C$", "AUD": "A$", "CHF": "Fr", "CNY": "¥",
+        "INR": "₹", "BRL": "R$", "KRW": "₩", "SEK": "kr",
+        "MXN": "$", "NZD": "NZ$",
+    }
+
+    @property
+    def currency_symbol(self) -> str:
+        return self.CURRENCY_SYMBOLS.get(self.currency, self.currency)
+
     @property
     def display_type(self) -> str:
         return self.account_type.value.replace("_", " ").title()

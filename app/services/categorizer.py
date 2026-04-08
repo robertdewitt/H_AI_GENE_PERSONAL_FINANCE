@@ -94,11 +94,11 @@ def learn_from_correction(
     db: Session,
     description: str,
     category_id: int,
-) -> CategoryRule:
-    """Store a user's category correction as a learned rule.
+) -> tuple[CategoryRule, int]:
+    """Store a user's category correction as a learned rule AND retroactively
+    update all existing transactions whose description matches the pattern.
 
-    Extracts a meaningful substring from the description to use as the
-    matching pattern for future transactions.
+    Returns (rule, count_updated).
     """
     pattern = _extract_pattern(description)
 
@@ -111,19 +111,39 @@ def learn_from_correction(
 
     if existing:
         existing.hit_count += 1
-        db.commit()
-        db.refresh(existing)
-        return existing
+    else:
+        existing = CategoryRule(
+            pattern=pattern,
+            category_id=category_id,
+            source="user_correction",
+        )
+        db.add(existing)
+    db.flush()
 
-    rule = CategoryRule(
-        pattern=pattern,
-        category_id=category_id,
-        source="user_correction",
-    )
-    db.add(rule)
-    db.commit()
-    db.refresh(rule)
-    return rule
+    # Retroactively update all matching transactions
+    count = _apply_pattern_to_existing(db, pattern, category_id)
+
+    return existing, count
+
+
+def _apply_pattern_to_existing(
+    db: Session,
+    pattern: str,
+    category_id: int,
+) -> int:
+    """Update category on all transactions whose description contains the pattern."""
+    like_pattern = f"%{pattern}%"
+    matching = db.execute(
+        select(Transaction).where(
+            func.lower(Transaction.description).like(like_pattern),
+            Transaction.category_id != category_id,
+        )
+    ).scalars().all()
+
+    for txn in matching:
+        txn.category_id = category_id
+
+    return len(matching)
 
 
 def _extract_pattern(description: str) -> str:

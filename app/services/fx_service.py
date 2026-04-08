@@ -71,11 +71,13 @@ def get_rate(
     if from_currency == to_currency:
         return 1.0
 
+    date_only = date.replace(hour=0, minute=0, second=0, microsecond=0)
+
     exact = db.execute(
         select(CurrencyRate.rate).where(
             CurrencyRate.base_currency == from_currency,
             CurrencyRate.quote_currency == to_currency,
-            CurrencyRate.date == date,
+            CurrencyRate.date == date_only,
         )
     ).scalar_one_or_none()
 
@@ -86,16 +88,17 @@ def get_rate(
         select(CurrencyRate).where(
             CurrencyRate.base_currency == from_currency,
             CurrencyRate.quote_currency == to_currency,
-            CurrencyRate.date >= date - timedelta(days=30),
-            CurrencyRate.date <= date + timedelta(days=30),
+            CurrencyRate.date >= date_only - timedelta(days=30),
+            CurrencyRate.date <= date_only + timedelta(days=30),
         ).order_by(
-            # Prefer closest date
             CurrencyRate.date.desc()
         )
     ).scalars().all()
 
     if nearby:
-        closest = min(nearby, key=lambda r: abs((r.date - date).total_seconds()))
+        closest = min(
+            nearby, key=lambda r: abs((r.date - date_only).total_seconds()),
+        )
         return closest.rate
 
     # Try the inverse pair
@@ -103,13 +106,15 @@ def get_rate(
         select(CurrencyRate).where(
             CurrencyRate.base_currency == to_currency,
             CurrencyRate.quote_currency == from_currency,
-            CurrencyRate.date >= date - timedelta(days=30),
-            CurrencyRate.date <= date + timedelta(days=30),
+            CurrencyRate.date >= date_only - timedelta(days=30),
+            CurrencyRate.date <= date_only + timedelta(days=30),
         ).order_by(CurrencyRate.date.desc())
     ).scalars().all()
 
     if inverse:
-        closest = min(inverse, key=lambda r: abs((r.date - date).total_seconds()))
+        closest = min(
+            inverse, key=lambda r: abs((r.date - date_only).total_seconds()),
+        )
         return 1.0 / closest.rate if closest.rate != 0 else None
 
     return None

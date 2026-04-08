@@ -102,13 +102,8 @@ def get_account_balance(
     balance = 0.0
 
     if account.account_type in TRANSACTIONAL_TYPES:
-        # Use amount_base when available (already converted), else amount
         query = select(
-            func.coalesce(
-                func.sum(Transaction.amount_base),
-                func.sum(Transaction.amount),
-                0.0,
-            )
+            func.coalesce(func.sum(Transaction.amount), 0.0)
         ).where(Transaction.account_id == account_id)
 
         if as_of_date:
@@ -116,7 +111,6 @@ def get_account_balance(
         result = db.execute(query).scalar()
         balance = float(result) if result else 0.0
 
-        # If sum is zero but we have a manual current_value, use that
         if balance == 0.0 and account.current_value is not None:
             balance = account.current_value
     else:
@@ -152,6 +146,18 @@ def get_account_balance(
         )
         if converted is not None:
             return converted
+
+        # No stored rate — try to fetch a live rate
+        try:
+            from app.services.fx_rate_fetcher import sync_current_rates
+            sync_current_rates(db, base=account.currency, quotes=[base_ccy])
+            converted, _ = convert_amount(
+                db, balance, account.currency, base_ccy, rate_date
+            )
+            if converted is not None:
+                return converted
+        except Exception:
+            pass
 
     return balance
 

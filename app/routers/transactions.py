@@ -210,15 +210,25 @@ def transaction_update(
 
 
 def _link_transfer(db: Session, txn: Transaction, other_account_id: int):
-    """Find or create a matching transaction in the other account and link them."""
-    # Look for a matching opposite transaction in the target account
+    """Find a matching transaction in the other account and link them.
+
+    Uses a ±3-day date window and amount tolerance to handle clearing delays.
+    """
+    from datetime import timedelta
+
+    from app.config import settings
+
+    window = timedelta(days=settings.transfer_date_window_days)
     match = db.execute(
         select(Transaction).where(
             Transaction.account_id == other_account_id,
-            Transaction.date == txn.date,
-            func.abs(Transaction.amount + txn.amount) < 0.01,
+            Transaction.date >= txn.date - window,
+            Transaction.date <= txn.date + window,
+            func.abs(Transaction.amount + txn.amount) < 1.0,
             Transaction.transfer_link_id.is_(None),
-        ).limit(1)
+        )
+        .order_by(func.abs(Transaction.amount + txn.amount))
+        .limit(1)
     ).scalar_one_or_none()
 
     if match:

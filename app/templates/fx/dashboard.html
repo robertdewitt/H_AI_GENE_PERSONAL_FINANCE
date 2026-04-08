@@ -51,6 +51,15 @@
         <hr>
 
         <h2>Fetch Historical Rates</h2>
+        {% if bootstrap_status %}
+        <article style="margin-bottom:1rem">
+            <strong>FX Bootstrap:</strong>
+            {% for pair, info in bootstrap_status.items() %}
+                {{ pair }}: {{ info.count }} rates stored
+                {% if not loop.last %}&bull;{% endif %}
+            {% endfor %}
+        </article>
+        {% endif %}
         <form method="post" action="/fx/fetch-historical">
             <div class="grid">
                 <div>
@@ -65,7 +74,7 @@
                     <label for="hist_quote">Quote</label>
                     <select id="hist_quote" name="quote_currency">
                         {% for ccy in currencies %}
-                        <option value="{{ ccy }}" {% if ccy == "EUR" %}selected{% endif %}>{{ ccy }}</option>
+                        <option value="{{ ccy }}" {% if ccy == "GBP" %}selected{% endif %}>{{ ccy }}</option>
                         {% endfor %}
                     </select>
                 </div>

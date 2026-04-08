@@ -53,7 +53,7 @@
                 {% for item in current.breakdown %}
                 <tr>
                     <td><a href="/accounts/{{ item.account_id }}">{{ item.account_name }}</a></td>
-                    <td>{{ item.type_group }}</td>
+                    <td>{{ item.type_group }}{% if item.currency != "USD" %} <small>({{ item.currency }})</small>{% endif %}</td>
                     <td style="text-align:right" class="txn-amount {% if item.balance >= 0 %}positive{% else %}negative{% endif %}">
                         ${{ "{:,.2f}".format(item.balance) }}
                     </td>

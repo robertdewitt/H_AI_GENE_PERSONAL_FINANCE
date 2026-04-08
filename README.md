@@ -5,17 +5,18 @@ A comprehensive personal finance application that tracks transactions across mul
 ## Features
 
 - **Account Management** — Track bank accounts, credit cards, investments, IRAs, pensions, real estate, vehicles, collectibles, and more
-- **Multi-Currency / FX Support** — Accounts in any currency; live rate fetching from Yahoo Finance and ECB; automatic conversion to base currency for net worth
+- **Multi-Currency / FX Support** — Accounts in any currency with proper currency symbols (£, €, ¥, etc.); live rate fetching from Yahoo Finance and ECB; automatic conversion to base currency for net worth
+- **FX Rate Bootstrap** — On startup, automatically fetches 5 years of daily historical rates for USD/GBP, USD/EUR, and USD/JPY; patches missing dates via yearly-chunked API calls
 - **CSV/XLS Import** — Upload transaction files with automatic column detection, manual mapping, and batch processing optimized for 1–10M+ transactions
 - **Liability Sign-Flip** — Credit card charges, loan payments, and mortgage transactions are automatically sign-corrected on import so balances reflect money owed
 - **Transaction CRUD** — Edit or delete any individual transaction; bulk select multiple transactions to set category, mark as transfer, or delete
 - **Auto-Categorization** — Three-tier engine that categorizes transactions automatically:
-  1. **Learned rules** — When you correct a category, the system saves the pattern and recognizes it next time
+  1. **Learned rules** — When you correct a category, the system saves the pattern and retroactively updates all matching transactions
   2. **Keyword heuristics** — Built-in mappings for common merchants (groceries, dining, gas, subscriptions, etc.)
   3. **Ollama LLM** — Falls back to a local, free LLM (llama3.2 via [Ollama](https://ollama.com)) for anything the rules and keywords miss
 - **Category Management** — Add, edit, and delete categories; view transaction counts per category; manage learned rules with hit counts
-- **Spending Summaries** — Category breakdown tables and charts on both account detail pages and the net worth page
-- **Transfer Detection** — Automatically identify transfers between accounts with confidence scoring
+- **Spending Summaries** — Category breakdown tables and charts on both account detail pages and the net worth page; amounts displayed in native account currency
+- **Transfer Detection** — Detects transfers including payments, credits, ACH, and autopay; confidence scoring with bulk-confirm threshold; expanded keyword matching for liability payments
 - **Net Worth Tracking** — FX-aware net worth calculation with time-series charts, asset group breakdowns, and spending-by-category bar chart
 - **Paycheck Stub Tracking** — Import or manually enter paycheck data with full tax, deduction, and benefit breakdowns
 - **Asset Valuations** — Manual valuation entry for real estate, vehicles, collectibles, pensions with history tracking and charts
@@ -68,8 +69,8 @@ DATABASE_URL=postgresql://user:password@localhost:5432/financial_hygiene
 2. **Upload transaction files** — Import CSV/XLS exports from your banks; columns are auto-detected with manual override. Transactions are auto-categorized on import.
 3. **Review & edit transactions** — Edit individual transactions or bulk-select to set categories, mark transfers, or delete. Category corrections teach the system for future imports.
 4. **Manage categories** — Add/edit/delete categories at `/categories`; view learned rules and their hit counts.
-5. **Add FX rates** — If you have non-USD accounts, fetch live rates from Yahoo Finance/ECB or enter manually under FX Rates.
-6. **Review transfers** — The system detects transfers between accounts; confirm or dismiss.
+5. **FX rates load automatically** — On startup, 5 years of daily rates for GBP, EUR, and JPY are fetched. Additional pairs can be fetched or entered manually under FX Rates.
+6. **Review transfers** — The system detects transfers (including payments and credits) between accounts; confirm individually or bulk-confirm above a confidence threshold.
 7. **Value assets** — For real estate, vehicles, and collectibles, add periodic valuations.
 8. **Upload paychecks** — Track income details including taxes, 401(k), and benefits.
 9. **View net worth** — See your complete financial picture across all currencies and asset types, with spending breakdowns by category.

@@ -1,0 +1,12 @@
+Fix currency display, FX bootstrap, net worth conversion, transfer matching
+
+- Show proper currency symbols (£, €, ¥) on all pages instead of hardcoded $
+- Account detail shows balance in native currency, not base
+- Add FX rate bootstrap: 5 years of daily history for GBP/EUR/JPY on startup
+- Fix Yahoo Finance Series parsing and Frankfurter API yearly chunking
+- Robust FX date lookup (strip time component for exact match)
+- Expand transfer detection keywords to include payment/credit/autopay
+- Boost confidence score for transactions already flagged as transfers
+- Add bulk-confirm by threshold on transfers review page
+- Widen transfer link matching to ±3 day window and $1 tolerance
+- Update README with new FX bootstrap and transfer detection features

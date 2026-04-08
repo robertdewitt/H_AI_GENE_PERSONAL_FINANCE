@@ -11,31 +11,42 @@
 {% if candidates %}
 <p>These transaction pairs look like transfers between your accounts. Confirm or dismiss each one.</p>
 
+<div style="margin-bottom:1.5rem;display:flex;gap:0.5rem;align-items:center">
+    <form method="post" action="/transfers/bulk-link" style="margin:0;display:flex;gap:0.5rem;align-items:center">
+        <label style="margin:0;white-space:nowrap">Min confidence:</label>
+        <select name="min_confidence" style="width:auto;margin:0">
+            <option value="0.7">70%</option>
+            <option value="0.5">50%</option>
+            <option value="0.3">30%</option>
+        </select>
+        <button type="submit" class="outline" style="margin:0">Confirm All Above Threshold</button>
+    </form>
+</div>
+
 {% for candidate in candidates %}
-<div class="transfer-card">
-    <div class="transfer-flow">
-        <div class="transfer-side">
+<div class="transfer-card" style="border:1px solid var(--pico-muted-border-color);border-radius:8px;padding:1rem;margin-bottom:0.75rem">
+    <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px">
             <strong>{{ candidate.from_account_name }}</strong><br>
-            <small>{{ candidate.from_description }}</small><br>
+            <small style="color:var(--pico-muted-color)">{{ candidate.from_description }}</small><br>
             <span class="txn-amount negative">-${{ "{:,.2f}".format(candidate.amount) }}</span>
+            <small style="color:var(--pico-muted-color)">{{ candidate.date.strftime("%b %d, %Y") }}</small>
         </div>
-        <div class="transfer-arrow">&rarr;</div>
-        <div class="transfer-side">
+        <div style="font-size:1.5rem">&rarr;</div>
+        <div style="flex:1;min-width:200px">
             <strong>{{ candidate.to_account_name }}</strong><br>
-            <small>{{ candidate.to_description }}</small><br>
+            <small style="color:var(--pico-muted-color)">{{ candidate.to_description }}</small><br>
             <span class="txn-amount positive">+${{ "{:,.2f}".format(candidate.amount) }}</span>
         </div>
-        <div>
-            <span class="badge badge-confidence">{{ "{:.0%}".format(candidate.confidence) }} match</span>
+        <div style="display:flex;align-items:center;gap:0.5rem">
+            <span class="badge badge-confidence" style="font-size:0.9rem">{{ "{:.0%}".format(candidate.confidence) }}</span>
+            <form method="post" action="/transfers/link" style="margin:0">
+                <input type="hidden" name="from_transaction_id" value="{{ candidate.from_transaction_id }}">
+                <input type="hidden" name="to_transaction_id" value="{{ candidate.to_transaction_id }}">
+                <input type="hidden" name="confidence" value="{{ candidate.confidence }}">
+                <button type="submit" class="outline" style="margin:0;padding:0.25rem 0.75rem">Confirm</button>
+            </form>
         </div>
-    </div>
-    <div class="transfer-actions">
-        <form method="post" action="/transfers/link" style="margin:0">
-            <input type="hidden" name="from_transaction_id" value="{{ candidate.from_transaction_id }}">
-            <input type="hidden" name="to_transaction_id" value="{{ candidate.to_transaction_id }}">
-            <input type="hidden" name="confidence" value="{{ candidate.confidence }}">
-            <button type="submit" class="outline" style="margin:0">Confirm Transfer</button>
-        </form>
     </div>
 </div>
 {% endfor %}
@@ -50,6 +61,7 @@
 
 <h2>Confirmed Transfers ({{ linked|length }})</h2>
 {% if linked %}
+<div style="overflow-x:auto">
 <table>
     <thead>
         <tr>
@@ -64,7 +76,7 @@
     <tbody>
         {% for item in linked %}
         <tr>
-            <td>{{ item.link.date.strftime("%b %d, %Y") }}</td>
+            <td style="white-space:nowrap">{{ item.link.date.strftime("%b %d, %Y") }}</td>
             <td>
                 {% if item.from_account %}{{ item.from_account.name }}{% endif %}
                 <br><small>{{ item.from_txn.description if item.from_txn else '' }}</small>
@@ -73,7 +85,7 @@
                 {% if item.to_account %}{{ item.to_account.name }}{% endif %}
                 <br><small>{{ item.to_txn.description if item.to_txn else '' }}</small>
             </td>
-            <td style="text-align:right" class="txn-amount">${{ "{:,.2f}".format(item.link.amount) }}</td>
+            <td style="text-align:right;white-space:nowrap" class="txn-amount">${{ "{:,.2f}".format(item.link.amount) }}</td>
             <td>
                 <span class="badge badge-confidence">{{ "{:.0%}".format(item.link.confidence) }}</span>
                 {% if item.link.confirmed_by_user %}<span class="badge badge-income">Confirmed</span>{% endif %}
@@ -87,6 +99,7 @@
         {% endfor %}
     </tbody>
 </table>
+</div>
 {% else %}
 <p class="neutral">No confirmed transfers yet.</p>
 {% endif %}

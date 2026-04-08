@@ -46,15 +46,18 @@ def fetch_yahoo_current(
             log.warning("Yahoo Finance returned empty data")
             return rates
 
+        close_data = data["Close"]
         for quote, ticker in zip(quotes, tickers):
             try:
                 if len(tickers) == 1:
-                    close = data["Close"].iloc[-1]
+                    col = close_data.iloc[:, 0] if hasattr(close_data, "columns") else close_data
                 else:
-                    close = data["Close"][ticker].iloc[-1]
+                    col = close_data[ticker]
+                val = col.iloc[-1]
+                close = float(val)
                 if close and close > 0:
-                    rates[quote] = round(float(close), 6)
-            except (KeyError, IndexError):
+                    rates[quote] = round(close, 6)
+            except (KeyError, IndexError, TypeError, ValueError):
                 continue
 
     except Exception as e:
@@ -91,11 +94,20 @@ def fetch_yahoo_historical(
         if data.empty:
             return results
 
-        for idx, row in data.iterrows():
-            close = float(row["Close"])
+        close_col = data["Close"]
+        if hasattr(close_col, "columns"):
+            close_col = close_col.iloc[:, 0]
+
+        for idx in close_col.index:
+            val = close_col.loc[idx]
+            try:
+                close = float(val)
+            except (TypeError, ValueError):
+                continue
             if close > 0:
+                dt = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else idx
                 results.append({
-                    "date": idx.to_pydatetime().replace(
+                    "date": dt.replace(
                         hour=0, minute=0, second=0, microsecond=0
                     ),
                     "rate": round(close, 6),
@@ -135,32 +147,46 @@ def fetch_frankfurter_historical(
     start_date: datetime,
     end_date: datetime | None = None,
 ) -> list[dict]:
-    """Fallback: fetch historical rates from the ECB via Frankfurter API."""
+    """Fallback: fetch historical rates from the ECB via Frankfurter API.
+
+    Splits large ranges into yearly chunks to avoid 404s on the API.
+    """
     if end_date is None:
         end_date = datetime.now()
 
-    try:
-        resp = httpx.get(
-            f"{FRANKFURTER_BASE}/{start_date.strftime('%Y-%m-%d')}"
-            f"..{end_date.strftime('%Y-%m-%d')}",
-            params={"base": base, "symbols": quote},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    results: list[dict] = []
+    chunk_start = start_date
 
-        results = []
-        for date_str, rates in data.get("rates", {}).items():
-            rate = rates.get(quote)
-            if rate and rate > 0:
-                results.append({
-                    "date": datetime.strptime(date_str, "%Y-%m-%d"),
-                    "rate": round(rate, 6),
-                })
-        return sorted(results, key=lambda r: r["date"])
-    except Exception as e:
-        log.error("Frankfurter historical fetch failed: %s", e)
-        return []
+    while chunk_start < end_date:
+        chunk_end = min(chunk_start + timedelta(days=365), end_date)
+        try:
+            resp = httpx.get(
+                f"{FRANKFURTER_BASE}/{chunk_start.strftime('%Y-%m-%d')}"
+                f"..{chunk_end.strftime('%Y-%m-%d')}",
+                params={"base": base, "symbols": quote},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            for date_str, rates in data.get("rates", {}).items():
+                rate = rates.get(quote)
+                if rate and rate > 0:
+                    results.append({
+                        "date": datetime.strptime(date_str, "%Y-%m-%d"),
+                        "rate": round(rate, 6),
+                    })
+        except Exception as e:
+            log.warning(
+                "Frankfurter chunk %s..%s failed: %s",
+                chunk_start.strftime("%Y-%m-%d"),
+                chunk_end.strftime("%Y-%m-%d"),
+                e,
+            )
+
+        chunk_start = chunk_end + timedelta(days=1)
+
+    return sorted(results, key=lambda r: r["date"])
 
 
 def sync_current_rates(

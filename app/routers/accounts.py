@@ -95,7 +95,9 @@ def account_detail(
     if not acct:
         return HTMLResponse("Account not found", status_code=404)
 
-    balance = get_account_balance(db, account_id)
+    balance = get_account_balance(
+        db, account_id, target_currency=acct.currency,
+    )
     total_txn_count = get_transaction_count(db, account_id)
 
     from sqlalchemy import select as sa_select

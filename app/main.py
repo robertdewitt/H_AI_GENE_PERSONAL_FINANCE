@@ -23,6 +23,7 @@ from app.services.net_worth_service import compute_net_worth, compute_net_worth_
 async def lifespan(app: FastAPI):
     init_db()
     _seed_categories()
+    _bootstrap_fx_rates()
     yield
 
 
@@ -106,3 +107,71 @@ def _seed_categories():
         db.commit()
     finally:
         db.close()
+
+
+def _bootstrap_fx_rates():
+    """On startup, ensure we have ~5 years of daily FX history for key pairs.
+
+    Runs in a background thread so it doesn't block the server from starting.
+    """
+    import logging
+    import threading
+
+    log = logging.getLogger(__name__)
+
+    def _sync():
+        from datetime import datetime, timedelta
+
+        from sqlalchemy import func as sa_func
+
+        from app.database import SessionLocal
+        from app.models.currency_rate import CurrencyRate
+        from app.services.fx_rate_fetcher import sync_historical_rates
+
+        db = SessionLocal()
+        try:
+            base = settings.base_currency
+            key_quotes = ["GBP", "EUR", "JPY"]
+            five_years_ago = datetime.now() - timedelta(days=5 * 365)
+
+            for quote in key_quotes:
+                if quote == base:
+                    continue
+
+                count = db.execute(
+                    sa_func.count(CurrencyRate.id).select().where(
+                        CurrencyRate.base_currency == base,
+                        CurrencyRate.quote_currency == quote,
+                    )
+                ).scalar() or 0
+
+                if count >= 1200:
+                    log.info(
+                        "FX bootstrap: %s/%s already has %d rates, skipping",
+                        base, quote, count,
+                    )
+                    continue
+
+                log.info(
+                    "FX bootstrap: fetching 5-year history for %s/%s "
+                    "(currently %d rates)...",
+                    base, quote, count,
+                )
+                try:
+                    stored = sync_historical_rates(
+                        db, base=base, quote=quote,
+                        start_date=five_years_ago,
+                    )
+                    log.info(
+                        "FX bootstrap: stored %d rates for %s/%s",
+                        stored, base, quote,
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "FX bootstrap: failed for %s/%s: %s",
+                        base, quote, exc,
+                    )
+        finally:
+            db.close()
+
+    threading.Thread(target=_sync, name="fx-bootstrap", daemon=True).start()

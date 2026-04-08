@@ -58,6 +58,30 @@ def create_link(
     return RedirectResponse(url="/transfers", status_code=303)
 
 
+@router.post("/bulk-link")
+def bulk_link(
+    min_confidence: float = Form(0.7),
+    db: Session = Depends(get_db),
+):
+    """Confirm all transfer candidates at or above the given confidence."""
+    candidates = detect_transfers(db)
+    linked_count = 0
+    for c in candidates:
+        if c.confidence >= min_confidence:
+            result = link_transfer(
+                db,
+                c.from_transaction_id,
+                c.to_transaction_id,
+                confirmed=True,
+                confidence=c.confidence,
+            )
+            if result:
+                linked_count += 1
+    return RedirectResponse(
+        url=f"/transfers?linked={linked_count}", status_code=303,
+    )
+
+
 @router.post("/unlink/{link_id}")
 def remove_link(link_id: int, db: Session = Depends(get_db)):
     unlink_transfer(db, link_id)

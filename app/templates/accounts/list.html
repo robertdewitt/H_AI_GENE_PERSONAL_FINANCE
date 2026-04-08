@@ -41,7 +41,8 @@
                 {% endif %}
             </div>
             <div class="account-balance {% if item.balance >= 0 and item.account.is_asset %}positive{% elif not item.account.is_asset %}negative{% endif %}">
-                {% if item.account.currency != "USD" %}<small>{{ item.account.currency }}</small> {% endif %}{{ "{:,.2f}".format(item.balance) }}
+                {{ item.account.currency_symbol }}{{ "{:,.2f}".format(item.balance) }}
+                {% if item.account.currency != "USD" %}<small>({{ item.account.currency }})</small>{% endif %}
             </div>
         </div>
         {% endfor %}

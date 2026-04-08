@@ -12,7 +12,9 @@ from app.schemas.transfer import TransferCandidate
 
 TRANSFER_KEYWORDS = [
     "transfer", "xfer", "trf", "ach", "wire", "zelle",
-    "venmo", "paypal", "internal",
+    "venmo", "paypal", "internal", "payment", "pymt", "pmt",
+    "autopay", "auto pay", "credit", "thank you", "online pmt",
+    "direct debit", "standing order",
 ]
 
 
@@ -38,19 +40,23 @@ def detect_transfers(
     date_window: int | None = None,
     amount_tolerance: float | None = None,
 ) -> list[TransferCandidate]:
-    """Find unlinked transaction pairs that look like transfers."""
+    """Find unlinked transaction pairs that look like transfers.
+
+    Considers both transactions not yet flagged AND transactions already
+    flagged as ``is_transfer=True`` that have no link yet.
+    """
     window = date_window or settings.transfer_date_window_days
     tolerance = amount_tolerance or settings.transfer_amount_tolerance
 
     outflows = db.execute(
         select(Transaction).where(
             Transaction.amount < 0,
-            Transaction.is_transfer.is_(False),
             Transaction.transfer_link_id.is_(None),
         )
     ).scalars().all()
 
     candidates: list[TransferCandidate] = []
+    seen_pairs: set[tuple[int, int]] = set()
 
     for out_txn in outflows:
         out_abs = abs(out_txn.amount)
@@ -62,7 +68,6 @@ def detect_transfers(
                 and_(
                     Transaction.amount > 0,
                     Transaction.account_id != out_txn.account_id,
-                    Transaction.is_transfer.is_(False),
                     Transaction.transfer_link_id.is_(None),
                     Transaction.date >= date_lo,
                     Transaction.date <= date_hi,
@@ -73,6 +78,11 @@ def detect_transfers(
         ).scalars().all()
 
         for in_txn in potential_matches:
+            pair_key = (min(out_txn.id, in_txn.id), max(out_txn.id, in_txn.id))
+            if pair_key in seen_pairs:
+                continue
+            seen_pairs.add(pair_key)
+
             date_diff = abs((in_txn.date - out_txn.date).days)
             date_score = max(0, 1.0 - (date_diff / (window + 1)))
 
@@ -83,10 +93,19 @@ def detect_transfers(
                 out_txn.description, in_txn.description
             )
 
-            confidence = (
-                date_score * 0.35
-                + amount_score * 0.45
-                + desc_score * 0.20
+            # Boost score if either side is already flagged as a transfer
+            transfer_bonus = 0.0
+            if out_txn.is_transfer:
+                transfer_bonus += 0.15
+            if in_txn.is_transfer:
+                transfer_bonus += 0.15
+
+            confidence = min(
+                1.0,
+                date_score * 0.30
+                + amount_score * 0.40
+                + desc_score * 0.15
+                + transfer_bonus,
             )
 
             out_acct = db.get(Account, out_txn.account_id)
