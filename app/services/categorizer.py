@@ -96,7 +96,11 @@ def learn_from_correction(
     category_id: int,
 ) -> tuple[CategoryRule, int]:
     """Store a user's category correction as a learned rule AND retroactively
-    update all existing transactions whose description matches the pattern.
+    update all existing transactions whose description matches.
+
+    Uses two strategies for retroactive updates:
+    1. Exact match on the original description (case-insensitive)
+    2. Fuzzy match via the extracted pattern (handles whitespace differences)
 
     Returns (rule, count_updated).
     """
@@ -120,30 +124,66 @@ def learn_from_correction(
         db.add(existing)
     db.flush()
 
-    # Retroactively update all matching transactions
-    count = _apply_pattern_to_existing(db, pattern, category_id)
+    count = _apply_to_matching_transactions(db, description, pattern, category_id)
 
     return existing, count
 
 
-def _apply_pattern_to_existing(
+def _apply_to_matching_transactions(
     db: Session,
+    original_description: str,
     pattern: str,
     category_id: int,
 ) -> int:
-    """Update category on all transactions whose description contains the pattern."""
-    like_pattern = f"%{pattern}%"
-    matching = db.execute(
+    """Update category on all transactions that match the description.
+
+    First does an exact case-insensitive match on the full description,
+    then also catches fuzzy matches via the extracted pattern (with
+    whitespace collapsed in both sides of the comparison).
+    """
+    already_updated: set[int] = set()
+
+    from sqlalchemy import or_
+
+    not_already_set = or_(
+        Transaction.category_id.is_(None),
+        Transaction.category_id != category_id,
+    )
+
+    exact_lower = original_description.strip().lower()
+    exact_matches = db.execute(
         select(Transaction).where(
-            func.lower(Transaction.description).like(like_pattern),
-            Transaction.category_id != category_id,
+            func.lower(Transaction.description) == exact_lower,
+            not_already_set,
         )
     ).scalars().all()
 
-    for txn in matching:
+    for txn in exact_matches:
         txn.category_id = category_id
+        already_updated.add(txn.id)
 
-    return len(matching)
+    like_pattern = f"%{pattern}%"
+    fuzzy_matches = db.execute(
+        select(Transaction).where(
+            func.replace(
+                func.replace(
+                    func.lower(Transaction.description), "  ", " "
+                ),
+                "  ", " ",
+            ).like(like_pattern),
+            not_already_set,
+        )
+    ).scalars().all()
+
+    for txn in fuzzy_matches:
+        if txn.id not in already_updated:
+            txn.category_id = category_id
+            already_updated.add(txn.id)
+
+    if already_updated:
+        db.flush()
+
+    return len(already_updated)
 
 
 def _extract_pattern(description: str) -> str:

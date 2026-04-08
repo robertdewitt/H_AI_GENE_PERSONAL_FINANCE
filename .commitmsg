@@ -1,12 +1,14 @@
-Fix currency display, FX bootstrap, net worth conversion, transfer matching
+Fix net worth using full balance and fix category propagation to matching transactions
 
-- Show proper currency symbols (£, €, ¥) on all pages instead of hardcoded $
-- Account detail shows balance in native currency, not base
-- Add FX rate bootstrap: 5 years of daily history for GBP/EUR/JPY on startup
-- Fix Yahoo Finance Series parsing and Frankfurter API yearly chunking
-- Robust FX date lookup (strip time component for exact match)
-- Expand transfer detection keywords to include payment/credit/autopay
-- Boost confidence score for transactions already flagged as transfers
-- Add bulk-confirm by threshold on transfers review page
-- Widen transfer link matching to ±3 day window and $1 tolerance
-- Update README with new FX bootstrap and transfer detection features
+Net worth: compute_net_worth no longer forces as_of_date=now() for the
+current snapshot — it passes None so get_account_balance sums all
+transactions without a date cutoff.  This fixes the issue where
+future-dated transactions were excluded from the current balance.
+
+Category propagation: fixed two bugs in learn_from_correction:
+1. SQL NULL handling — "category_id != X" excludes NULL rows; now uses
+   OR(IS NULL, != X) so uncategorized transactions are included.
+2. Whitespace mismatch — descriptions stored with multiple consecutive
+   spaces didn't match patterns with collapsed spaces; now uses exact
+   case-insensitive match on the original description plus a fuzzy
+   match with whitespace normalization.

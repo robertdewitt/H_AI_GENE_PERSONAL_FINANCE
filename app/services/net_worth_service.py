@@ -17,9 +17,12 @@ def compute_net_worth(
     as_of_date: datetime | None = None,
     target_currency: str | None = None,
 ) -> NetWorthSnapshot:
-    """Compute net worth snapshot at a given date, converted to target currency."""
-    if as_of_date is None:
-        as_of_date = datetime.now()
+    """Compute net worth snapshot at a given date, converted to target currency.
+
+    When ``as_of_date`` is None the **current** net worth is computed using
+    the full account balance (no date filter on transactions).
+    """
+    snapshot_date = as_of_date or datetime.now()
     base_ccy = target_currency or settings.base_currency
 
     accounts = db.execute(select(Account)).scalars().all()
@@ -29,7 +32,7 @@ def compute_net_worth(
 
     for acct in accounts:
         balance = get_account_balance(
-            db, acct.id, as_of_date, target_currency=base_ccy
+            db, acct.id, as_of_date=as_of_date, target_currency=base_ccy,
         )
         signed_balance = balance if acct.is_asset else -abs(balance)
 
@@ -47,11 +50,11 @@ def compute_net_worth(
             currency=acct.currency,
             balance_base=balance if acct.currency != base_ccy else None,
             is_asset=acct.is_asset,
-            as_of_date=as_of_date,
+            as_of_date=snapshot_date,
         ))
 
     return NetWorthSnapshot(
-        date=as_of_date,
+        date=snapshot_date,
         currency=base_ccy,
         total_assets=total_assets,
         total_liabilities=total_liabilities,
