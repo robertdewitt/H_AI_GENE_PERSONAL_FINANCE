@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block title %}FX Rates &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Foreign Exchange Rates</h1>
+    <p>Live rates from Yahoo Finance &amp; ECB, plus manual entry</p>
+</hgroup>
+
+{% if fetch_result %}
+<article style="margin-bottom:1.5rem">
+    {% if fetch_result.type == "current" %}
+        <strong>Fetched today's rates for {{ fetch_result.base }}:</strong>
+        {{ fetch_result.succeeded }} succeeded, {{ fetch_result.failed }} failed.
+        {% if fetch_result.details %}
+        <details>
+            <summary>Details</summary>
+            <table>
+                <thead><tr><th>Currency</th><th>Source</th></tr></thead>
+                <tbody>
+                {% for ccy, src in fetch_result.details.items() %}
+                <tr>
+                    <td>{{ ccy }}</td>
+                    <td>{% if src == "failed" %}<mark>{{ src }}</mark>{% else %}{{ src }}{% endif %}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </details>
+        {% endif %}
+    {% elif fetch_result.type == "historical" %}
+        <strong>Fetched {{ fetch_result.count }} historical rates for {{ fetch_result.base }}/{{ fetch_result.quote }}.</strong>
+    {% endif %}
+</article>
+{% endif %}
+
+<div class="grid">
+    <div>
+        <h2>Fetch Live Rates</h2>
+        <form method="post" action="/fx/fetch-current">
+            <label for="fetch_base">Base Currency</label>
+            <select id="fetch_base" name="base_currency">
+                {% for ccy in currencies %}
+                <option value="{{ ccy }}" {% if ccy == "USD" %}selected{% endif %}>{{ ccy }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit">Fetch Today's Rates (All Currencies)</button>
+            <small>Pulls from Yahoo Finance, falls back to ECB data.</small>
+        </form>
+
+        <hr>
+
+        <h2>Fetch Historical Rates</h2>
+        <form method="post" action="/fx/fetch-historical">
+            <div class="grid">
+                <div>
+                    <label for="hist_base">Base</label>
+                    <select id="hist_base" name="base_currency">
+                        {% for ccy in currencies %}
+                        <option value="{{ ccy }}" {% if ccy == "USD" %}selected{% endif %}>{{ ccy }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label for="hist_quote">Quote</label>
+                    <select id="hist_quote" name="quote_currency">
+                        {% for ccy in currencies %}
+                        <option value="{{ ccy }}" {% if ccy == "EUR" %}selected{% endif %}>{{ ccy }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="grid">
+                <div>
+                    <label for="hist_start">Start Date</label>
+                    <input type="date" id="hist_start" name="start_date" required>
+                </div>
+                <div>
+                    <label for="hist_end">End Date (optional)</label>
+                    <input type="date" id="hist_end" name="end_date">
+                </div>
+            </div>
+            <button type="submit">Fetch Historical Rates</button>
+        </form>
+    </div>
+
+    <div>
+        <h2>Active Pairs ({{ pairs | length }})</h2>
+        {% if pairs %}
+        <table>
+            <thead><tr><th>Base</th><th>Quote</th></tr></thead>
+            <tbody>
+                {% for p in pairs %}
+                <tr><td>{{ p.base }}</td><td>{{ p.quote }}</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p>No FX rates recorded yet. Fetch rates or add them manually below.</p>
+        {% endif %}
+
+        <hr>
+        <h2>Add Rate Manually</h2>
+        <form method="post" action="/fx/add">
+            <div class="grid">
+                <div>
+                    <label for="base_currency">Base</label>
+                    <select id="base_currency" name="base_currency" required>
+                        {% for ccy in currencies %}
+                        <option value="{{ ccy }}" {% if ccy == "USD" %}selected{% endif %}>{{ ccy }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label for="quote_currency">Quote</label>
+                    <select id="quote_currency" name="quote_currency" required>
+                        {% for ccy in currencies %}
+                        <option value="{{ ccy }}" {% if ccy == "EUR" %}selected{% endif %}>{{ ccy }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="grid">
+                <div>
+                    <label for="date">Date</label>
+                    <input type="date" id="date" name="date" required>
+                </div>
+                <div>
+                    <label for="rate">Rate</label>
+                    <input type="number" id="rate" name="rate" step="0.000001" required placeholder="e.g. 0.92">
+                </div>
+            </div>
+            <button type="submit" class="outline">Add Manual Rate</button>
+        </form>
+
+        <p style="margin-top:1rem"><a href="/fx/convert" role="button" class="outline">Currency Converter</a></p>
+    </div>
+</div>
+
+<h2>Recent Rates</h2>
+{% if recent_rates %}
+<table>
+    <thead><tr><th>Date</th><th>Pair</th><th style="text-align:right">Rate</th><th>Source</th></tr></thead>
+    <tbody>
+        {% for r in recent_rates %}
+        <tr>
+            <td>{{ r.date.strftime("%b %d, %Y") }}</td>
+            <td>{{ r.base_currency }}/{{ r.quote_currency }}</td>
+            <td style="text-align:right">{{ "%.6f"|format(r.rate) }}</td>
+            <td>
+                {% if r.source == "yahoo_finance" %}Yahoo Finance
+                {% elif r.source == "ecb_frankfurter" %}ECB
+                {% else %}{{ r.source }}{% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+    <h3>No rates yet</h3>
+    <p>Click "Fetch Today's Rates" above to pull live exchange rates.</p>
+</div>
+{% endif %}
+{% endblock %}

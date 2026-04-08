@@ -1,0 +1,170 @@
+import shutil
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.database import get_db
+from app.models.account import Account
+from app.services.paycheck_service import (
+    get_paycheck_summary,
+    import_paycheck_stubs,
+    list_paychecks,
+    preview_paycheck_file,
+)
+
+router = APIRouter(prefix="/paychecks", tags=["paychecks"])
+templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
+
+
+@router.get("", response_class=HTMLResponse)
+def paychecks_list(request: Request, db: Session = Depends(get_db)):
+    stubs = list_paychecks(db)
+    now = datetime.now()
+    summary = get_paycheck_summary(db, year=now.year)
+    accounts = db.execute(
+        select(Account).order_by(Account.name)
+    ).scalars().all()
+
+    return templates.TemplateResponse(request, "paychecks/list.html", {
+        "stubs": stubs,
+        "summary": summary,
+        "current_year": now.year,
+        "accounts": accounts,
+    })
+
+
+@router.get("/upload", response_class=HTMLResponse)
+def paycheck_upload_form(request: Request, db: Session = Depends(get_db)):
+    accounts = db.execute(
+        select(Account).order_by(Account.name)
+    ).scalars().all()
+    return templates.TemplateResponse(request, "paychecks/upload.html", {
+        "accounts": accounts,
+    })
+
+
+@router.post("/upload")
+async def paycheck_upload(
+    request: Request,
+    account_id: int = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    upload_dir = Path(settings.upload_dir)
+    dest = upload_dir / file.filename
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    preview = preview_paycheck_file(str(dest))
+    accounts = db.execute(
+        select(Account).order_by(Account.name)
+    ).scalars().all()
+
+    return templates.TemplateResponse(request, "paychecks/mapping.html", {
+        "account_id": account_id,
+        "filepath": str(dest),
+        "columns": preview["columns"],
+        "mapping": preview["mapping"],
+        "preview": preview["preview"],
+        "total_rows": preview["total_rows"],
+        "accounts": accounts,
+    })
+
+
+@router.post("/confirm")
+def paycheck_confirm_import(
+    account_id: int = Form(...),
+    filepath: str = Form(...),
+    col_pay_date: str = Form(...),
+    col_gross_pay: str = Form(...),
+    col_net_pay: str = Form(...),
+    col_federal_tax: str = Form(""),
+    col_state_tax: str = Form(""),
+    col_social_security: str = Form(""),
+    col_medicare: str = Form(""),
+    col_retirement_401k: str = Form(""),
+    col_health_insurance: str = Form(""),
+    col_employer: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    mapping = {
+        "pay_date": col_pay_date,
+        "gross_pay": col_gross_pay,
+        "net_pay": col_net_pay,
+    }
+    optional = {
+        "federal_tax": col_federal_tax,
+        "state_tax": col_state_tax,
+        "social_security": col_social_security,
+        "medicare": col_medicare,
+        "retirement_401k": col_retirement_401k,
+        "health_insurance": col_health_insurance,
+        "employer": col_employer,
+    }
+    for k, v in optional.items():
+        if v.strip():
+            mapping[k] = v
+
+    count = import_paycheck_stubs(db, account_id, filepath, mapping)
+    return RedirectResponse(
+        url=f"/paychecks?imported={count}",
+        status_code=303,
+    )
+
+
+@router.get("/manual", response_class=HTMLResponse)
+def paycheck_manual_form(request: Request, db: Session = Depends(get_db)):
+    accounts = db.execute(
+        select(Account).order_by(Account.name)
+    ).scalars().all()
+    return templates.TemplateResponse(request, "paychecks/manual.html", {
+        "accounts": accounts,
+    })
+
+
+@router.post("/manual")
+def paycheck_manual_create(
+    account_id: int = Form(...),
+    pay_date: str = Form(...),
+    employer: str = Form(""),
+    gross_pay: float = Form(...),
+    net_pay: float = Form(...),
+    federal_tax: float = Form(0),
+    state_tax: float = Form(0),
+    local_tax: float = Form(0),
+    social_security: float = Form(0),
+    medicare: float = Form(0),
+    retirement_401k: float = Form(0),
+    health_insurance: float = Form(0),
+    dental_insurance: float = Form(0),
+    vision_insurance: float = Form(0),
+    hsa_contribution: float = Form(0),
+    other_deductions: float = Form(0),
+    db: Session = Depends(get_db),
+):
+    from app.services.paycheck_service import create_paycheck_manual
+
+    create_paycheck_manual(db, account_id, {
+        "pay_date": datetime.strptime(pay_date, "%Y-%m-%d"),
+        "employer": employer or None,
+        "gross_pay": gross_pay,
+        "net_pay": net_pay,
+        "federal_tax": federal_tax,
+        "state_tax": state_tax,
+        "local_tax": local_tax,
+        "social_security": social_security,
+        "medicare": medicare,
+        "retirement_401k": retirement_401k,
+        "health_insurance": health_insurance,
+        "dental_insurance": dental_insurance,
+        "vision_insurance": vision_insurance,
+        "hsa_contribution": hsa_contribution,
+        "other_deductions": other_deductions,
+    })
+    return RedirectResponse(url="/paychecks", status_code=303)

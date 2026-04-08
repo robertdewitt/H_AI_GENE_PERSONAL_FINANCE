@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Upload Paychecks &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Upload Paycheck Stubs</h1>
+    <p>Import paycheck data from a CSV or Excel file</p>
+</hgroup>
+
+{% if accounts %}
+<form method="post" action="/paychecks/upload" enctype="multipart/form-data">
+    <label for="account_id">Deposit Account *</label>
+    <select id="account_id" name="account_id" required>
+        <option value="">Choose the account where pay is deposited...</option>
+        {% for acct in accounts %}
+        <option value="{{ acct.id }}">{{ acct.name }}</option>
+        {% endfor %}
+    </select>
+
+    <label for="file">Paycheck File *</label>
+    <input type="file" id="file" name="file" accept=".csv,.xls,.xlsx" required>
+    <small>CSV or Excel with columns for pay date, gross pay, net pay, taxes, deductions, etc.</small>
+
+    <button type="submit">Upload &amp; Map Columns</button>
+</form>
+{% else %}
+<div class="empty-state">
+    <h3>No accounts yet</h3>
+    <p><a href="/accounts/new">Create an account</a> first.</p>
+</div>
+{% endif %}
+{% endblock %}

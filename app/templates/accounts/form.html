@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}{% if account %}Edit {{ account.name }}{% else %}New Account{% endif %} &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>{% if account %}Edit Account{% else %}New Account{% endif %}</h1>
+    <p>{% if account %}Update account details{% else %}Add a new financial account{% endif %}</p>
+</hgroup>
+
+<form method="post" action="{% if account %}/accounts/{{ account.id }}/edit{% else %}/accounts/new{% endif %}">
+    <label for="name">Account Name *</label>
+    <input type="text" id="name" name="name" required
+           value="{{ account.name if account else '' }}"
+           placeholder="e.g., Chase Checking, Vanguard IRA, 123 Main St Property">
+
+    <label for="account_type">Account Type *</label>
+    <select id="account_type" name="account_type" required>
+        {% for atype in account_types %}
+        <option value="{{ atype.value }}"
+                {% if account and account.account_type == atype %}selected{% endif %}
+                data-liability="{{ 'true' if atype.value in liability_types else 'false' }}">
+            {{ atype.value.replace('_', ' ').title() }}
+        </option>
+        {% endfor %}
+    </select>
+
+    <label for="institution">Institution</label>
+    <input type="text" id="institution" name="institution"
+           value="{{ account.institution if account and account.institution else '' }}"
+           placeholder="e.g., Chase, Vanguard, Self">
+
+    <label for="currency">Currency</label>
+    <input type="text" id="currency" name="currency"
+           value="{{ account.currency if account else 'USD' }}"
+           maxlength="10">
+
+    <label for="current_value">Current Value / Balance</label>
+    <input type="number" id="current_value" name="current_value" step="0.01"
+           value="{{ account.current_value if account and account.current_value is not none else '' }}"
+           placeholder="Initial balance or current appraised value">
+    <small>For bank accounts, this is your starting balance. For real estate, vehicles, collectibles — enter the current market value.</small>
+
+    <label for="notes">Notes</label>
+    <textarea id="notes" name="notes" rows="3"
+              placeholder="Optional notes about this account">{{ account.notes if account and account.notes else '' }}</textarea>
+
+    <div class="btn-group">
+        <button type="submit">{% if account %}Save Changes{% else %}Create Account{% endif %}</button>
+        <a href="{% if account %}/accounts/{{ account.id }}{% else %}/accounts{% endif %}" role="button" class="outline">Cancel</a>
+    </div>
+</form>
+
+{% if account %}
+<hr>
+<details>
+    <summary role="button" class="outline secondary">Delete this account</summary>
+    <p>This will permanently delete the account and all its transactions. This cannot be undone.</p>
+    <form method="post" action="/accounts/{{ account.id }}/delete">
+        <button type="submit" class="secondary">Confirm Delete</button>
+    </form>
+</details>
+{% endif %}
+{% endblock %}

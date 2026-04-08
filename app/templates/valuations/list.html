@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Asset Valuations &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Asset Valuations</h1>
+    <p>Track the value of your real estate, vehicles, collectibles, and other assets</p>
+</hgroup>
+
+{% if account_data %}
+{% for item in account_data %}
+<div class="account-group">
+    <h3>
+        <a href="/valuations/{{ item.account.id }}">{{ item.account.name }}</a>
+        <small>({{ item.account.display_type }})</small>
+    </h3>
+
+    <div class="summary-grid">
+        <div class="summary-card">
+            <div class="label">Current Value</div>
+            <div class="value positive">
+                {% if item.latest_value %}
+                {{ item.account.currency }} {{ "{:,.2f}".format(item.latest_value) }}
+                {% else %}&mdash;{% endif %}
+            </div>
+        </div>
+        <div class="summary-card">
+            <div class="label">Last Updated</div>
+            <div class="value" style="font-size:1rem">
+                {% if item.latest_date %}{{ item.latest_date.strftime("%b %d, %Y") }}{% else %}Never{% endif %}
+            </div>
+        </div>
+    </div>
+
+    {% if item.history %}
+    <table>
+        <thead><tr><th>Date</th><th>Value</th><th>Currency</th><th>Source</th></tr></thead>
+        <tbody>
+            {% for v in item.history %}
+            <tr>
+                <td>{{ v.date.strftime("%b %d, %Y") }}</td>
+                <td class="txn-amount">{{ "{:,.2f}".format(v.value) }}</td>
+                <td>{{ v.currency }}</td>
+                <td>{{ v.source }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    <form method="post" action="/valuations/{{ item.account.id }}/add" style="margin-top:0.75rem">
+        <div class="grid">
+            <div>
+                <input type="number" name="value" step="0.01" placeholder="New value" required>
+            </div>
+            <div>
+                <input type="date" name="date" required>
+            </div>
+            <div>
+                <input type="text" name="currency" value="{{ item.account.currency }}" placeholder="Currency">
+            </div>
+            <div>
+                <select name="source">
+                    <option value="manual">Manual</option>
+                    <option value="appraisal">Appraisal</option>
+                    <option value="zillow">Zillow (placeholder)</option>
+                    <option value="kbb">KBB (placeholder)</option>
+                    <option value="market_data">Market Data</option>
+                </select>
+            </div>
+            <div>
+                <button type="submit" style="margin:0">Add Valuation</button>
+            </div>
+        </div>
+    </form>
+</div>
+{% endfor %}
+{% else %}
+<div class="empty-state">
+    <h3>No valuatable assets</h3>
+    <p><a href="/accounts/new">Add a Real Estate, Vehicle, Collectible, or Pension account</a> to start tracking asset values.</p>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Import Transactions &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Import Transactions</h1>
+    <p>Upload a CSV or Excel file from your bank or financial institution</p>
+</hgroup>
+
+{% if accounts %}
+<form method="post" action="/import/upload" enctype="multipart/form-data">
+    <label for="account_id">Select Account *</label>
+    <select id="account_id" name="account_id" required>
+        <option value="">Choose an account...</option>
+        {% for acct in accounts %}
+        <option value="{{ acct.id }}">{{ acct.name }} ({{ acct.display_type }})</option>
+        {% endfor %}
+    </select>
+
+    <label for="file">Transaction File *</label>
+    <input type="file" id="file" name="file" accept=".csv,.xls,.xlsx" required>
+    <small>Supported formats: CSV, XLS, XLSX</small>
+
+    <button type="submit">Upload &amp; Preview</button>
+</form>
+
+<hr>
+<details>
+    <summary>Future: Automated Import</summary>
+    <p>In a future release, you'll be able to connect directly to your bank accounts for automatic transaction imports. This feature will support services like Plaid API for secure bank connections.</p>
+</details>
+{% else %}
+<div class="empty-state">
+    <h3>No accounts yet</h3>
+    <p><a href="/accounts/new">Create an account</a> first, then import transactions into it.</p>
+</div>
+{% endif %}
+{% endblock %}

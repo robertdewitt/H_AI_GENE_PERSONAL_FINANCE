@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Map Columns &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Map Columns</h1>
+    <p>{{ total_rows }} rows found. Map the file columns to transaction fields.</p>
+</hgroup>
+
+<form method="post" action="/import/confirm" class="mapping-form">
+    <input type="hidden" name="account_id" value="{{ account_id }}">
+    <input type="hidden" name="filepath" value="{{ filepath }}">
+
+    <div class="grid">
+        <div>
+            <label for="col_date">Date Column *</label>
+            <select id="col_date" name="col_date" required>
+                <option value="">Select...</option>
+                {% for col in columns %}
+                <option value="{{ col }}" {% if mapping.date == col %}selected{% endif %}>{{ col }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label for="col_description">Description Column *</label>
+            <select id="col_description" name="col_description" required>
+                <option value="">Select...</option>
+                {% for col in columns %}
+                <option value="{{ col }}" {% if mapping.description == col %}selected{% endif %}>{{ col }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label for="col_amount">Amount Column *</label>
+            <select id="col_amount" name="col_amount" required>
+                <option value="">Select...</option>
+                {% for col in columns %}
+                <option value="{{ col }}" {% if mapping.amount == col %}selected{% endif %}>{{ col }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label for="col_balance">Balance Column (optional)</label>
+            <select id="col_balance" name="col_balance">
+                <option value="">None</option>
+                {% for col in columns %}
+                <option value="{{ col }}" {% if mapping.balance == col %}selected{% endif %}>{{ col }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label for="col_currency">Currency Column (optional)</label>
+            <select id="col_currency" name="col_currency">
+                <option value="">None &mdash; use account currency ({{ account_currency | default("USD") }})</option>
+                {% for col in columns %}
+                <option value="{{ col }}" {% if mapping.currency == col %}selected{% endif %}>{{ col }}</option>
+                {% endfor %}
+            </select>
+            <small>If your file has per-row currency codes (e.g. USD, EUR, GBP)</small>
+        </div>
+    </div>
+
+    <h3>Preview</h3>
+    <div class="column-preview">
+        <table>
+            <thead>
+                <tr>
+                    {% for col in columns %}
+                    <th>{{ col }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in preview %}
+                <tr>
+                    {% for col in columns %}
+                    <td>{{ row[col] }}</td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="btn-group">
+        <button type="submit">Import {{ total_rows }} Transactions</button>
+        <a href="/import" role="button" class="outline">Cancel</a>
+    </div>
+</form>
+{% endblock %}

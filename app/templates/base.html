@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Financial Hygiene{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+    <nav class="container-fluid">
+        <ul>
+            <li><a href="/" class="brand"><strong>Financial Hygiene</strong></a></li>
+        </ul>
+        <ul>
+            <li><a href="/accounts">Accounts</a></li>
+            <li><a href="/transactions">Transactions</a></li>
+            <li><a href="/import">Import</a></li>
+            <li><a href="/transfers">Transfers</a></li>
+            <li><a href="/net-worth">Net Worth</a></li>
+            <li>
+                <details class="dropdown">
+                    <summary>More</summary>
+                    <ul dir="rtl">
+                        <li><a href="/paychecks">Paychecks</a></li>
+                        <li><a href="/valuations">Asset Valuations</a></li>
+                        <li><a href="/fx">FX Rates</a></li>
+                    </ul>
+                </details>
+            </li>
+        </ul>
+    </nav>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="container">
+        <hr>
+        <p><small>Financial Hygiene &mdash; Your personal finance dashboard</small></p>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

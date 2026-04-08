@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Transfer Review &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Transfer Detection</h1>
+    <p>Review detected transfers between your accounts</p>
+</hgroup>
+
+<h2>Detected Candidates ({{ candidates|length }})</h2>
+{% if candidates %}
+<p>These transaction pairs look like transfers between your accounts. Confirm or dismiss each one.</p>
+
+{% for candidate in candidates %}
+<div class="transfer-card">
+    <div class="transfer-flow">
+        <div class="transfer-side">
+            <strong>{{ candidate.from_account_name }}</strong><br>
+            <small>{{ candidate.from_description }}</small><br>
+            <span class="txn-amount negative">-${{ "{:,.2f}".format(candidate.amount) }}</span>
+        </div>
+        <div class="transfer-arrow">&rarr;</div>
+        <div class="transfer-side">
+            <strong>{{ candidate.to_account_name }}</strong><br>
+            <small>{{ candidate.to_description }}</small><br>
+            <span class="txn-amount positive">+${{ "{:,.2f}".format(candidate.amount) }}</span>
+        </div>
+        <div>
+            <span class="badge badge-confidence">{{ "{:.0%}".format(candidate.confidence) }} match</span>
+        </div>
+    </div>
+    <div class="transfer-actions">
+        <form method="post" action="/transfers/link" style="margin:0">
+            <input type="hidden" name="from_transaction_id" value="{{ candidate.from_transaction_id }}">
+            <input type="hidden" name="to_transaction_id" value="{{ candidate.to_transaction_id }}">
+            <input type="hidden" name="confidence" value="{{ candidate.confidence }}">
+            <button type="submit" class="outline" style="margin:0">Confirm Transfer</button>
+        </form>
+    </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="empty-state">
+    <h3>No transfer candidates detected</h3>
+    <p>Import transactions from multiple accounts for the system to detect transfers between them.</p>
+</div>
+{% endif %}
+
+<hr>
+
+<h2>Confirmed Transfers ({{ linked|length }})</h2>
+{% if linked %}
+<table>
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>From</th>
+            <th>To</th>
+            <th style="text-align:right">Amount</th>
+            <th>Confidence</th>
+            <th>Action</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for item in linked %}
+        <tr>
+            <td>{{ item.link.date.strftime("%b %d, %Y") }}</td>
+            <td>
+                {% if item.from_account %}{{ item.from_account.name }}{% endif %}
+                <br><small>{{ item.from_txn.description if item.from_txn else '' }}</small>
+            </td>
+            <td>
+                {% if item.to_account %}{{ item.to_account.name }}{% endif %}
+                <br><small>{{ item.to_txn.description if item.to_txn else '' }}</small>
+            </td>
+            <td style="text-align:right" class="txn-amount">${{ "{:,.2f}".format(item.link.amount) }}</td>
+            <td>
+                <span class="badge badge-confidence">{{ "{:.0%}".format(item.link.confidence) }}</span>
+                {% if item.link.confirmed_by_user %}<span class="badge badge-income">Confirmed</span>{% endif %}
+            </td>
+            <td>
+                <form method="post" action="/transfers/unlink/{{ item.link.id }}" style="margin:0">
+                    <button type="submit" class="outline secondary" style="margin:0;padding:0.25rem 0.5rem;font-size:0.85rem">Unlink</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="neutral">No confirmed transfers yet.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}Net Worth &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Net Worth</h1>
+    <p>Track your financial progress over time</p>
+</hgroup>
+
+<div class="summary-grid">
+    <div class="summary-card">
+        <div class="label">Net Worth</div>
+        <div class="value {% if current.net_worth >= 0 %}positive{% else %}negative{% endif %}">
+            ${{ "{:,.2f}".format(current.net_worth) }}
+        </div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Total Assets</div>
+        <div class="value positive">${{ "{:,.2f}".format(current.total_assets) }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Total Liabilities</div>
+        <div class="value negative">${{ "{:,.2f}".format(current.total_liabilities) }}</div>
+    </div>
+</div>
+
+{% if series.snapshots %}
+<div class="chart-container" style="height:350px">
+    <canvas id="netWorthChart"></canvas>
+</div>
+{% endif %}
+
+<div class="grid">
+    <div>
+        <h2>Assets by Group</h2>
+        {% if groups %}
+        <div class="chart-container" style="height:300px">
+            <canvas id="breakdownChart"></canvas>
+        </div>
+        {% endif %}
+    </div>
+    <div>
+        <h2>Account Breakdown</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Account</th>
+                    <th>Type</th>
+                    <th style="text-align:right">Balance</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in current.breakdown %}
+                <tr>
+                    <td><a href="/accounts/{{ item.account_id }}">{{ item.account_name }}</a></td>
+                    <td>{{ item.type_group }}</td>
+                    <td style="text-align:right" class="txn-amount {% if item.balance >= 0 %}positive{% else %}negative{% endif %}">
+                        ${{ "{:,.2f}".format(item.balance) }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+{% if series.snapshots %}
+const lineCtx = document.getElementById('netWorthChart').getContext('2d');
+new Chart(lineCtx, {
+    type: 'line',
+    data: {
+        labels: [{% for s in series.snapshots %}"{{ s.date.strftime('%b %Y') }}"{% if not loop.last %},{% endif %}{% endfor %}],
+        datasets: [
+            {
+                label: 'Net Worth',
+                data: [{% for s in series.snapshots %}{{ "%.2f"|format(s.net_worth) }}{% if not loop.last %},{% endif %}{% endfor %}],
+                borderColor: '#2563eb',
+                backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                fill: true,
+                tension: 0.3,
+            },
+            {
+                label: 'Assets',
+                data: [{% for s in series.snapshots %}{{ "%.2f"|format(s.total_assets) }}{% if not loop.last %},{% endif %}{% endfor %}],
+                borderColor: '#16a34a',
+                borderDash: [5, 5],
+                fill: false,
+                tension: 0.3,
+            },
+            {
+                label: 'Liabilities',
+                data: [{% for s in series.snapshots %}{{ "%.2f"|format(s.total_liabilities) }}{% if not loop.last %},{% endif %}{% endfor %}],
+                borderColor: '#dc2626',
+                borderDash: [5, 5],
+                fill: false,
+                tension: 0.3,
+            }
+        ]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { position: 'top' },
+        },
+        scales: {
+            y: {
+                ticks: {
+                    callback: function(value) {
+                        return '$' + value.toLocaleString();
+                    }
+                }
+            }
+        }
+    }
+});
+{% endif %}
+
+{% if groups %}
+const pieCtx = document.getElementById('breakdownChart').getContext('2d');
+const groupColors = ['#2563eb', '#16a34a', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16', '#f97316'];
+new Chart(pieCtx, {
+    type: 'doughnut',
+    data: {
+        labels: [{% for name in groups.keys() %}"{{ name }}"{% if not loop.last %},{% endif %}{% endfor %}],
+        datasets: [{
+            data: [{% for val in groups.values() %}{{ "%.2f"|format(val) }}{% if not loop.last %},{% endif %}{% endfor %}],
+            backgroundColor: groupColors.slice(0, {{ groups|length }}),
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { position: 'bottom' },
+            tooltip: {
+                callbacks: {
+                    label: function(context) {
+                        return context.label + ': $' + context.parsed.toLocaleString();
+                    }
+                }
+            }
+        }
+    }
+});
+{% endif %}
+</script>
+{% endblock %}

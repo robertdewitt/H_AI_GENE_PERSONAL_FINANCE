@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Currency Converter &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Currency Converter</h1>
+    <p>Convert amounts using your stored FX rates</p>
+</hgroup>
+
+<form method="post" action="/fx/convert">
+    <div class="grid">
+        <div>
+            <label for="amount">Amount</label>
+            <input type="number" id="amount" name="amount" step="0.01" required
+                   value="{{ result.amount if result else '' }}">
+        </div>
+        <div>
+            <label for="from_currency">From</label>
+            <select id="from_currency" name="from_currency" required>
+                {% for ccy in currencies %}
+                <option value="{{ ccy }}" {% if result and result['from'] == ccy %}selected{% endif %}>{{ ccy }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label for="to_currency">To</label>
+            <select id="to_currency" name="to_currency" required>
+                {% for ccy in currencies %}
+                <option value="{{ ccy }}" {% if result and result.to == ccy %}selected{% elif not result and ccy == 'EUR' %}selected{% endif %}>{{ ccy }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label for="date">Date</label>
+            <input type="date" id="date" name="date" required
+                   value="{{ result.date if result else '' }}">
+        </div>
+    </div>
+    <button type="submit">Convert</button>
+</form>
+
+{% if result %}
+<div class="summary-grid" style="margin-top:1.5rem">
+    <div class="summary-card">
+        <div class="label">Original</div>
+        <div class="value">{{ result['from'] }} {{ "{:,.2f}".format(result.amount) }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Converted</div>
+        <div class="value positive">
+            {% if result.converted is not none %}
+            {{ result.to }} {{ "{:,.2f}".format(result.converted) }}
+            {% else %}
+            No rate available
+            {% endif %}
+        </div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Rate Used</div>
+        <div class="value" style="font-size:1.2rem">
+            {% if result.rate %}{{ "%.6f"|format(result.rate) }}{% else %}&mdash;{% endif %}
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

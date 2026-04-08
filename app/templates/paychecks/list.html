@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Paychecks &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Paychecks</h1>
+    <p>Track your income, taxes, and deductions</p>
+</hgroup>
+
+{% if summary.count > 0 %}
+<div class="summary-grid">
+    <div class="summary-card">
+        <div class="label">{{ current_year }} Gross Income</div>
+        <div class="value positive">${{ "{:,.2f}".format(summary.total_gross) }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">{{ current_year }} Net Income</div>
+        <div class="value positive">${{ "{:,.2f}".format(summary.total_net) }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">{{ current_year }} Total Taxes</div>
+        <div class="value negative">${{ "{:,.2f}".format(summary.total_taxes) }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">{{ current_year }} 401(k)</div>
+        <div class="value">${{ "{:,.2f}".format(summary.total_retirement) }}</div>
+    </div>
+</div>
+{% endif %}
+
+<div class="btn-group" style="margin-bottom:1.5rem">
+    <a href="/paychecks/upload" role="button">Upload Paycheck File</a>
+    <a href="/paychecks/manual" role="button" class="outline">Enter Manually</a>
+</div>
+
+{% if stubs %}
+<table>
+    <thead>
+        <tr>
+            <th>Pay Date</th>
+            <th>Employer</th>
+            <th style="text-align:right">Gross</th>
+            <th style="text-align:right">Taxes</th>
+            <th style="text-align:right">401(k)</th>
+            <th style="text-align:right">Net</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for stub in stubs %}
+        <tr>
+            <td>{{ stub.pay_date.strftime("%b %d, %Y") }}</td>
+            <td>{{ stub.employer or "&mdash;" }}</td>
+            <td style="text-align:right" class="txn-amount">${{ "{:,.2f}".format(stub.gross_pay) }}</td>
+            <td style="text-align:right" class="txn-amount negative">${{ "{:,.2f}".format(stub.total_taxes) }}</td>
+            <td style="text-align:right" class="txn-amount">${{ "{:,.2f}".format(stub.retirement_401k) }}</td>
+            <td style="text-align:right" class="txn-amount positive">${{ "{:,.2f}".format(stub.net_pay) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+    <h3>No paychecks recorded</h3>
+    <p>Upload a paycheck CSV/XLS or enter one manually to start tracking your income.</p>
+</div>
+{% endif %}
+{% endblock %}

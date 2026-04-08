@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}{{ account.name }} &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>{{ account.name }}</h1>
+    <p>{{ account.display_type }}{% if account.institution %} &mdash; {{ account.institution }}{% endif %}
+       {% if account.currency != "USD" %} &mdash; <strong>{{ account.currency }}</strong>{% endif %}</p>
+</hgroup>
+
+<div class="summary-grid">
+    <div class="summary-card">
+        <div class="label">Current Balance ({{ account.currency }})</div>
+        <div class="value {% if balance >= 0 %}positive{% else %}negative{% endif %}">
+            {{ account.currency }} {{ "{:,.2f}".format(balance) }}
+        </div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Type</div>
+        <div class="value" style="font-size:1.1rem">{{ account.type_group }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Transactions</div>
+        <div class="value">{{ "{:,}".format(total_transactions) }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Currency</div>
+        <div class="value" style="font-size:1.1rem">{{ account.currency }}</div>
+    </div>
+</div>
+
+<div class="btn-group" style="margin-bottom:1.5rem">
+    <a href="/accounts/{{ account.id }}/edit" role="button" class="outline">Edit Account</a>
+    <a href="/import?account={{ account.id }}" role="button" class="outline">Import Transactions</a>
+    <a href="/transactions?account_id={{ account.id }}" role="button" class="outline">All Transactions</a>
+    {% if account.account_type.value in ["real_estate", "vehicle", "collectible", "pension"] %}
+    <a href="/valuations/{{ account.id }}" role="button" class="outline">Valuations</a>
+    {% endif %}
+</div>
+
+{% if account.notes %}
+<blockquote>{{ account.notes }}</blockquote>
+{% endif %}
+
+<h2>Recent Transactions</h2>
+{% if transactions %}
+<table>
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Description</th>
+            <th>CCY</th>
+            <th style="text-align:right">Amount</th>
+            <th style="text-align:right">Balance</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for txn in transactions %}
+        <tr>
+            <td>{{ txn.date.strftime("%b %d, %Y") }}</td>
+            <td>
+                {{ txn.description }}
+                {% if txn.is_transfer %}<span class="badge badge-transfer">Transfer</span>{% endif %}
+                {% if txn.category %}<span class="badge">{{ txn.category.name }}</span>{% endif %}
+            </td>
+            <td>
+                {{ txn.original_currency }}
+                {% if txn.is_foreign_currency %}
+                <small title="Rate: {{ txn.exchange_rate }}">(FX)</small>
+                {% endif %}
+            </td>
+            <td style="text-align:right" class="txn-amount {% if txn.amount >= 0 %}positive{% else %}negative{% endif %}">
+                {{ txn.formatted_amount }}
+            </td>
+            <td style="text-align:right">
+                {% if txn.balance_after is not none %}
+                {{ "{:,.2f}".format(txn.balance_after) }}
+                {% else %}&mdash;{% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% if total_transactions > 50 %}
+<p><a href="/transactions?account_id={{ account.id }}">View all {{ "{:,}".format(total_transactions) }} transactions &rarr;</a></p>
+{% endif %}
+{% else %}
+<div class="empty-state">
+    <h3>No transactions</h3>
+    <p><a href="/import">Import a file</a> to add transactions to this account.</p>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Enter Paycheck &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Enter Paycheck Manually</h1>
+    <p>Record a single pay stub</p>
+</hgroup>
+
+<form method="post" action="/paychecks/manual">
+    <div class="grid">
+        <div>
+            <label for="account_id">Deposit Account *</label>
+            <select id="account_id" name="account_id" required>
+                {% for acct in accounts %}
+                <option value="{{ acct.id }}">{{ acct.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label for="pay_date">Pay Date *</label>
+            <input type="date" id="pay_date" name="pay_date" required>
+        </div>
+        <div>
+            <label for="employer">Employer</label>
+            <input type="text" id="employer" name="employer">
+        </div>
+    </div>
+
+    <h3>Earnings</h3>
+    <div class="grid">
+        <div>
+            <label for="gross_pay">Gross Pay *</label>
+            <input type="number" id="gross_pay" name="gross_pay" step="0.01" required>
+        </div>
+        <div>
+            <label for="net_pay">Net Pay *</label>
+            <input type="number" id="net_pay" name="net_pay" step="0.01" required>
+        </div>
+    </div>
+
+    <h3>Taxes</h3>
+    <div class="grid">
+        <div>
+            <label for="federal_tax">Federal Tax</label>
+            <input type="number" id="federal_tax" name="federal_tax" step="0.01" value="0">
+        </div>
+        <div>
+            <label for="state_tax">State Tax</label>
+            <input type="number" id="state_tax" name="state_tax" step="0.01" value="0">
+        </div>
+        <div>
+            <label for="local_tax">Local Tax</label>
+            <input type="number" id="local_tax" name="local_tax" step="0.01" value="0">
+        </div>
+        <div>
+            <label for="social_security">Social Security</label>
+            <input type="number" id="social_security" name="social_security" step="0.01" value="0">
+        </div>
+        <div>
+            <label for="medicare">Medicare</label>
+            <input type="number" id="medicare" name="medicare" step="0.01" value="0">
+        </div>
+    </div>
+
+    <h3>Deductions &amp; Benefits</h3>
+    <div class="grid">
+        <div>
+            <label for="retirement_401k">401(k)</label>
+            <input type="number" id="retirement_401k" name="retirement_401k" step="0.01" value="0">
+        </div>
+        <div>
+            <label for="health_insurance">Health Insurance</label>
+            <input type="number" id="health_insurance" name="health_insurance" step="0.01" value="0">
+        </div>
+        <div>
+            <label for="dental_insurance">Dental Insurance</label>
+            <input type="number" id="dental_insurance" name="dental_insurance" step="0.01" value="0">
+        </div>
+        <div>
+            <label for="vision_insurance">Vision Insurance</label>
+            <input type="number" id="vision_insurance" name="vision_insurance" step="0.01" value="0">
+        </div>
+        <div>
+            <label for="hsa_contribution">HSA</label>
+            <input type="number" id="hsa_contribution" name="hsa_contribution" step="0.01" value="0">
+        </div>
+        <div>
+            <label for="other_deductions">Other Deductions</label>
+            <input type="number" id="other_deductions" name="other_deductions" step="0.01" value="0">
+        </div>
+    </div>
+
+    <div class="btn-group">
+        <button type="submit">Save Paycheck</button>
+        <a href="/paychecks" role="button" class="outline">Cancel</a>
+    </div>
+</form>
+{% endblock %}

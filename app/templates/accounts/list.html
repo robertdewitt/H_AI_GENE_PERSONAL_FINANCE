@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Accounts &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Accounts</h1>
+    <p>All your financial accounts in one place</p>
+</hgroup>
+
+<div class="summary-grid">
+    <div class="summary-card">
+        <div class="label">Total Assets</div>
+        <div class="value positive">${{ "{:,.2f}".format(total_assets) }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Total Liabilities</div>
+        <div class="value negative">${{ "{:,.2f}".format(total_liabilities) }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Net Worth</div>
+        <div class="value {% if net_worth >= 0 %}positive{% else %}negative{% endif %}">
+            ${{ "{:,.2f}".format(net_worth) }}
+        </div>
+    </div>
+</div>
+
+<p><a href="/accounts/new" role="button">+ Add Account</a></p>
+
+{% if groups %}
+    {% for group_name, items in groups.items() %}
+    <div class="account-group">
+        <h3>{{ group_name }}</h3>
+        {% for item in items %}
+        <div class="account-row">
+            <div class="account-info">
+                <a href="/accounts/{{ item.account.id }}" class="account-name">
+                    {{ item.account.name }}
+                </a>
+                {% if item.account.institution %}
+                <span class="account-institution">{{ item.account.institution }}</span>
+                {% endif %}
+            </div>
+            <div class="account-balance {% if item.balance >= 0 and item.account.is_asset %}positive{% elif not item.account.is_asset %}negative{% endif %}">
+                {% if item.account.currency != "USD" %}<small>{{ item.account.currency }}</small> {% endif %}{{ "{:,.2f}".format(item.balance) }}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endfor %}
+{% else %}
+<div class="empty-state">
+    <h3>No accounts yet</h3>
+    <p>Add your first account to start tracking your finances.</p>
+</div>
+{% endif %}
+{% endblock %}
