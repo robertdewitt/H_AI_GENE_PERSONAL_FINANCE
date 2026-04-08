@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Edit Transaction &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Edit Transaction</h1>
+    <p>{{ txn.account.name }} &mdash; {{ txn.date.strftime("%b %d, %Y") }}</p>
+</hgroup>
+
+<form method="post" action="/transactions/{{ txn.id }}/edit">
+    <div class="grid">
+        <div>
+            <label for="date">Date *</label>
+            <input type="date" id="date" name="date" required
+                   value="{{ txn.date.strftime('%Y-%m-%d') }}">
+        </div>
+        <div>
+            <label for="amount">Amount *</label>
+            <input type="number" id="amount" name="amount" step="0.01" required
+                   value="{{ txn.amount }}">
+        </div>
+    </div>
+
+    <label for="description">Description *</label>
+    <input type="text" id="description" name="description" required
+           value="{{ txn.description }}">
+
+    <label for="category_id">Category</label>
+    <select id="category_id" name="category_id">
+        <option value="">Uncategorized</option>
+        {% for cat in categories %}
+        <option value="{{ cat.id }}" {% if txn.category_id == cat.id %}selected{% endif %}>
+            {{ cat.name }} ({{ cat.category_type.value }})
+        </option>
+        {% endfor %}
+    </select>
+    <small>Changing the category teaches the system to recognize similar transactions in the future.</small>
+
+    <fieldset>
+        <label>
+            <input type="checkbox" name="is_transfer" value="true"
+                   {% if txn.is_transfer %}checked{% endif %}>
+            This is a transfer between accounts
+        </label>
+    </fieldset>
+
+    <div class="btn-group">
+        <button type="submit">Save Changes</button>
+        <a href="/accounts/{{ txn.account_id }}" role="button" class="outline">Cancel</a>
+    </div>
+</form>
+
+<hr>
+<details>
+    <summary role="button" class="outline secondary">Delete this transaction</summary>
+    <p>This will permanently remove this transaction.</p>
+    <form method="post" action="/transactions/{{ txn.id }}/delete">
+        <button type="submit" class="secondary">Confirm Delete</button>
+    </form>
+</details>
+{% endblock %}

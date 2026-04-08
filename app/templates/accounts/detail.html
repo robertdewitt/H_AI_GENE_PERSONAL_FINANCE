@@ -52,6 +52,7 @@
             <th>CCY</th>
             <th style="text-align:right">Amount</th>
             <th style="text-align:right">Balance</th>
+            <th></th>
         </tr>
     </thead>
     <tbody>
@@ -77,6 +78,7 @@
                 {{ "{:,.2f}".format(txn.balance_after) }}
                 {% else %}&mdash;{% endif %}
             </td>
+            <td><a href="/transactions/{{ txn.id }}/edit" style="font-size:0.85rem">Edit</a></td>
         </tr>
         {% endfor %}
     </tbody>

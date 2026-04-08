@@ -152,10 +152,13 @@ def import_transactions(
     filepath: str,
     column_mapping: dict[str, str],
     account_currency: str = "USD",
+    is_liability: bool = False,
 ) -> ImportBatch:
     """Import transactions with batch flushing for large files.
 
-    Flushes every `settings.import_batch_size` rows to keep memory bounded.
+    For liability accounts (credit cards, loans, mortgages), positive amounts
+    in the file represent charges/debits and are stored as negative values
+    so that the account balance correctly reflects money owed.
     """
     df = read_file(filepath)
     path = Path(filepath)
@@ -206,6 +209,10 @@ def import_transactions(
             {str(k): str(v) for k, v in row.items()},
             default=str,
         )
+
+        # Flip sign for liabilities: a positive charge becomes negative
+        if is_liability and amount_val > 0:
+            amount_val = -amount_val
 
         txn = Transaction(
             account_id=account_id,

@@ -87,4 +87,12 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS ix_paycheck_account_date "
                 "ON paycheck_stubs (account_id, pay_date)"
             ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_txn_category "
+                "ON transactions (category_id)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_cat_rule_pattern "
+                "ON category_rules (pattern)"
+            ))
             conn.commit()

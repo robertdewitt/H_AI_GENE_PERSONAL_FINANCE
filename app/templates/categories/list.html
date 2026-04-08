@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Categories &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Categories</h1>
+    <p>Manage transaction categories and view learned rules</p>
+</hgroup>
+
+<div class="grid">
+    <div>
+        <article>
+            <header>Add Category</header>
+            <form method="post" action="/categories/add">
+                <label for="name">Name</label>
+                <input type="text" id="name" name="name" required placeholder="e.g. Groceries">
+
+                <label for="category_type">Type</label>
+                <select id="category_type" name="category_type" required>
+                    {% for ct in category_types %}
+                    <option value="{{ ct.value }}">{{ ct.value | title }}</option>
+                    {% endfor %}
+                </select>
+
+                <label for="parent_id">Parent (optional)</label>
+                <select id="parent_id" name="parent_id">
+                    <option value="">None (top-level)</option>
+                    {% for cat in categories %}
+                    <option value="{{ cat.id }}">{{ cat.name }}</option>
+                    {% endfor %}
+                </select>
+
+                <button type="submit">Add Category</button>
+            </form>
+        </article>
+    </div>
+
+    <div>
+        <article>
+            <header>Existing Categories</header>
+            {% if categories %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Type</th>
+                        <th>Parent</th>
+                        <th style="text-align:right">Txns</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for cat in categories %}
+                    <tr id="cat-row-{{ cat.id }}">
+                        <td>
+                            <form method="post" action="/categories/{{ cat.id }}/edit" style="display:inline" class="cat-inline-edit">
+                                <input type="text" name="name" value="{{ cat.name }}" style="margin:0;padding:0.2rem 0.4rem;width:auto;display:inline-block" required>
+                                <select name="category_type" style="display:inline-block;width:auto;margin:0;padding:0.2rem">
+                                    {% for ct in category_types %}
+                                    <option value="{{ ct.value }}" {% if cat.category_type == ct %}selected{% endif %}>{{ ct.value|title }}</option>
+                                    {% endfor %}
+                                </select>
+                                <button type="submit" style="margin:0;padding:0.15rem 0.5rem;font-size:0.75rem">Save</button>
+                            </form>
+                        </td>
+                        <td>{{ cat.category_type.value|title }}</td>
+                        <td>{{ cat.parent.name if cat.parent else "—" }}</td>
+                        <td style="text-align:right">{{ cat_stats.get(cat.id, 0) }}</td>
+                        <td>
+                            {% if not cat.is_system %}
+                            <form method="post" action="/categories/{{ cat.id }}/delete" style="display:inline"
+                                  onsubmit="return confirm('Delete category {{ cat.name }}? Transactions will be set to uncategorized.')">
+                                <button type="submit" class="outline secondary" style="margin:0;padding:0.15rem 0.5rem;font-size:0.75rem">Del</button>
+                            </form>
+                            {% else %}
+                            <small>system</small>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p>No categories yet. Add some above.</p>
+            {% endif %}
+        </article>
+    </div>
+</div>
+
+{% if rules %}
+<article>
+    <header>Learned Rules (from your corrections)</header>
+    <p>When you change a transaction's category, the system learns the pattern. These rules fire automatically before the LLM.</p>
+    <table>
+        <thead>
+            <tr>
+                <th>Pattern</th>
+                <th>Assigned Category</th>
+                <th style="text-align:right">Hits</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for rule in rules %}
+            <tr>
+                <td><code>{{ rule.pattern }}</code></td>
+                <td>{{ rule.category.name if rule.category else "—" }}</td>
+                <td style="text-align:right">{{ rule.hit_count }}</td>
+                <td>
+                    <form method="post" action="/categories/rules/{{ rule.id }}/delete" style="display:inline">
+                        <button type="submit" class="outline secondary" style="margin:0;padding:0.15rem 0.5rem;font-size:0.75rem">Remove</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</article>
+{% endif %}
+{% endblock %}

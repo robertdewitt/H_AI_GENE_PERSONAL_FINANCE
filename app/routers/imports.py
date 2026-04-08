@@ -78,11 +78,15 @@ def confirm_import(
     if col_currency.strip():
         mapping["currency"] = col_currency
 
+    from app.models.account import LIABILITY_TYPES
     account = db.get(Account, account_id)
     acct_currency = account.currency if account else "USD"
+    is_liability = account.account_type in LIABILITY_TYPES if account else False
 
     batch = import_transactions(
-        db, account_id, filepath, mapping, account_currency=acct_currency
+        db, account_id, filepath, mapping,
+        account_currency=acct_currency,
+        is_liability=is_liability,
     )
 
     return RedirectResponse(

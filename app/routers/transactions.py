@@ -1,8 +1,8 @@
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -11,6 +11,10 @@ from app.database import get_db
 from app.models.account import Account
 from app.models.category import Category
 from app.models.transaction import Transaction
+from app.services.categorizer import (
+    categorize_batch,
+    learn_from_correction,
+)
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
@@ -19,7 +23,6 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templa
 def _build_filters(
     account_id, category_id, date_from, date_to, search, is_transfer,
 ):
-    """Build a list of WHERE clauses reusable for both count and data queries."""
     clauses = []
     if account_id:
         clauses.append(Transaction.account_id == account_id)
@@ -44,6 +47,14 @@ def _build_filters(
     if is_transfer is not None:
         clauses.append(Transaction.is_transfer == is_transfer)
     return clauses
+
+
+def _build_query_string(filters: dict, page: int = 1) -> str:
+    parts = [f"page={page}"]
+    for k, v in filters.items():
+        if v not in (None, ""):
+            parts.append(f"{k}={v}")
+    return "&".join(parts)
 
 
 @router.get("", response_class=HTMLResponse)
@@ -101,3 +112,148 @@ def transactions_list(
         "total_count": total_count,
         "total_pages": total_pages,
     })
+
+
+# ── Single transaction edit ──────────────────────────────────────────
+
+@router.get("/{txn_id}/edit", response_class=HTMLResponse)
+def transaction_edit_form(
+    request: Request,
+    txn_id: int,
+    db: Session = Depends(get_db),
+):
+    txn = db.get(Transaction, txn_id)
+    if not txn:
+        return HTMLResponse("Transaction not found", status_code=404)
+
+    categories = db.execute(
+        select(Category).order_by(Category.name)
+    ).scalars().all()
+    accounts = db.execute(
+        select(Account).order_by(Account.name)
+    ).scalars().all()
+
+    return templates.TemplateResponse(request, "transactions/edit.html", {
+        "txn": txn,
+        "categories": categories,
+        "accounts": accounts,
+    })
+
+
+@router.post("/{txn_id}/edit")
+def transaction_update(
+    txn_id: int,
+    date: str = Form(...),
+    description: str = Form(...),
+    amount: float = Form(...),
+    category_id: str = Form(""),
+    is_transfer: bool = Form(False),
+    db: Session = Depends(get_db),
+):
+    txn = db.get(Transaction, txn_id)
+    if not txn:
+        return HTMLResponse("Transaction not found", status_code=404)
+
+    old_category_id = txn.category_id
+    txn.date = datetime.strptime(date, "%Y-%m-%d")
+    txn.description = description
+    txn.amount = amount
+    txn.is_transfer = is_transfer
+
+    new_cat_id = int(category_id) if category_id.strip() else None
+    txn.category_id = new_cat_id
+
+    # Learn from user correction if category changed
+    if new_cat_id and new_cat_id != old_category_id:
+        learn_from_correction(db, description, new_cat_id)
+
+    db.commit()
+    return RedirectResponse(
+        url=f"/accounts/{txn.account_id}", status_code=303
+    )
+
+
+# ── Delete single transaction ────────────────────────────────────────
+
+@router.post("/{txn_id}/delete")
+def transaction_delete(txn_id: int, db: Session = Depends(get_db)):
+    txn = db.get(Transaction, txn_id)
+    if not txn:
+        return HTMLResponse("Transaction not found", status_code=404)
+    account_id = txn.account_id
+    db.delete(txn)
+    db.commit()
+    return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)
+
+
+# ── Bulk operations ──────────────────────────────────────────────────
+
+@router.post("/bulk/categorize")
+def bulk_set_category(
+    txn_ids: str = Form(...),
+    category_id: int = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Set category on multiple transactions and learn from it."""
+    ids = [int(x) for x in txn_ids.split(",") if x.strip().isdigit()]
+    txns = db.execute(
+        select(Transaction).where(Transaction.id.in_(ids))
+    ).scalars().all()
+
+    for txn in txns:
+        old_cat = txn.category_id
+        txn.category_id = category_id
+        if category_id != old_cat:
+            learn_from_correction(db, txn.description, category_id)
+
+    db.commit()
+    return RedirectResponse(url="/transactions", status_code=303)
+
+
+@router.post("/bulk/delete")
+def bulk_delete(
+    txn_ids: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    ids = [int(x) for x in txn_ids.split(",") if x.strip().isdigit()]
+    db.execute(
+        Transaction.__table__.delete().where(Transaction.id.in_(ids))
+    )
+    db.commit()
+    return RedirectResponse(url="/transactions", status_code=303)
+
+
+@router.post("/bulk/toggle-transfer")
+def bulk_toggle_transfer(
+    txn_ids: str = Form(...),
+    is_transfer: bool = Form(True),
+    db: Session = Depends(get_db),
+):
+    ids = [int(x) for x in txn_ids.split(",") if x.strip().isdigit()]
+    txns = db.execute(
+        select(Transaction).where(Transaction.id.in_(ids))
+    ).scalars().all()
+    for txn in txns:
+        txn.is_transfer = is_transfer
+    db.commit()
+    return RedirectResponse(url="/transactions", status_code=303)
+
+
+# ── Auto-categorize ─────────────────────────────────────────────────
+
+@router.post("/auto-categorize")
+def auto_categorize(
+    request: Request,
+    limit: int = Form(500),
+    db: Session = Depends(get_db),
+):
+    stats = categorize_batch(db, limit=limit)
+    # Redirect back with stats as query params
+    return RedirectResponse(
+        url=f"/transactions?auto_cat_total={stats['total']}"
+            f"&auto_cat_rules={stats['rules']}"
+            f"&auto_cat_kw={stats['keywords']}"
+            f"&auto_cat_llm={stats['llm']}"
+            f"&auto_cat_failed={stats['failed']}",
+        status_code=303,
+    )

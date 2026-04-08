@@ -6,6 +6,7 @@ from app.models.import_batch import ImportBatch
 from app.models.asset_valuation import AssetValuation
 from app.models.currency_rate import CurrencyRate
 from app.models.paycheck_stub import PaycheckStub
+from app.models.category_rule import CategoryRule
 
 __all__ = [
     "Account",
@@ -16,4 +17,5 @@ __all__ = [
     "AssetValuation",
     "CurrencyRate",
     "PaycheckStub",
+    "CategoryRule",
 ]
