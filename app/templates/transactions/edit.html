@@ -38,11 +38,27 @@
 
     <fieldset>
         <label>
-            <input type="checkbox" name="is_transfer" value="true"
+            <input type="checkbox" id="is_transfer_check" name="is_transfer" value="true"
                    {% if txn.is_transfer %}checked{% endif %}>
             This is a transfer between accounts
         </label>
     </fieldset>
+
+    <div id="transferAccountSection" {% if not txn.is_transfer %}style="display:none"{% endif %}>
+        <label for="transfer_account_id">Transfer to/from account</label>
+        <select id="transfer_account_id" name="transfer_account_id">
+            <option value="">Select account...</option>
+            {% for acct in accounts %}
+            {% if acct.id != txn.account_id %}
+            <option value="{{ acct.id }}"
+                {% if txn.transfer_link and (txn.transfer_link.from_transaction.account_id == acct.id or txn.transfer_link.to_transaction.account_id == acct.id) %}selected{% endif %}>
+                {{ acct.name }} ({{ acct.display_type }})
+            </option>
+            {% endif %}
+            {% endfor %}
+        </select>
+        <small>Select the other account involved in this transfer. The system will try to find a matching transaction to link.</small>
+    </div>
 
     <div class="btn-group">
         <button type="submit">Save Changes</button>
@@ -58,4 +74,12 @@
         <button type="submit" class="secondary">Confirm Delete</button>
     </form>
 </details>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('is_transfer_check').addEventListener('change', function() {
+    document.getElementById('transferAccountSection').style.display = this.checked ? 'block' : 'none';
+});
+</script>
 {% endblock %}

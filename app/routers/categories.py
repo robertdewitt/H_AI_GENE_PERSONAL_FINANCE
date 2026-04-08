@@ -44,11 +44,39 @@ def categories_list(request: Request, db: Session = Depends(get_db)):
 
 @router.post("/add")
 def category_add(
+    request: Request,
     name: str = Form(...),
     category_type: str = Form(...),
     parent_id: str = Form(""),
     db: Session = Depends(get_db),
 ):
+    existing = db.execute(
+        select(Category).where(func.lower(Category.name) == name.strip().lower())
+    ).scalar_one_or_none()
+
+    if existing:
+        categories = db.execute(
+            select(Category).order_by(Category.category_type, Category.name)
+        ).scalars().all()
+        cat_stats = {}
+        for c in categories:
+            cnt = db.execute(
+                select(func.count(Transaction.id)).where(
+                    Transaction.category_id == c.id
+                )
+            ).scalar() or 0
+            cat_stats[c.id] = cnt
+        rules = db.execute(
+            select(CategoryRule).order_by(CategoryRule.hit_count.desc()).limit(50)
+        ).scalars().all()
+        return templates.TemplateResponse(request, "categories/list.html", {
+            "categories": categories,
+            "cat_stats": cat_stats,
+            "category_types": list(CategoryType),
+            "rules": rules,
+            "error": f'Category "{name.strip()}" already exists.',
+        })
+
     cat = Category(
         name=name.strip(),
         category_type=CategoryType(category_type),

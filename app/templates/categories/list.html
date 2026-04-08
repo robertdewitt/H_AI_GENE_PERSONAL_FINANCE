@@ -7,6 +7,12 @@
     <p>Manage transaction categories and view learned rules</p>
 </hgroup>
 
+{% if error %}
+<div style="padding:0.75rem 1rem;background:#fee2e2;color:#991b1b;border-radius:8px;margin-bottom:1rem">
+    {{ error }}
+</div>
+{% endif %}
+
 <div class="grid">
     <div>
         <article>

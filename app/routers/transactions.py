@@ -11,6 +11,7 @@ from app.database import get_db
 from app.models.account import Account
 from app.models.category import Category
 from app.models.transaction import Transaction
+from app.models.transfer_link import TransferLink
 from app.services.categorizer import (
     categorize_batch,
     learn_from_correction,
@@ -22,12 +23,15 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templa
 
 def _build_filters(
     account_id, category_id, date_from, date_to, search, is_transfer,
+    amount_min, amount_max, currency, uncategorized,
 ):
     clauses = []
     if account_id:
         clauses.append(Transaction.account_id == account_id)
     if category_id:
         clauses.append(Transaction.category_id == category_id)
+    if uncategorized:
+        clauses.append(Transaction.category_id.is_(None))
     if date_from:
         try:
             clauses.append(
@@ -46,15 +50,13 @@ def _build_filters(
         clauses.append(Transaction.description.ilike(f"%{search}%"))
     if is_transfer is not None:
         clauses.append(Transaction.is_transfer == is_transfer)
+    if amount_min is not None:
+        clauses.append(Transaction.amount >= amount_min)
+    if amount_max is not None:
+        clauses.append(Transaction.amount <= amount_max)
+    if currency:
+        clauses.append(Transaction.original_currency == currency.upper())
     return clauses
-
-
-def _build_query_string(filters: dict, page: int = 1) -> str:
-    parts = [f"page={page}"]
-    for k, v in filters.items():
-        if v not in (None, ""):
-            parts.append(f"{k}={v}")
-    return "&".join(parts)
 
 
 @router.get("", response_class=HTMLResponse)
@@ -65,13 +67,25 @@ def transactions_list(
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
     search: str | None = Query(None),
-    is_transfer: bool | None = Query(None),
+    is_transfer: str | None = Query(None),
+    amount_min: float | None = Query(None),
+    amount_max: float | None = Query(None),
+    currency: str | None = Query(None),
+    uncategorized: bool | None = Query(None),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=10, le=200),
     db: Session = Depends(get_db),
 ):
+    # Coerce is_transfer from string to bool | None
+    transfer_flag = None
+    if is_transfer == "true":
+        transfer_flag = True
+    elif is_transfer == "false":
+        transfer_flag = False
+
     clauses = _build_filters(
-        account_id, category_id, date_from, date_to, search, is_transfer,
+        account_id, category_id, date_from, date_to, search, transfer_flag,
+        amount_min, amount_max, currency, uncategorized,
     )
 
     total_count = db.execute(
@@ -93,19 +107,31 @@ def transactions_list(
         select(Category).order_by(Category.name)
     ).scalars().all()
 
+    # Distinct currencies for filter dropdown
+    currencies = db.execute(
+        select(Transaction.original_currency)
+        .distinct()
+        .order_by(Transaction.original_currency)
+    ).scalars().all()
+
     total_pages = max(1, (total_count + per_page - 1) // per_page)
 
     return templates.TemplateResponse(request, "transactions/list.html", {
         "transactions": txns,
         "accounts": accounts,
         "categories": categories,
+        "currencies": currencies,
         "filters": {
             "account_id": account_id,
             "category_id": category_id,
             "date_from": date_from or "",
             "date_to": date_to or "",
             "search": search or "",
-            "is_transfer": is_transfer,
+            "is_transfer": is_transfer or "",
+            "amount_min": amount_min if amount_min is not None else "",
+            "amount_max": amount_max if amount_max is not None else "",
+            "currency": currency or "",
+            "uncategorized": uncategorized,
         },
         "page": page,
         "per_page": per_page,
@@ -148,6 +174,7 @@ def transaction_update(
     amount: float = Form(...),
     category_id: str = Form(""),
     is_transfer: bool = Form(False),
+    transfer_account_id: str = Form(""),
     db: Session = Depends(get_db),
 ):
     txn = db.get(Transaction, txn_id)
@@ -167,10 +194,58 @@ def transaction_update(
     if new_cat_id and new_cat_id != old_category_id:
         learn_from_correction(db, description, new_cat_id)
 
+    # Handle transfer link
+    if is_transfer and transfer_account_id.strip():
+        dest_account_id = int(transfer_account_id)
+        if dest_account_id != txn.account_id:
+            _link_transfer(db, txn, dest_account_id)
+    elif not is_transfer and txn.transfer_link_id:
+        # Unlink if no longer a transfer
+        txn.transfer_link_id = None
+
     db.commit()
     return RedirectResponse(
         url=f"/accounts/{txn.account_id}", status_code=303
     )
+
+
+def _link_transfer(db: Session, txn: Transaction, other_account_id: int):
+    """Find or create a matching transaction in the other account and link them."""
+    # Look for a matching opposite transaction in the target account
+    match = db.execute(
+        select(Transaction).where(
+            Transaction.account_id == other_account_id,
+            Transaction.date == txn.date,
+            func.abs(Transaction.amount + txn.amount) < 0.01,
+            Transaction.transfer_link_id.is_(None),
+        ).limit(1)
+    ).scalar_one_or_none()
+
+    if match:
+        if txn.amount < 0:
+            link = TransferLink(
+                from_transaction_id=txn.id,
+                to_transaction_id=match.id,
+                amount=abs(txn.amount),
+                date=txn.date,
+                confidence=1.0,
+                confirmed_by_user=True,
+            )
+        else:
+            link = TransferLink(
+                from_transaction_id=match.id,
+                to_transaction_id=txn.id,
+                amount=abs(txn.amount),
+                date=txn.date,
+                confidence=1.0,
+                confirmed_by_user=True,
+            )
+        db.add(link)
+        db.flush()
+        txn.transfer_link_id = link.id
+        txn.is_transfer = True
+        match.transfer_link_id = link.id
+        match.is_transfer = True
 
 
 # ── Delete single transaction ────────────────────────────────────────
@@ -194,7 +269,6 @@ def bulk_set_category(
     category_id: int = Form(...),
     db: Session = Depends(get_db),
 ):
-    """Set category on multiple transactions and learn from it."""
     ids = [int(x) for x in txn_ids.split(",") if x.strip().isdigit()]
     txns = db.execute(
         select(Transaction).where(Transaction.id.in_(ids))
@@ -248,7 +322,6 @@ def auto_categorize(
     db: Session = Depends(get_db),
 ):
     stats = categorize_batch(db, limit=limit)
-    # Redirect back with stats as query params
     return RedirectResponse(
         url=f"/transactions?auto_cat_total={stats['total']}"
             f"&auto_cat_rules={stats['rules']}"

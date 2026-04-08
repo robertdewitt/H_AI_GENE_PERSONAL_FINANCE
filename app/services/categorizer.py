@@ -55,7 +55,9 @@ KEYWORD_MAP = {
     "salary": ["payroll", "direct deposit", "salary", "wage"],
     "interest": ["interest earned", "interest payment", "apy"],
     "account transfer": ["transfer", "xfer", "ach", "wire", "zelle",
-                         "venmo", "paypal"],
+                         "venmo", "paypal", "payment thank you",
+                         "online payment", "automatic payment",
+                         "autopay", "payment received", "payment from"],
 }
 
 

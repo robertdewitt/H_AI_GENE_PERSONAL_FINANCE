@@ -214,6 +214,17 @@ def import_transactions(
         if is_liability:
             amount_val = -amount_val
 
+        # Auto-detect payments on liability accounts as transfers
+        is_payment_transfer = False
+        if is_liability and amount_val > 0:
+            desc_lower = desc_val.lower()
+            payment_keywords = [
+                "payment", "autopay", "thank you", "pymt",
+                "online pmt", "ach", "transfer",
+            ]
+            if any(kw in desc_lower for kw in payment_keywords):
+                is_payment_transfer = True
+
         txn = Transaction(
             account_id=account_id,
             date=date_val,
@@ -223,6 +234,7 @@ def import_transactions(
             balance_after=balance_val,
             import_batch_id=batch.id,
             raw_data=raw,
+            is_transfer=is_payment_transfer,
         )
         pending_objects.append(txn)
         imported += 1

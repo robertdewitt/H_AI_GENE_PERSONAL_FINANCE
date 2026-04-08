@@ -7,54 +7,93 @@
     <p>{{ "{:,}".format(total_count) }} transactions found</p>
 </hgroup>
 
-<form method="get" action="/transactions" class="filter-bar">
-    <div>
-        <label for="account_id">Account</label>
-        <select id="account_id" name="account_id">
-            <option value="">All Accounts</option>
-            {% for acct in accounts %}
-            <option value="{{ acct.id }}" {% if filters.account_id == acct.id %}selected{% endif %}>
-                {{ acct.name }}
-            </option>
-            {% endfor %}
-        </select>
-    </div>
-    <div>
-        <label for="category_id">Category</label>
-        <select id="category_id" name="category_id">
-            <option value="">All</option>
-            {% for cat in categories %}
-            <option value="{{ cat.id }}" {% if filters.category_id == cat.id %}selected{% endif %}>
-                {{ cat.name }}
-            </option>
-            {% endfor %}
-        </select>
-    </div>
-    <div>
-        <label for="date_from">From</label>
-        <input type="date" id="date_from" name="date_from" value="{{ filters.date_from }}">
-    </div>
-    <div>
-        <label for="date_to">To</label>
-        <input type="date" id="date_to" name="date_to" value="{{ filters.date_to }}">
-    </div>
-    <div>
-        <label for="search">Search</label>
-        <input type="text" id="search" name="search" value="{{ filters.search }}" placeholder="Description...">
-    </div>
-    <div>
-        <label>&nbsp;</label>
-        <button type="submit">Filter</button>
-    </div>
-</form>
+<details {% if filters.amount_min or filters.amount_max or filters.currency or filters.is_transfer or filters.uncategorized %}open{% endif %}>
+    <summary role="button" class="outline" style="margin-bottom:1rem">Filters</summary>
+    <form method="get" action="/transactions">
+        <div class="grid">
+            <div>
+                <label for="account_id">Account</label>
+                <select id="account_id" name="account_id">
+                    <option value="">All Accounts</option>
+                    {% for acct in accounts %}
+                    <option value="{{ acct.id }}" {% if filters.account_id == acct.id %}selected{% endif %}>
+                        {{ acct.name }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="category_id">Category</label>
+                <select id="category_id" name="category_id">
+                    <option value="">All</option>
+                    {% for cat in categories %}
+                    <option value="{{ cat.id }}" {% if filters.category_id == cat.id %}selected{% endif %}>
+                        {{ cat.name }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label>
+                    <input type="checkbox" name="uncategorized" value="true"
+                           {% if filters.uncategorized %}checked{% endif %}>
+                    Uncategorized only
+                </label>
+            </div>
+        </div>
+        <div class="grid">
+            <div>
+                <label for="date_from">Date from</label>
+                <input type="date" id="date_from" name="date_from" value="{{ filters.date_from }}">
+            </div>
+            <div>
+                <label for="date_to">Date to</label>
+                <input type="date" id="date_to" name="date_to" value="{{ filters.date_to }}">
+            </div>
+            <div>
+                <label for="search">Description</label>
+                <input type="text" id="search" name="search" value="{{ filters.search }}" placeholder="Search...">
+            </div>
+        </div>
+        <div class="grid">
+            <div>
+                <label for="amount_min">Amount min</label>
+                <input type="number" id="amount_min" name="amount_min" step="0.01" value="{{ filters.amount_min }}" placeholder="-1000">
+            </div>
+            <div>
+                <label for="amount_max">Amount max</label>
+                <input type="number" id="amount_max" name="amount_max" step="0.01" value="{{ filters.amount_max }}" placeholder="5000">
+            </div>
+            <div>
+                <label for="currency">Currency</label>
+                <select id="currency" name="currency">
+                    <option value="">All</option>
+                    {% for ccy in currencies %}
+                    <option value="{{ ccy }}" {% if filters.currency == ccy %}selected{% endif %}>{{ ccy }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="is_transfer">Transfer</label>
+                <select id="is_transfer" name="is_transfer">
+                    <option value="">All</option>
+                    <option value="true" {% if filters.is_transfer == 'true' %}selected{% endif %}>Transfers only</option>
+                    <option value="false" {% if filters.is_transfer == 'false' %}selected{% endif %}>Non-transfers</option>
+                </select>
+            </div>
+        </div>
+        <div style="display:flex;gap:0.5rem">
+            <button type="submit">Apply Filters</button>
+            <a href="/transactions" role="button" class="outline secondary">Clear</a>
+        </div>
+    </form>
+</details>
 
-<div class="grid" style="margin-bottom:1rem">
-    <div>
-        <form method="post" action="/transactions/auto-categorize" style="display:inline">
-            <input type="hidden" name="limit" value="500">
-            <button type="submit" class="outline" style="margin:0">Auto-Categorize Uncategorized</button>
-        </form>
-    </div>
+<div style="display:flex;gap:0.5rem;margin-bottom:1rem;align-items:center">
+    <form method="post" action="/transactions/auto-categorize" style="display:inline;margin:0">
+        <input type="hidden" name="limit" value="500">
+        <button type="submit" class="outline" style="margin:0">Auto-Categorize Uncategorized</button>
+    </form>
 </div>
 
 {% if transactions %}
@@ -72,6 +111,7 @@
     </div>
 </form>
 
+<div style="overflow-x:auto">
 <table>
     <thead>
         <tr>
@@ -80,7 +120,9 @@
             <th>Account</th>
             <th>Description</th>
             <th>Category</th>
+            <th>CCY</th>
             <th style="text-align:right">Amount</th>
+            <th>Transfer</th>
             <th></th>
         </tr>
     </thead>
@@ -88,30 +130,41 @@
         {% for txn in transactions %}
         <tr>
             <td><input type="checkbox" class="txn-check" value="{{ txn.id }}"></td>
-            <td>{{ txn.date.strftime("%b %d, %Y") }}</td>
+            <td style="white-space:nowrap">{{ txn.date.strftime("%b %d, %Y") }}</td>
             <td><a href="/accounts/{{ txn.account_id }}">{{ txn.account.name }}</a></td>
+            <td>{{ txn.description }}</td>
             <td>
-                {{ txn.description }}
-                {% if txn.is_transfer %}<span class="badge badge-transfer">Transfer</span>{% endif %}
+                {% if txn.category %}
+                <span class="badge">{{ txn.category.name }}</span>
+                {% else %}
+                <span style="color:var(--pico-muted-color)">—</span>
+                {% endif %}
             </td>
-            <td>{{ txn.category.name if txn.category else "—" }}</td>
-            <td style="text-align:right" class="txn-amount {% if txn.amount >= 0 %}positive{% else %}negative{% endif %}">
+            <td>{{ txn.original_currency }}</td>
+            <td style="text-align:right;white-space:nowrap" class="txn-amount {% if txn.amount >= 0 %}positive{% else %}negative{% endif %}">
                 {{ txn.formatted_amount }}
+            </td>
+            <td>
+                {% if txn.is_transfer %}
+                <span class="badge badge-transfer">Transfer</span>
+                {% endif %}
             </td>
             <td><a href="/transactions/{{ txn.id }}/edit" style="font-size:0.85rem">Edit</a></td>
         </tr>
         {% endfor %}
     </tbody>
 </table>
+</div>
 
 {% if total_pages > 1 %}
 <div class="pagination">
+    {% set qs %}account_id={{ filters.account_id or '' }}&category_id={{ filters.category_id or '' }}&date_from={{ filters.date_from }}&date_to={{ filters.date_to }}&search={{ filters.search }}&is_transfer={{ filters.is_transfer }}&amount_min={{ filters.amount_min }}&amount_max={{ filters.amount_max }}&currency={{ filters.currency }}{% if filters.uncategorized %}&uncategorized=true{% endif %}{% endset %}
     {% if page > 1 %}
-    <a href="/transactions?page={{ page - 1 }}&account_id={{ filters.account_id or '' }}&category_id={{ filters.category_id or '' }}&date_from={{ filters.date_from }}&date_to={{ filters.date_to }}&search={{ filters.search }}">&larr; Previous</a>
+    <a href="/transactions?page={{ page - 1 }}&{{ qs }}">&larr; Previous</a>
     {% endif %}
     <span>Page {{ page }} of {{ total_pages }}</span>
     {% if page < total_pages %}
-    <a href="/transactions?page={{ page + 1 }}&account_id={{ filters.account_id or '' }}&category_id={{ filters.category_id or '' }}&date_from={{ filters.date_from }}&date_to={{ filters.date_to }}&search={{ filters.search }}">Next &rarr;</a>
+    <a href="/transactions?page={{ page + 1 }}&{{ qs }}">Next &rarr;</a>
     {% endif %}
 </div>
 {% endif %}
@@ -119,7 +172,7 @@
 {% else %}
 <div class="empty-state">
     <h3>No transactions found</h3>
-    <p>{% if filters.search or filters.account_id or filters.date_from or filters.date_to %}Try adjusting your filters.{% else %}<a href="/import">Import transactions</a> to get started.{% endif %}</p>
+    <p>{% if filters.search or filters.account_id or filters.date_from or filters.date_to or filters.amount_min or filters.amount_max %}Try adjusting your filters.{% else %}<a href="/import">Import transactions</a> to get started.{% endif %}</p>
 </div>
 {% endif %}
 {% endblock %}
