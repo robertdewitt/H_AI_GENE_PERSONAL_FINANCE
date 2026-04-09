@@ -168,6 +168,7 @@ def transactions_list(
 def transaction_edit_form(
     request: Request,
     txn_id: int,
+    return_url: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
     txn = db.get(Transaction, txn_id)
@@ -185,6 +186,7 @@ def transaction_edit_form(
         "txn": txn,
         "categories": categories,
         "accounts": accounts,
+        "return_url": return_url or f"/accounts/{txn.account_id}",
     })
 
 
@@ -197,6 +199,7 @@ def transaction_update(
     category_id: str = Form(""),
     is_transfer: bool = Form(False),
     transfer_account_id: str = Form(""),
+    return_url: str = Form(""),
     db: Session = Depends(get_db),
 ):
     txn = db.get(Transaction, txn_id)
@@ -212,23 +215,20 @@ def transaction_update(
     new_cat_id = int(category_id) if category_id.strip() else None
     txn.category_id = new_cat_id
 
-    # Learn from user correction if category changed
     if new_cat_id and new_cat_id != old_category_id:
         learn_from_correction(db, description, new_cat_id)
 
-    # Handle transfer link
     if is_transfer and transfer_account_id.strip():
         dest_account_id = int(transfer_account_id)
         if dest_account_id != txn.account_id:
             _link_transfer(db, txn, dest_account_id)
     elif not is_transfer and txn.transfer_link_id:
-        # Unlink if no longer a transfer
         txn.transfer_link_id = None
 
     db.commit()
-    return RedirectResponse(
-        url=f"/accounts/{txn.account_id}", status_code=303
-    )
+
+    redirect_to = return_url.strip() if return_url else f"/accounts/{txn.account_id}"
+    return RedirectResponse(url=redirect_to, status_code=303)
 
 
 def _link_transfer(db: Session, txn: Transaction, other_account_id: int):
@@ -299,6 +299,7 @@ def transaction_delete(txn_id: int, db: Session = Depends(get_db)):
 def bulk_set_category(
     txn_ids: str = Form(...),
     category_id: int = Form(...),
+    return_url: str = Form("/transactions"),
     db: Session = Depends(get_db),
 ):
     ids = [int(x) for x in txn_ids.split(",") if x.strip().isdigit()]
@@ -313,12 +314,13 @@ def bulk_set_category(
             learn_from_correction(db, txn.description, category_id)
 
     db.commit()
-    return RedirectResponse(url="/transactions", status_code=303)
+    return RedirectResponse(url=return_url, status_code=303)
 
 
 @router.post("/bulk/delete")
 def bulk_delete(
     txn_ids: str = Form(...),
+    return_url: str = Form("/transactions"),
     db: Session = Depends(get_db),
 ):
     ids = [int(x) for x in txn_ids.split(",") if x.strip().isdigit()]
@@ -326,13 +328,14 @@ def bulk_delete(
         Transaction.__table__.delete().where(Transaction.id.in_(ids))
     )
     db.commit()
-    return RedirectResponse(url="/transactions", status_code=303)
+    return RedirectResponse(url=return_url, status_code=303)
 
 
 @router.post("/bulk/toggle-transfer")
 def bulk_toggle_transfer(
     txn_ids: str = Form(...),
     is_transfer: bool = Form(True),
+    return_url: str = Form("/transactions"),
     db: Session = Depends(get_db),
 ):
     ids = [int(x) for x in txn_ids.split(",") if x.strip().isdigit()]
@@ -342,7 +345,7 @@ def bulk_toggle_transfer(
     for txn in txns:
         txn.is_transfer = is_transfer
     db.commit()
-    return RedirectResponse(url="/transactions", status_code=303)
+    return RedirectResponse(url=return_url, status_code=303)
 
 
 # ── Auto-categorize ─────────────────────────────────────────────────

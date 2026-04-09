@@ -1,8 +1,11 @@
-Add agentic date format auto-detection, fix pagination and bulk category edit
+Add JSON API for LLM agents, preserve filters on edit, update README
 
-- Smart date detector scans file data to determine DD/MM vs MM/DD format
-  using multiple signals: values >12, chronological ordering, distribution
-- Shows detection reasoning and confidence on import mapping page with
-  user override option (auto/UK/US radio buttons)
-- Fix pagination passing empty filter params causing 422 validation errors
-- Fix bulk category edit JS bug where dropdown value was lost before submit
+- New /api/v1/ JSON API with 9 endpoints for LLM agent consumption:
+  accounts, transactions, categories, spending analysis, net worth,
+  top merchants, monthly trends, and comprehensive agent context
+- Agent context endpoint provides single-call financial snapshot with
+  spending patterns, recurring expenses, and data quality metrics
+- Transaction edits and bulk operations now redirect back to the same
+  filtered page instead of resetting filters
+- README rewritten with architecture diagram, LLM integration docs,
+  API endpoint table, and updated project structure

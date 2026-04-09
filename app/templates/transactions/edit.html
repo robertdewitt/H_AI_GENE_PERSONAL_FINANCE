@@ -8,6 +8,7 @@
 </hgroup>
 
 <form method="post" action="/transactions/{{ txn.id }}/edit">
+    <input type="hidden" name="return_url" value="{{ return_url }}">
     <div class="grid">
         <div>
             <label for="date">Date *</label>
@@ -62,7 +63,7 @@
 
     <div class="btn-group">
         <button type="submit">Save Changes</button>
-        <a href="/accounts/{{ txn.account_id }}" role="button" class="outline">Cancel</a>
+        <a href="{{ return_url }}" role="button" class="outline">Cancel</a>
     </div>
 </form>
 

@@ -149,7 +149,7 @@
                 <span class="badge badge-transfer">Transfer</span>
                 {% endif %}
             </td>
-            <td><a href="/transactions/{{ txn.id }}/edit" style="font-size:0.85rem">Edit</a></td>
+            <td><a href="/transactions/{{ txn.id }}/edit?return_url={{ request.scope.path }}{% if request.query_string %}%3F{{ request.query_string.decode() | urlencode }}{% endif %}" style="font-size:0.85rem">Edit</a></td>
         </tr>
         {% endfor %}
     </tbody>
@@ -230,6 +230,12 @@ function bulkAction(url) {
     idsInput.name = 'txn_ids';
     idsInput.value = ids.join(',');
     form.appendChild(idsInput);
+
+    const returnInput = document.createElement('input');
+    returnInput.type = 'hidden';
+    returnInput.name = 'return_url';
+    returnInput.value = window.location.pathname + window.location.search;
+    form.appendChild(returnInput);
 
     if (url.includes('categorize')) {
         const catInput = document.createElement('input');

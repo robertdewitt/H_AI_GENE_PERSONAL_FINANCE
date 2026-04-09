@@ -13,7 +13,7 @@ from app.database import get_db, init_db
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.routers import (
-    accounts, transactions, imports, transfers, net_worth,
+    accounts, api, transactions, imports, transfers, net_worth,
     paychecks, valuations, fx, categories,
 )
 from app.services.net_worth_service import compute_net_worth, compute_net_worth_series
@@ -47,6 +47,7 @@ app.include_router(paychecks.router)
 app.include_router(valuations.router)
 app.include_router(fx.router)
 app.include_router(categories.router)
+app.include_router(api.router)
 
 
 @app.get("/", response_class=HTMLResponse)
