@@ -59,24 +59,46 @@ def _build_filters(
     return clauses
 
 
+def _safe_int(val: str | None) -> int | None:
+    if not val or not val.strip():
+        return None
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
+
+
+def _safe_float(val: str | None) -> float | None:
+    if not val or not val.strip():
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
 @router.get("", response_class=HTMLResponse)
 def transactions_list(
     request: Request,
-    account_id: int | None = Query(None),
-    category_id: int | None = Query(None),
+    account_id: str | None = Query(None),
+    category_id: str | None = Query(None),
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
     search: str | None = Query(None),
     is_transfer: str | None = Query(None),
-    amount_min: float | None = Query(None),
-    amount_max: float | None = Query(None),
+    amount_min: str | None = Query(None),
+    amount_max: str | None = Query(None),
     currency: str | None = Query(None),
     uncategorized: bool | None = Query(None),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=10, le=200),
     db: Session = Depends(get_db),
 ):
-    # Coerce is_transfer from string to bool | None
+    account_id_val = _safe_int(account_id)
+    category_id_val = _safe_int(category_id)
+    amount_min_val = _safe_float(amount_min)
+    amount_max_val = _safe_float(amount_max)
+
     transfer_flag = None
     if is_transfer == "true":
         transfer_flag = True
@@ -84,8 +106,9 @@ def transactions_list(
         transfer_flag = False
 
     clauses = _build_filters(
-        account_id, category_id, date_from, date_to, search, transfer_flag,
-        amount_min, amount_max, currency, uncategorized,
+        account_id_val, category_id_val, date_from, date_to, search,
+        transfer_flag, amount_min_val, amount_max_val, currency,
+        uncategorized,
     )
 
     total_count = db.execute(
@@ -107,7 +130,6 @@ def transactions_list(
         select(Category).order_by(Category.name)
     ).scalars().all()
 
-    # Distinct currencies for filter dropdown
     currencies = db.execute(
         select(Transaction.original_currency)
         .distinct()
@@ -122,14 +144,14 @@ def transactions_list(
         "categories": categories,
         "currencies": currencies,
         "filters": {
-            "account_id": account_id,
-            "category_id": category_id,
+            "account_id": account_id_val,
+            "category_id": category_id_val,
             "date_from": date_from or "",
             "date_to": date_to or "",
             "search": search or "",
             "is_transfer": is_transfer or "",
-            "amount_min": amount_min if amount_min is not None else "",
-            "amount_max": amount_max if amount_max is not None else "",
+            "amount_min": amount_min_val if amount_min_val is not None else "",
+            "amount_max": amount_max_val if amount_max_val is not None else "",
             "currency": currency or "",
             "uncategorized": uncategorized,
         },

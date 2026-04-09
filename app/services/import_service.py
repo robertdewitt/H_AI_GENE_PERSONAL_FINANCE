@@ -1,6 +1,9 @@
 """Transaction import from CSV / XLS — optimized for 1-10M row scale."""
 import json
 import logging
+import re
+from collections import Counter
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -13,16 +16,281 @@ from app.models.transaction import Transaction
 
 log = logging.getLogger(__name__)
 
-COMMON_DATE_FORMATS = [
+DATE_FORMATS_DAYFIRST = [
+    "%Y-%m-%d",
+    "%d/%m/%Y",
+    "%d/%m/%y",
+    "%d-%m-%Y",
+    "%d-%m-%y",
+    "%d %b %Y",
+    "%d %B %Y",
+    "%Y/%m/%d",
+    "%b %d, %Y",
+    "%B %d, %Y",
+    "%m/%d/%Y",
+    "%m/%d/%y",
+]
+
+DATE_FORMATS_MONTHFIRST = [
     "%Y-%m-%d",
     "%m/%d/%Y",
     "%m/%d/%y",
-    "%d/%m/%Y",
     "%m-%d-%Y",
+    "%d/%m/%Y",
+    "%d/%m/%y",
     "%Y/%m/%d",
     "%b %d, %Y",
     "%B %d, %Y",
 ]
+
+_SEP_PATTERN = re.compile(r"^(\d{1,4})[/\-.](\d{1,2})[/\-.](\d{2,4})$")
+
+
+@dataclass
+class DateFormatDetection:
+    dayfirst: bool
+    confidence: str  # "high", "medium", "low"
+    reasoning: list[str] = field(default_factory=list)
+    sample_parsed: list[dict] = field(default_factory=list)
+    format_label: str = ""
+
+    def __post_init__(self):
+        if not self.format_label:
+            self.format_label = "DD/MM/YYYY" if self.dayfirst else "MM/DD/YYYY"
+
+
+def detect_date_format(
+    raw_values: list,
+    sample_size: int = 200,
+) -> DateFormatDetection:
+    """Scan date values and determine whether they are day-first or month-first.
+
+    Uses multiple signals: values > 12 that can only be a day, consistency
+    of sequential ordering, and statistical spread of each position.
+    """
+    cleaned = []
+    for v in raw_values:
+        if pd.isna(v):
+            continue
+        s = str(v).strip()
+        if s:
+            cleaned.append(s)
+    if not cleaned:
+        return DateFormatDetection(
+            dayfirst=settings.date_dayfirst,
+            confidence="low",
+            reasoning=["No date values found; using default setting."],
+        )
+
+    sample = cleaned[:sample_size]
+    reasoning: list[str] = []
+
+    # Named-month detection (e.g. "04 Mar 2025", "Mar 04, 2025")
+    named_month_count = sum(
+        1 for s in sample
+        if re.search(r"[A-Za-z]{3,}", s)
+    )
+    if named_month_count > len(sample) * 0.8:
+        reasoning.append(
+            f"{named_month_count}/{len(sample)} dates contain month names "
+            f"— format is unambiguous."
+        )
+        return DateFormatDetection(
+            dayfirst=False,
+            confidence="high",
+            reasoning=reasoning,
+            format_label="Named month (e.g. Mar 04, 2025)",
+        )
+
+    # ISO detection (YYYY-MM-DD or YYYY/MM/DD)
+    iso_count = sum(1 for s in sample if re.match(r"^\d{4}[/\-]", s))
+    if iso_count > len(sample) * 0.8:
+        reasoning.append(
+            f"{iso_count}/{len(sample)} dates start with 4-digit year "
+            f"— ISO/year-first format."
+        )
+        return DateFormatDetection(
+            dayfirst=False,
+            confidence="high",
+            reasoning=reasoning,
+            format_label="YYYY-MM-DD (ISO)",
+        )
+
+    # Separator-based analysis (DD/MM/YY, MM/DD/YYYY, etc.)
+    part1_vals: list[int] = []
+    part2_vals: list[int] = []
+    parsed_rows: list[tuple[int, int, int]] = []
+
+    for s in sample:
+        m = _SEP_PATTERN.match(s)
+        if m:
+            a, b, c = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if a > 31:
+                continue  # year-first, already handled
+            part1_vals.append(a)
+            part2_vals.append(b)
+            parsed_rows.append((a, b, c))
+
+    if not parsed_rows:
+        reasoning.append(
+            "Could not extract numeric date parts; "
+            "falling back to config default."
+        )
+        return DateFormatDetection(
+            dayfirst=settings.date_dayfirst,
+            confidence="low",
+            reasoning=reasoning,
+        )
+
+    reasoning.append(f"Scanned {len(parsed_rows)} numeric dates.")
+
+    # Signal 1: Values > 12 can ONLY be a day, never a month
+    p1_over_12 = sum(1 for v in part1_vals if v > 12)
+    p2_over_12 = sum(1 for v in part2_vals if v > 12)
+
+    if p1_over_12 > 0 and p2_over_12 == 0:
+        reasoning.append(
+            f"Position 1 has {p1_over_12} values > 12 (must be day); "
+            f"position 2 has none → day-first (DD/MM)."
+        )
+        return _build_result(
+            dayfirst=True, confidence="high",
+            reasoning=reasoning, sample=sample,
+        )
+
+    if p2_over_12 > 0 and p1_over_12 == 0:
+        reasoning.append(
+            f"Position 2 has {p2_over_12} values > 12 (must be day); "
+            f"position 1 has none → month-first (MM/DD)."
+        )
+        return _build_result(
+            dayfirst=False, confidence="high",
+            reasoning=reasoning, sample=sample,
+        )
+
+    if p1_over_12 > 0 and p2_over_12 > 0:
+        reasoning.append(
+            f"Both positions have values > 12 ({p1_over_12} / {p2_over_12}) "
+            f"— mixed formats or parsing error. Using majority signal."
+        )
+        dayfirst = p1_over_12 >= p2_over_12
+        return _build_result(
+            dayfirst=dayfirst, confidence="medium",
+            reasoning=reasoning, sample=sample,
+        )
+
+    # Signal 2: All values ≤ 12 in both positions — truly ambiguous.
+    # Use value range: days typically span 1-28/31, months 1-12.
+    # The position with wider spread is more likely to be the day.
+    p1_unique = len(set(part1_vals))
+    p2_unique = len(set(part2_vals))
+    p1_max = max(part1_vals)
+    p2_max = max(part2_vals)
+
+    reasoning.append(
+        f"All values ≤ 12 in both positions — ambiguous. "
+        f"Analyzing distribution: "
+        f"pos1 range 1–{p1_max} ({p1_unique} unique), "
+        f"pos2 range 1–{p2_max} ({p2_unique} unique)."
+    )
+
+    # Signal 3: If dates should be roughly chronological, try both
+    # interpretations and see which gives better ordering
+    dmy_sorted = 0
+    mdy_sorted = 0
+    for i in range(1, len(parsed_rows)):
+        a1, b1, c1 = parsed_rows[i - 1]
+        a2, b2, c2 = parsed_rows[i]
+        # As day-first: date is (year=c, month=b, day=a)
+        dmy1 = (c1, b1, a1)
+        dmy2 = (c2, b2, a2)
+        if dmy2 >= dmy1:
+            dmy_sorted += 1
+        # As month-first: date is (year=c, month=a, day=b)
+        mdy1 = (c1, a1, b1)
+        mdy2 = (c2, a2, b2)
+        if mdy2 >= mdy1:
+            mdy_sorted += 1
+
+    total_pairs = max(len(parsed_rows) - 1, 1)
+    dmy_pct = dmy_sorted / total_pairs
+    mdy_pct = mdy_sorted / total_pairs
+
+    reasoning.append(
+        f"Chronological ordering test: "
+        f"DD/MM interprets {dmy_pct:.0%} in order, "
+        f"MM/DD interprets {mdy_pct:.0%} in order."
+    )
+
+    if abs(dmy_pct - mdy_pct) > 0.15:
+        dayfirst = dmy_pct > mdy_pct
+        reasoning.append(
+            f"{'DD/MM' if dayfirst else 'MM/DD'} gives significantly "
+            f"better chronological ordering."
+        )
+        return _build_result(
+            dayfirst=dayfirst, confidence="medium",
+            reasoning=reasoning, sample=sample,
+        )
+
+    # Signal 4: Position with more unique values is likely the day
+    if p1_unique != p2_unique:
+        dayfirst = p1_unique > p2_unique
+        reasoning.append(
+            f"Position {'1' if dayfirst else '2'} has more unique values "
+            f"({max(p1_unique, p2_unique)} vs {min(p1_unique, p2_unique)}), "
+            f"likely the day field → {'DD/MM' if dayfirst else 'MM/DD'}."
+        )
+        return _build_result(
+            dayfirst=dayfirst, confidence="low",
+            reasoning=reasoning, sample=sample,
+        )
+
+    # Truly indeterminate — use config default
+    reasoning.append(
+        f"Cannot distinguish; defaulting to "
+        f"{'DD/MM (UK)' if settings.date_dayfirst else 'MM/DD (US)'}."
+    )
+    return _build_result(
+        dayfirst=settings.date_dayfirst, confidence="low",
+        reasoning=reasoning, sample=sample,
+    )
+
+
+def _build_result(
+    dayfirst: bool,
+    confidence: str,
+    reasoning: list[str],
+    sample: list[str],
+) -> DateFormatDetection:
+    sample_parsed = []
+    for s in sample[:5]:
+        dmy = _try_parse(s, dayfirst=True)
+        mdy = _try_parse(s, dayfirst=False)
+        sample_parsed.append({
+            "raw": s,
+            "as_dmy": dmy.strftime("%d %b %Y") if dmy else "?",
+            "as_mdy": mdy.strftime("%d %b %Y") if mdy else "?",
+        })
+    return DateFormatDetection(
+        dayfirst=dayfirst,
+        confidence=confidence,
+        reasoning=reasoning,
+        sample_parsed=sample_parsed,
+    )
+
+
+def _try_parse(value: str, dayfirst: bool) -> datetime | None:
+    fmts = DATE_FORMATS_DAYFIRST if dayfirst else DATE_FORMATS_MONTHFIRST
+    for fmt in fmts:
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    try:
+        return pd.to_datetime(value, dayfirst=dayfirst).to_pydatetime()
+    except Exception:
+        return None
 
 CURRENCY_SYMBOLS = {
     "$": "USD", "€": "EUR", "£": "GBP", "¥": "JPY",
@@ -102,17 +370,23 @@ def detect_columns(df: pd.DataFrame) -> dict[str, str | None]:
     return mapping
 
 
-def parse_date(value) -> datetime | None:
+def parse_date(value, dayfirst: bool | None = None) -> datetime | None:
     if pd.isna(value):
         return None
     value = str(value).strip()
-    for fmt in COMMON_DATE_FORMATS:
+
+    if dayfirst is None:
+        dayfirst = settings.date_dayfirst
+
+    formats = DATE_FORMATS_DAYFIRST if dayfirst else DATE_FORMATS_MONTHFIRST
+
+    for fmt in formats:
         try:
             return datetime.strptime(value, fmt)
         except ValueError:
             continue
     try:
-        return pd.to_datetime(value).to_pydatetime()
+        return pd.to_datetime(value, dayfirst=dayfirst).to_pydatetime()
     except Exception:
         return None
 
@@ -153,16 +427,33 @@ def import_transactions(
     column_mapping: dict[str, str],
     account_currency: str = "USD",
     is_liability: bool = False,
+    dayfirst: bool | None = None,
 ) -> ImportBatch:
     """Import transactions with batch flushing for large files.
 
     For liability accounts (credit cards, loans, mortgages), positive amounts
     in the file represent charges/debits and are stored as negative values
     so that the account balance correctly reflects money owed.
+
+    If *dayfirst* is None the format is auto-detected from the date column.
     """
     df = read_file(filepath)
     path = Path(filepath)
     total_rows = len(df)
+
+    # Auto-detect date format from the data if not explicitly provided
+    date_col_name = column_mapping.get("date", "")
+    if dayfirst is None and date_col_name in df.columns:
+        detection = detect_date_format(df[date_col_name].tolist())
+        dayfirst = detection.dayfirst
+        log.info(
+            "Date format auto-detected: %s (%s confidence) — %s",
+            detection.format_label, detection.confidence,
+            "; ".join(detection.reasoning),
+        )
+
+    if dayfirst is None:
+        dayfirst = settings.date_dayfirst
 
     batch = ImportBatch(
         account_id=account_id,
@@ -183,7 +474,9 @@ def import_transactions(
     currency_col = column_mapping.get("currency")
 
     for _, row in df.iterrows():
-        date_val = parse_date(row.get(column_mapping.get("date", ""), ""))
+        date_val = parse_date(
+            row.get(date_col_name, ""), dayfirst=dayfirst,
+        )
         desc_val = str(row.get(column_mapping.get("description", ""), "")).strip()
         amount_val = parse_amount(row.get(column_mapping.get("amount", ""), ""))
 
@@ -267,9 +560,15 @@ def preview_file(filepath: str, max_rows: int = 10) -> dict:
     mapping = detect_columns(df)
     preview_df = df.head(max_rows)
 
+    # Auto-detect date format from the mapped date column
+    date_detection = None
+    if mapping.get("date") and mapping["date"] in df.columns:
+        date_detection = detect_date_format(df[mapping["date"]].tolist())
+
     return {
         "columns": list(df.columns),
         "mapping": mapping,
         "preview": preview_df.fillna("").to_dict(orient="records"),
         "total_rows": len(df),
+        "date_detection": date_detection,
     }

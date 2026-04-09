@@ -158,13 +158,24 @@
 
 {% if total_pages > 1 %}
 <div class="pagination">
-    {% set qs %}account_id={{ filters.account_id or '' }}&category_id={{ filters.category_id or '' }}&date_from={{ filters.date_from }}&date_to={{ filters.date_to }}&search={{ filters.search }}&is_transfer={{ filters.is_transfer }}&amount_min={{ filters.amount_min }}&amount_max={{ filters.amount_max }}&currency={{ filters.currency }}{% if filters.uncategorized %}&uncategorized=true{% endif %}{% endset %}
+    {% set qs_parts = [] %}
+    {% if filters.account_id %}{% set _ = qs_parts.append("account_id=" ~ filters.account_id) %}{% endif %}
+    {% if filters.category_id %}{% set _ = qs_parts.append("category_id=" ~ filters.category_id) %}{% endif %}
+    {% if filters.date_from %}{% set _ = qs_parts.append("date_from=" ~ filters.date_from) %}{% endif %}
+    {% if filters.date_to %}{% set _ = qs_parts.append("date_to=" ~ filters.date_to) %}{% endif %}
+    {% if filters.search %}{% set _ = qs_parts.append("search=" ~ filters.search) %}{% endif %}
+    {% if filters.is_transfer %}{% set _ = qs_parts.append("is_transfer=" ~ filters.is_transfer) %}{% endif %}
+    {% if filters.amount_min is not none and filters.amount_min != "" %}{% set _ = qs_parts.append("amount_min=" ~ filters.amount_min) %}{% endif %}
+    {% if filters.amount_max is not none and filters.amount_max != "" %}{% set _ = qs_parts.append("amount_max=" ~ filters.amount_max) %}{% endif %}
+    {% if filters.currency %}{% set _ = qs_parts.append("currency=" ~ filters.currency) %}{% endif %}
+    {% if filters.uncategorized %}{% set _ = qs_parts.append("uncategorized=true") %}{% endif %}
+    {% set qs = qs_parts | join("&") %}
     {% if page > 1 %}
-    <a href="/transactions?page={{ page - 1 }}&{{ qs }}">&larr; Previous</a>
+    <a href="/transactions?page={{ page - 1 }}{% if qs %}&{{ qs }}{% endif %}">&larr; Previous</a>
     {% endif %}
     <span>Page {{ page }} of {{ total_pages }}</span>
     {% if page < total_pages %}
-    <a href="/transactions?page={{ page + 1 }}&{{ qs }}">Next &rarr;</a>
+    <a href="/transactions?page={{ page + 1 }}{% if qs %}&{{ qs }}{% endif %}">Next &rarr;</a>
     {% endif %}
 </div>
 {% endif %}
@@ -208,6 +219,8 @@ function bulkAction(url) {
     const ids = getChecked();
     if (ids.length === 0) return;
 
+    const catVal = document.getElementById('bulkCategory').value;
+
     const form = document.getElementById('bulkForm');
     form.action = url;
     form.innerHTML = '';
@@ -222,7 +235,7 @@ function bulkAction(url) {
         const catInput = document.createElement('input');
         catInput.type = 'hidden';
         catInput.name = 'category_id';
-        catInput.value = document.getElementById('bulkCategory').value;
+        catInput.value = catVal;
         form.appendChild(catInput);
     }
     if (url.includes('toggle-transfer')) {

@@ -60,6 +60,85 @@
         </div>
     </div>
 
+    {% if date_detection %}
+    <article style="margin-top:1rem;padding:1rem;border-left:4px solid
+        {% if date_detection.confidence == 'high' %}var(--pico-ins-color){% elif date_detection.confidence == 'medium' %}var(--pico-mark-background-color){% else %}var(--pico-del-color){% endif %}">
+        <header style="margin-bottom:0.5rem">
+            <strong>Date Format Detection</strong>
+            <span style="float:right">
+                {% if date_detection.confidence == 'high' %}
+                <mark style="background:var(--pico-ins-color);color:white;padding:0.1rem 0.5rem;border-radius:4px">High Confidence</mark>
+                {% elif date_detection.confidence == 'medium' %}
+                <mark style="padding:0.1rem 0.5rem;border-radius:4px">Medium Confidence</mark>
+                {% else %}
+                <mark style="background:var(--pico-del-color);color:white;padding:0.1rem 0.5rem;border-radius:4px">Low Confidence</mark>
+                {% endif %}
+            </span>
+        </header>
+        <p style="margin-bottom:0.5rem">
+            Detected: <strong>{{ date_detection.format_label }}</strong>
+        </p>
+        <details style="margin-bottom:0.5rem">
+            <summary style="font-size:0.9rem">How did we decide?</summary>
+            <ul style="font-size:0.85rem;margin-top:0.5rem">
+                {% for reason in date_detection.reasoning %}
+                <li>{{ reason }}</li>
+                {% endfor %}
+            </ul>
+        </details>
+        {% if date_detection.sample_parsed %}
+        <details style="margin-bottom:0.5rem">
+            <summary style="font-size:0.9rem">Sample comparison</summary>
+            <table style="font-size:0.85rem;margin-top:0.5rem">
+                <thead>
+                    <tr><th>Raw</th><th>As DD/MM</th><th>As MM/DD</th></tr>
+                </thead>
+                <tbody>
+                    {% for s in date_detection.sample_parsed %}
+                    <tr>
+                        <td><code>{{ s.raw }}</code></td>
+                        <td {% if date_detection.dayfirst %}style="font-weight:bold;color:var(--pico-ins-color)"{% endif %}>{{ s.as_dmy }}</td>
+                        <td {% if not date_detection.dayfirst %}style="font-weight:bold;color:var(--pico-ins-color)"{% endif %}>{{ s.as_mdy }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </details>
+        {% endif %}
+        <fieldset style="margin-bottom:0">
+            <legend style="font-size:0.9rem">Date format</legend>
+            <label style="display:inline-flex;align-items:center;gap:0.3rem;margin-right:1.5rem">
+                <input type="radio" name="date_format" value="auto" checked>
+                Auto-detected ({{ date_detection.format_label }})
+            </label>
+            <label style="display:inline-flex;align-items:center;gap:0.3rem;margin-right:1.5rem">
+                <input type="radio" name="date_format" value="dmy">
+                DD/MM/YYYY (UK/EU)
+            </label>
+            <label style="display:inline-flex;align-items:center;gap:0.3rem">
+                <input type="radio" name="date_format" value="mdy">
+                MM/DD/YYYY (US)
+            </label>
+        </fieldset>
+    </article>
+    {% else %}
+    <fieldset style="margin-top:1rem">
+        <legend>Date Format</legend>
+        <label style="display:inline-flex;align-items:center;gap:0.3rem;margin-right:1.5rem">
+            <input type="radio" name="date_format" value="auto" checked>
+            Auto-detect
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:0.3rem;margin-right:1.5rem">
+            <input type="radio" name="date_format" value="dmy">
+            DD/MM/YYYY (UK/EU)
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:0.3rem">
+            <input type="radio" name="date_format" value="mdy">
+            MM/DD/YYYY (US)
+        </label>
+    </fieldset>
+    {% endif %}
+
     <h3>Preview</h3>
     <div class="column-preview">
         <table>

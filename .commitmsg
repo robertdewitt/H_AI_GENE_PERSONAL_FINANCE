@@ -1,11 +1,8 @@
-Add payment scanning, unmatched transfers, and redesigned transfer page
+Add agentic date format auto-detection, fix pagination and bulk category edit
 
-The transfer page was empty because pair detection requires transactions
-in at least two accounts.  This commit adds:
-
-- scan_and_flag_payments: scans liability accounts for payment-like
-  transactions and flags them as transfers even without a matching pair
-- list_unmatched_transfers: shows flagged transfers not yet linked
-- "Scan for Payments" button on the transfer review page
-- Unmatched Transfers section showing flagged but unlinked transactions
-- Helpful messaging explaining that pairs need multiple accounts
+- Smart date detector scans file data to determine DD/MM vs MM/DD format
+  using multiple signals: values >12, chronological ordering, distribution
+- Shows detection reasoning and confidence on import mapping page with
+  user override option (auto/UK/US radio buttons)
+- Fix pagination passing empty filter params causing 422 validation errors
+- Fix bulk category edit JS bug where dropdown value was lost before submit

@@ -54,6 +54,7 @@ async def upload_file(
         "preview": preview["preview"],
         "total_rows": preview["total_rows"],
         "accounts": accounts,
+        "date_detection": preview.get("date_detection"),
     })
 
 
@@ -67,6 +68,7 @@ def confirm_import(
     col_amount: str = Form(...),
     col_balance: str = Form(""),
     col_currency: str = Form(""),
+    date_format: str = Form("auto"),
     db: Session = Depends(get_db),
 ):
     mapping = {
@@ -79,6 +81,13 @@ def confirm_import(
     if col_currency.strip():
         mapping["currency"] = col_currency
 
+    dayfirst: bool | None = None
+    if date_format == "dmy":
+        dayfirst = True
+    elif date_format == "mdy":
+        dayfirst = False
+    # "auto" leaves dayfirst=None → import_transactions will auto-detect
+
     from app.models.account import LIABILITY_TYPES
     account = db.get(Account, account_id)
     acct_currency = account.currency if account else "USD"
@@ -88,6 +97,7 @@ def confirm_import(
         db, account_id, filepath, mapping,
         account_currency=acct_currency,
         is_liability=is_liability,
+        dayfirst=dayfirst,
     )
 
     # Auto-categorize the newly imported transactions

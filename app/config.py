@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     transfer_date_window_days: int = 3
     transfer_amount_tolerance: float = 0.01
 
+    # Date parsing — True = dd/mm (UK/EU), False = mm/dd (US)
+    date_dayfirst: bool = True
+
     # Import performance — rows flushed per batch for bulk inserts
     import_batch_size: int = 5000
 
