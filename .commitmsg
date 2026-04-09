@@ -1,11 +1,8 @@
-Add JSON API for LLM agents, preserve filters on edit, update README
+Skip duplicate transactions on import based on date, description, and amount
 
-- New /api/v1/ JSON API with 9 endpoints for LLM agent consumption:
-  accounts, transactions, categories, spending analysis, net worth,
-  top merchants, monthly trends, and comprehensive agent context
-- Agent context endpoint provides single-call financial snapshot with
-  spending patterns, recurring expenses, and data quality metrics
-- Transaction edits and bulk operations now redirect back to the same
-  filtered page instead of resetting filters
-- README rewritten with architecture diagram, LLM integration docs,
-  API endpoint table, and updated project structure
+- Pre-loads existing (date, description, amount) keys for the account into
+  a set for O(1) duplicate checks per row
+- Also detects in-file duplicates (same row appearing twice in one CSV)
+- Reports duplicate count in the import redirect and displays it on the
+  account detail page alongside imported/categorized counts
+- Dedup check uses final stored amount (after liability sign-flip)

@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -469,7 +470,24 @@ def import_transactions(
     batch_size = settings.import_batch_size
     imported = 0
     skipped = 0
+    duplicates = 0
     pending_objects: list[Transaction] = []
+
+    # Pre-load existing (date, description, amount) keys for this account
+    # so duplicate detection is O(1) per row instead of a DB query each time.
+    existing_rows = db.execute(
+        select(
+            Transaction.date,
+            Transaction.description,
+            Transaction.amount,
+        ).where(Transaction.account_id == account_id)
+    ).all()
+    existing_keys: set[tuple] = {
+        (r.date.strftime("%Y-%m-%d"), r.description.strip().lower(), round(r.amount, 2))
+        for r in existing_rows
+    }
+    # Also track keys added during this import to catch in-file duplicates
+    new_keys: set[tuple] = set()
 
     currency_col = column_mapping.get("currency")
 
@@ -483,6 +501,21 @@ def import_transactions(
         if date_val is None or amount_val is None or not desc_val:
             skipped += 1
             continue
+
+        # Flip sign for liabilities so charges are negative and payments positive
+        if is_liability:
+            amount_val = -amount_val
+
+        # Duplicate check uses the final stored amount
+        dedup_key = (
+            date_val.strftime("%Y-%m-%d"),
+            desc_val.strip().lower(),
+            round(amount_val, 2),
+        )
+        if dedup_key in existing_keys or dedup_key in new_keys:
+            duplicates += 1
+            continue
+        new_keys.add(dedup_key)
 
         balance_col = column_mapping.get("balance")
         balance_val = parse_amount(row.get(balance_col, "")) if balance_col else None
@@ -502,10 +535,6 @@ def import_transactions(
             {str(k): str(v) for k, v in row.items()},
             default=str,
         )
-
-        # Flip sign for liabilities so charges are negative and payments positive
-        if is_liability:
-            amount_val = -amount_val
 
         # Auto-detect payments on liability accounts as transfers
         is_payment_transfer = False
@@ -548,9 +577,10 @@ def import_transactions(
     db.refresh(batch)
 
     log.info(
-        "Import complete: %d imported, %d skipped, batch_id=%d",
-        imported, skipped, batch.id,
+        "Import complete: %d imported, %d skipped, %d duplicates, batch_id=%d",
+        imported, skipped, duplicates, batch.id,
     )
+    batch._duplicates_skipped = duplicates
     return batch
 
 

@@ -103,8 +103,10 @@ def confirm_import(
     # Auto-categorize the newly imported transactions
     cat_stats = categorize_batch(db, limit=batch.row_count + 100)
 
+    dupes = getattr(batch, "_duplicates_skipped", 0)
     return RedirectResponse(
         url=f"/accounts/{account_id}?imported={batch.row_count}"
+            f"&duplicates={dupes}"
             f"&categorized={cat_stats['rules'] + cat_stats['keywords'] + cat_stats['llm']}",
         status_code=303,
     )

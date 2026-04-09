@@ -2,6 +2,18 @@
 {% block title %}{{ account.name }} &mdash; Financial Hygiene{% endblock %}
 
 {% block content %}
+{% if request.query_params.get("imported") %}
+<article style="margin-bottom:1rem;padding:0.75rem 1rem;border-left:4px solid var(--pico-ins-color)">
+    <strong>Import complete:</strong>
+    {{ request.query_params.get("imported") }} transactions imported
+    {% if request.query_params.get("duplicates") and request.query_params.get("duplicates") != "0" %}
+    &bull; {{ request.query_params.get("duplicates") }} duplicates skipped
+    {% endif %}
+    {% if request.query_params.get("categorized") and request.query_params.get("categorized") != "0" %}
+    &bull; {{ request.query_params.get("categorized") }} auto-categorized
+    {% endif %}
+</article>
+{% endif %}
 <hgroup>
     <h1>{{ account.name }}</h1>
     <p>{{ account.display_type }}{% if account.institution %} &mdash; {{ account.institution }}{% endif %}
