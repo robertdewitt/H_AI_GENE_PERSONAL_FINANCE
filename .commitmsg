@@ -1,8 +1,3 @@
-Auto-detect header row in CSV/XLS imports, skip metadata rows above it
+Fix transactions route collision between bulk and single delete/edit
 
-- Scans first 30 lines for a row with >= 2 known column header keywords
-  (date, description, amount, balance, narrative, memo, etc.)
-- For CSVs, reads raw lines to avoid parser errors from ragged metadata
-- For XLS, uses pandas with header=None to scan
-- Metadata rows above the header (bank name, account number, period, etc.)
-  are automatically skipped
+Use int-constrained path params for single transaction routes so `/transactions/bulk/...` no longer matches `/{txn_id}/...` and fails with int parsing errors.

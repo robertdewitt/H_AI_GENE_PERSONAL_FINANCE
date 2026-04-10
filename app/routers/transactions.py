@@ -164,7 +164,7 @@ def transactions_list(
 
 # ── Single transaction edit ──────────────────────────────────────────
 
-@router.get("/{txn_id}/edit", response_class=HTMLResponse)
+@router.get("/{txn_id:int}/edit", response_class=HTMLResponse)
 def transaction_edit_form(
     request: Request,
     txn_id: int,
@@ -190,7 +190,7 @@ def transaction_edit_form(
     })
 
 
-@router.post("/{txn_id}/edit")
+@router.post("/{txn_id:int}/edit")
 def transaction_update(
     txn_id: int,
     date: str = Form(...),
@@ -282,7 +282,7 @@ def _link_transfer(db: Session, txn: Transaction, other_account_id: int):
 
 # ── Delete single transaction ────────────────────────────────────────
 
-@router.post("/{txn_id}/delete")
+@router.post("/{txn_id:int}/delete")
 def transaction_delete(txn_id: int, db: Session = Depends(get_db)):
     txn = db.get(Transaction, txn_id)
     if not txn:
