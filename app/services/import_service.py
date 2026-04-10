@@ -300,15 +300,97 @@ CURRENCY_SYMBOLS = {
 }
 
 
+HEADER_HINTS = {
+    "date", "transaction date", "posted", "posting date", "trans date",
+    "trade date", "settlement date",
+    "description", "memo", "narrative", "details", "payee",
+    "transaction description", "name", "reference",
+    "amount", "value", "sum", "transaction amount", "debit/credit",
+    "net amount", "debit", "credit",
+    "balance", "running balance", "balance after", "available",
+    "currency", "ccy", "cur", "currency code",
+    "type", "category", "status", "check number",
+}
+
+
+def _find_header_row(filepath: str, ext: str, max_scan: int = 30) -> int | None:
+    """Scan the first *max_scan* lines to find which one looks like a header.
+
+    Returns the 0-based row index, or None if row 0 already looks correct.
+    A row is considered a header if at least 2 of its cell values (lowered)
+    match known column header keywords.
+
+    For CSVs, reads raw lines to avoid parser errors from ragged metadata rows.
+    """
+    if ext == ".csv":
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
+                lines = []
+                for i, line in enumerate(fh):
+                    if i >= max_scan:
+                        break
+                    lines.append(line)
+        except Exception:
+            return None
+
+        for row_idx, line in enumerate(lines):
+            cells = [c.strip().strip('"').lower() for c in line.split(",")]
+            cells = [c for c in cells if c]
+            if _row_looks_like_header(cells):
+                return row_idx
+    else:
+        try:
+            raw = pd.read_excel(filepath, header=None, nrows=max_scan,
+                                dtype=str, keep_default_na=False)
+        except Exception:
+            return None
+
+        for row_idx in range(len(raw)):
+            cells = [str(v).strip().lower() for v in raw.iloc[row_idx]
+                     if str(v).strip()]
+            if _row_looks_like_header(cells):
+                return row_idx
+
+    return None
+
+
+def _row_looks_like_header(cells: list[str]) -> bool:
+    """Return True if at least 2 cells match known header keywords."""
+    if len(cells) < 2:
+        return False
+    matches = sum(1 for c in cells if c in HEADER_HINTS)
+    if matches < 2:
+        partial_hints = ("date", "desc", "amount", "balance", "narr", "memo")
+        matches += sum(
+            1 for c in cells
+            if any(h in c for h in partial_hints)
+            and c not in HEADER_HINTS
+        )
+    return matches >= 2
+
+
 def read_file(filepath: str) -> pd.DataFrame:
     path = Path(filepath)
     ext = path.suffix.lower()
-    if ext == ".csv":
-        return pd.read_csv(filepath, low_memory=False)
-    elif ext in (".xls", ".xlsx"):
-        return pd.read_excel(filepath)
-    else:
+    if ext not in (".csv", ".xls", ".xlsx"):
         raise ValueError(f"Unsupported file type: {ext}")
+
+    header_row = _find_header_row(filepath, ext)
+    if header_row is None:
+        header_row = 0
+
+    if header_row > 0:
+        log.info(
+            "Skipping %d metadata row(s) in %s — header found on row %d",
+            header_row, path.name, header_row,
+        )
+
+    skip = list(range(header_row)) if header_row > 0 else None
+
+    if ext == ".csv":
+        return pd.read_csv(filepath, skiprows=skip, low_memory=False)
+    else:
+        return pd.read_excel(filepath, skiprows=skip)
 
 
 def detect_columns(df: pd.DataFrame) -> dict[str, str | None]:

@@ -1,8 +1,8 @@
-Skip duplicate transactions on import based on date, description, and amount
+Auto-detect header row in CSV/XLS imports, skip metadata rows above it
 
-- Pre-loads existing (date, description, amount) keys for the account into
-  a set for O(1) duplicate checks per row
-- Also detects in-file duplicates (same row appearing twice in one CSV)
-- Reports duplicate count in the import redirect and displays it on the
-  account detail page alongside imported/categorized counts
-- Dedup check uses final stored amount (after liability sign-flip)
+- Scans first 30 lines for a row with >= 2 known column header keywords
+  (date, description, amount, balance, narrative, memo, etc.)
+- For CSVs, reads raw lines to avoid parser errors from ragged metadata
+- For XLS, uses pandas with header=None to scan
+- Metadata rows above the header (bank name, account number, period, etc.)
+  are automatically skipped
