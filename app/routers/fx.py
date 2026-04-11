@@ -1,13 +1,12 @@
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.templating import templates
 from app.models.currency_rate import CurrencyRate
 from app.services.fx_service import (
     COMMON_CURRENCIES,
@@ -21,7 +20,6 @@ from app.services.fx_rate_fetcher import (
 )
 
 router = APIRouter(prefix="/fx", tags=["fx"])
-templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 
 
 @router.get("", response_class=HTMLResponse)

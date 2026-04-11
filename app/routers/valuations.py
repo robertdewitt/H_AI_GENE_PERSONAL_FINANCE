@@ -1,12 +1,11 @@
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.templating import templates
 from app.services.asset_valuation_service import (
     add_valuation,
     get_valuation_history,
@@ -14,7 +13,6 @@ from app.services.asset_valuation_service import (
 )
 
 router = APIRouter(prefix="/valuations", tags=["valuations"])
-templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 
 
 @router.get("", response_class=HTMLResponse)

@@ -4,7 +4,6 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -17,6 +16,7 @@ from app.routers import (
     paychecks, valuations, fx, categories,
 )
 from app.services.net_worth_service import compute_net_worth, compute_net_worth_series
+from app.templating import templates
 
 
 @asynccontextmanager
@@ -32,13 +32,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-templates_dir = Path(__file__).parent / "templates"
 static_dir = Path(__file__).parent / "static"
 
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-templates = Jinja2Templates(directory=str(templates_dir))
-templates.env.globals["app_version"] = settings.app_version
-templates.env.globals["app_last_updated"] = settings.app_last_updated
 
 app.include_router(accounts.router)
 app.include_router(transactions.router)

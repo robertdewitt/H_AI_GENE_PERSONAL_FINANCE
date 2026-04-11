@@ -1,11 +1,9 @@
-from pathlib import Path
-
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.templating import templates
 from app.models.transaction import Transaction
 from app.services.transfer_detector import (
     detect_transfers,
@@ -17,7 +15,6 @@ from app.services.transfer_detector import (
 )
 
 router = APIRouter(prefix="/transfers", tags=["transfers"])
-templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 
 
 @router.get("", response_class=HTMLResponse)

@@ -1,14 +1,13 @@
 import json
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.templating import templates
 from app.models.account import Account
 from app.models.category import Category
 from app.models.enums import EconomicEventType
@@ -22,7 +21,6 @@ from app.services.categorizer import (
 )
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
-templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 
 
 def _build_filters(

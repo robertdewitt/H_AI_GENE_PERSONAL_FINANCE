@@ -1,18 +1,15 @@
-from pathlib import Path
-
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.templating import templates
 from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule
 from app.models.transaction import Transaction
 
 router = APIRouter(prefix="/categories", tags=["categories"])
-templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 
 
 @router.get("", response_class=HTMLResponse)

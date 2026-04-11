@@ -1,14 +1,13 @@
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.account import AccountType, LIABILITY_TYPES
 from app.schemas.account import AccountCreate
+from app.templating import templates
 from app.services.account_service import (
     create_account,
     delete_account,
@@ -21,7 +20,6 @@ from app.services.account_service import (
 )
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
-templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 
 
 @router.get("", response_class=HTMLResponse)
