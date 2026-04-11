@@ -139,8 +139,27 @@ def transactions_list(
 
     total_pages = max(1, (total_count + per_page - 1) // per_page)
 
+    # Batch-load split categories for all transactions on this page.
+    # One query instead of N — used to display "Wine · Gifts · Shopping" in the list.
+    txn_ids = [t.id for t in txns]
+    split_categories: dict[int, list[str]] = {}
+    if txn_ids:
+        from app.models.transaction_split import TransactionSplit
+        rows = db.execute(
+            select(
+                TransactionSplit.transaction_id,
+                Category.name,
+            )
+            .join(Category, TransactionSplit.category_id == Category.id)
+            .where(TransactionSplit.transaction_id.in_(txn_ids))
+            .order_by(TransactionSplit.transaction_id, TransactionSplit.id)
+        ).all()
+        for txn_id, cat_name in rows:
+            split_categories.setdefault(txn_id, []).append(cat_name)
+
     return templates.TemplateResponse(request, "transactions/list.html", {
         "transactions": txns,
+        "split_categories": split_categories,
         "accounts": accounts,
         "categories": categories,
         "currencies": currencies,
