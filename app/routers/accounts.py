@@ -144,10 +144,25 @@ def account_detail(
             "total": uncategorized[1] or 0,
         })
 
+    # Batch-load split categories for the recent transactions (one JOIN query).
+    from app.models.transaction_split import TransactionSplit
+    txn_ids = [t.id for t in recent_txns]
+    split_categories: dict[int, list[str]] = {}
+    if txn_ids:
+        rows = db.execute(
+            sa_select(TransactionSplit.transaction_id, Category.name)
+            .join(Category, TransactionSplit.category_id == Category.id)
+            .where(TransactionSplit.transaction_id.in_(txn_ids))
+            .order_by(TransactionSplit.transaction_id, TransactionSplit.id)
+        ).all()
+        for txn_id, cat_name in rows:
+            split_categories.setdefault(txn_id, []).append(cat_name)
+
     return templates.TemplateResponse(request, "accounts/detail.html", {
         "account": acct,
         "balance": balance,
         "transactions": recent_txns,
+        "split_categories": split_categories,
         "total_transactions": total_txn_count,
         "category_summary": category_summary,
     })
