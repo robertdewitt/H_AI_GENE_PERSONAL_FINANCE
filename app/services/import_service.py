@@ -554,6 +554,7 @@ def import_transactions(
     skipped = 0
     duplicates = 0
     pending_objects: list[Transaction] = []
+    all_imported_ids: list[int] = []
 
     # Pre-load existing (date, description, amount) keys for this account
     # so duplicate detection is O(1) per row instead of a DB query each time.
@@ -646,17 +647,28 @@ def import_transactions(
         if len(pending_objects) >= batch_size:
             db.add_all(pending_objects)
             db.flush()
+            all_imported_ids.extend(t.id for t in pending_objects)
             pending_objects.clear()
             log.info("Flushed %d / %d rows", imported, total_rows)
 
     if pending_objects:
         db.add_all(pending_objects)
         db.flush()
+        all_imported_ids.extend(t.id for t in pending_objects)
 
     batch.row_count = imported
     batch.status = ImportStatus.COMPLETED
     db.commit()
     db.refresh(batch)
+
+    # Classify newly imported transactions
+    try:
+        from app.services.event_classifier import classify_batch
+        if all_imported_ids:
+            classify_batch(db, transaction_ids=all_imported_ids)
+            db.commit()
+    except Exception:
+        log.warning("Event classification failed for batch %d", batch.id, exc_info=True)
 
     log.info(
         "Import complete: %d imported, %d skipped, %d duplicates, batch_id=%d",

@@ -14,8 +14,14 @@ from app.config import settings
 from app.database import get_db
 from app.models.account import Account, AccountType, ASSET_TYPES, LIABILITY_TYPES
 from app.models.category import Category
+from app.models.enums import EconomicEventType
 from app.models.transaction import Transaction
-from app.services.account_service import get_account_balance, list_accounts
+from app.services.account_service import (
+    get_account_balance,
+    get_account_balance_rich,
+    list_accounts,
+)
+from app.services.data_quality import assess_quality
 from app.services.net_worth_service import compute_net_worth, compute_net_worth_series
 
 router = APIRouter(prefix="/api/v1", tags=["api"])
@@ -126,6 +132,9 @@ def api_transactions(
                 "category": t.category.name if t.category else None,
                 "category_id": t.category_id,
                 "is_transfer": t.is_transfer,
+                "event_type": t.event_type,
+                "classification_provenance": t.classification_provenance,
+                "classification_confidence": t.classification_confidence,
             }
             for t in txns
         ],
@@ -215,6 +224,13 @@ def api_spending_monthly(
     """Monthly income vs spending totals for trend analysis."""
     since = datetime.now() - timedelta(days=months * 30)
 
+    non_transfer_filter = (
+        (Transaction.event_type.is_(None))
+        | (~Transaction.event_type.in_([
+            EconomicEventType.INTERNAL_TRANSFER.value,
+            EconomicEventType.CARD_PAYMENT_SETTLEMENT.value,
+        ]))
+    )
     rows = db.execute(
         select(
             func.strftime("%Y-%m", Transaction.date).label("month"),
@@ -234,7 +250,7 @@ def api_spending_monthly(
         )
         .where(
             Transaction.date >= since,
-            Transaction.is_transfer.is_(False),
+            non_transfer_filter,
         )
         .group_by("month")
         .order_by("month")
@@ -519,6 +535,26 @@ def api_agent_context(db: Session = Depends(get_db)):
                 "GET /api/v1/net-worth",
                 "GET /api/v1/net-worth/history?months=",
                 "GET /api/v1/agent/context",
+                "GET /api/v1/data-quality",
             ],
         },
+    }
+
+
+# ── Data quality ─────────────────────────────────────────────────────
+
+
+@router.get("/data-quality")
+def api_data_quality(db: Session = Depends(get_db)):
+    """Blockers, warnings, and a derived close-readiness score.
+
+    Agents should enumerate blockers/warnings rather than relying on the
+    score alone — the score is a secondary convenience metric.
+    """
+    report = assess_quality(db)
+    return {
+        "blockers": report.blockers,
+        "warnings": report.warnings,
+        "close_readiness_score": round(report.close_readiness_score, 1),
+        "as_of": report.as_of.isoformat(),
     }

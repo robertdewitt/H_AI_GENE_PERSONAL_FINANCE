@@ -14,6 +14,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.enums import ClassificationProvenance, EconomicEventType
 
 
 class Transaction(Base):
@@ -49,6 +50,16 @@ class Transaction(Base):
     import_batch_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("import_batches.id")
     )
+
+    # ── Truth layer columns ──────────────────────────────────────
+    event_type: Mapped[str | None] = mapped_column(
+        String(50), default=EconomicEventType.UNCLASSIFIED.value,
+    )
+    classification_provenance: Mapped[str | None] = mapped_column(
+        String(30), default=ClassificationProvenance.IMPORTED.value,
+    )
+    classification_confidence: Mapped[float | None] = mapped_column(Float)
+
     raw_data: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
