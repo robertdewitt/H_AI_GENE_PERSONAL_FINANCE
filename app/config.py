@@ -16,8 +16,9 @@ class Settings(BaseSettings):
     app_name: str = "Financial Hygiene"
     debug: bool = True
 
-    # Semver prefix; footer also shows git SHA, commit time, server time (see app/build_info.py).
-    app_version: str = "0.2.0"
+    # Major.minor prefix — patch is auto-derived from git commit count (see app/build_info.py).
+    # Bump this manually only for significant feature releases.
+    app_version: str = "0.2"
 
     # "sqlite" or "postgresql" — set via env to switch engines
     db_backend: str = "sqlite"

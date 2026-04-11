@@ -59,28 +59,49 @@ def _parse_git_iso(ts: str | None) -> datetime | None:
         return None
 
 
+def _git_commit_count() -> int | None:
+    raw = _git("rev-list", "--count", "HEAD")
+    try:
+        return int(raw) if raw else None
+    except ValueError:
+        return None
+
+
+def _git_branch() -> str | None:
+    return _git("rev-parse", "--abbrev-ref", "HEAD")
+
+
 def format_build_lines(semver: str) -> tuple[str, str]:
-    """Return (footer_line, dashboard_short_line) with version, git, times."""
+    """Return (footer_line, dashboard_short_line) with version, git, times.
+
+    The displayed version is  v{semver}.{commit_count}  so it increments
+    automatically on every commit without manual version bumping.
+    +dirty is appended when there are uncommitted changes.
+    """
     sha = _git("rev-parse", "--short", "HEAD")
     dirty = _git_dirty()
-    if sha:
-        sha_disp = f"{sha}+dirty" if dirty else sha
-    else:
-        sha_disp = "no-git"
+    commit_count = _git_commit_count()
+    branch = _git_branch()
+
+    # Build the version string: semver + auto-incrementing commit count
+    count_str = str(commit_count) if commit_count is not None else "?"
+    version = f"v{semver}.{count_str}"
+    if dirty:
+        version += "+dirty"
+
+    sha_disp = sha or "no-git"
+    branch_disp = f" [{branch}]" if branch and branch != "HEAD" else ""
 
     committed_raw = _git("log", "-1", "--format=%cI")
     committed = _parse_git_iso(committed_raw)
-    if committed:
-        committed_fmt = committed.strftime("%Y-%m-%d %H:%M:%S UTC")
-    else:
-        committed_fmt = "unknown"
+    committed_fmt = committed.strftime("%Y-%m-%d %H:%M UTC") if committed else "unknown"
 
     started = datetime.now(timezone.utc)
-    started_fmt = started.strftime("%Y-%m-%d %H:%M:%S UTC")
+    started_fmt = started.strftime("%Y-%m-%d %H:%M UTC")
 
     footer = (
-        f"v{semver} · build {sha_disp} · committed {committed_fmt} "
-        f"· server {started_fmt}"
+        f"{version} · {sha_disp}{branch_disp} · "
+        f"committed {committed_fmt} · started {started_fmt}"
     )
-    dash_short = f"v{semver} · {sha_disp} · committed {committed_fmt}"
+    dash_short = f"{version} · {sha_disp}{branch_disp} · committed {committed_fmt}"
     return footer, dash_short
