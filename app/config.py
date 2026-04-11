@@ -1,15 +1,24 @@
 import os
 from pathlib import Path
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=str(BASE_DIR / ".env"),
+        env_ignore_empty=True,
+    )
+
     app_name: str = "Financial Hygiene"
     debug: bool = True
+
+    # Major.minor prefix — patch is auto-derived from git commit count (see app/build_info.py).
+    # Bump this manually only for significant feature releases.
+    app_version: str = "0.2"
 
     # "sqlite" or "postgresql" — set via env to switch engines
     db_backend: str = "sqlite"
@@ -30,9 +39,6 @@ class Settings(BaseSettings):
 
     # Import performance — rows flushed per batch for bulk inserts
     import_batch_size: int = 5000
-
-    class Config:
-        env_file = str(BASE_DIR / ".env")
 
 
 settings = Settings()

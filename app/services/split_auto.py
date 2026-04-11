@@ -22,11 +22,33 @@ def ensure_default_split_if_missing(db: Session, transaction_id: int) -> bool:
 
 
 def ensure_splits_after_import(db: Session, transaction_ids: list[int]) -> int:
-    """Called after import + classification — one pass-through split per txn."""
+    """Called after import + classification — one pass-through split per txn.
+
+    Uses a single set-difference query instead of a per-transaction COUNT,
+    so it scales correctly for large imports.
+    """
+    if not transaction_ids:
+        return 0
+
+    # Single query: find which of these transactions already have splits.
+    already_split: set[int] = set(
+        db.execute(
+            select(TransactionSplit.transaction_id)
+            .where(TransactionSplit.transaction_id.in_(transaction_ids))
+            .distinct()
+        ).scalars().all()
+    )
+
+    missing = [tid for tid in transaction_ids if tid not in already_split]
+    if not missing:
+        return 0
+
     created = 0
-    for tid in transaction_ids:
-        if ensure_default_split_if_missing(db, tid):
-            created += 1
+    for tid in missing:
+        create_default_split(db, tid)
+        created += 1
+
+    db.flush()
     return created
 
 
@@ -36,6 +58,7 @@ def ensure_split_for_categorized_transaction(db: Session, txn: Transaction) -> N
         return
     if list_splits(db, txn.id):
         return
+
     from app.services.split_service import add_split
     from app.models.enums import ClassificationProvenance
 
@@ -47,5 +70,6 @@ def ensure_split_for_categorized_transaction(db: Session, txn: Transaction) -> N
         category_id=txn.category_id,
         provenance=ClassificationProvenance.RULE_DERIVED.value,
         notes="auto: category mirror",
+        # spend_type / counts_as_true_spend auto-derived from txn.event_type
     )
     db.flush()

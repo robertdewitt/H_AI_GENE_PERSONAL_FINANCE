@@ -1,8 +1,5 @@
-from pathlib import Path
-
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -12,7 +9,6 @@ from app.models.transaction import Transaction
 from app.services.net_worth_service import compute_net_worth, compute_net_worth_series
 
 router = APIRouter(prefix="/net-worth", tags=["net_worth"])
-templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 
 
 @router.get("", response_class=HTMLResponse)

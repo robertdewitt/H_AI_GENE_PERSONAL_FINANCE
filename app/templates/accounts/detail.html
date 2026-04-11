@@ -87,6 +87,13 @@
 </div>
 {% endif %}
 
+{% if monthly_spend_datasets %}
+<h2>Monthly Spend by Category</h2>
+<div class="chart-container" style="height:320px;margin-bottom:2rem">
+    <canvas id="monthlySpendChart"></canvas>
+</div>
+{% endif %}
+
 <h2>Recent Transactions</h2>
 {% if transactions %}
 <table>
@@ -110,10 +117,15 @@
                 {% if txn.is_transfer %}<span class="badge badge-transfer">Transfer</span>{% endif %}
             </td>
             <td>
-                {% if txn.category %}
-                <span class="badge">{{ txn.category.name }}</span>
+                {% set split_cats = split_categories.get(txn.id, []) %}
+                {% if split_cats | length > 1 %}
+                    {% for cat in split_cats | unique %}
+                    <span class="badge">{{ cat }}</span>
+                    {% endfor %}
+                {% elif txn.category %}
+                    <span class="badge">{{ txn.category.name }}</span>
                 {% else %}
-                <span style="color:var(--pico-muted-color)">—</span>
+                    <span style="color:var(--pico-muted-color)">—</span>
                 {% endif %}
             </td>
             <td>
@@ -175,6 +187,56 @@ if (catCtx) {
         }
     });
 }
+</script>
+{% endif %}
+
+{% if monthly_spend_datasets %}
+<script>
+(function() {
+    const sym = {{ account.currency_symbol | tojson }};
+    const labels = {{ monthly_spend_labels | tojson }};
+    const datasets = {{ monthly_spend_datasets | tojson }};
+
+    const ctx = document.getElementById('monthlySpendChart');
+    if (!ctx) return;
+
+    new Chart(ctx.getContext('2d'), {
+        type: 'bar',
+        data: { labels, datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index' },
+            scales: {
+                x: { stacked: true },
+                y: {
+                    stacked: true,
+                    beginAtZero: true,
+                    ticks: {
+                        callback: function(v) {
+                            return sym + v.toLocaleString(undefined, {minimumFractionDigits: 0});
+                        }
+                    }
+                }
+            },
+            plugins: {
+                legend: { position: 'bottom', labels: { boxWidth: 12 } },
+                tooltip: {
+                    callbacks: {
+                        label: function(ctx) {
+                            if (ctx.parsed.y === 0) return null;
+                            return ctx.dataset.label + ': ' + sym + ctx.parsed.y.toLocaleString(undefined, {minimumFractionDigits: 2});
+                        },
+                        footer: function(items) {
+                            const total = items.reduce((s, i) => s + i.parsed.y, 0);
+                            return 'Total: ' + sym + total.toLocaleString(undefined, {minimumFractionDigits: 2});
+                        }
+                    }
+                }
+            }
+        }
+    });
+})();
 </script>
 {% endif %}
 {% endblock %}

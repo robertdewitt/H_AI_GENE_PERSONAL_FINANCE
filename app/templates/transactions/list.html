@@ -134,10 +134,15 @@
             <td><a href="/accounts/{{ txn.account_id }}">{{ txn.account.name }}</a></td>
             <td>{{ txn.description }}</td>
             <td>
-                {% if txn.category %}
-                <span class="badge">{{ txn.category.name }}</span>
+                {% set split_cats = split_categories.get(txn.id, []) %}
+                {% if split_cats | length > 1 %}
+                    {% for cat in split_cats | unique %}
+                    <span class="badge">{{ cat }}</span>
+                    {% endfor %}
+                {% elif txn.category %}
+                    <span class="badge">{{ txn.category.name }}</span>
                 {% else %}
-                <span style="color:var(--pico-muted-color)">—</span>
+                    <span style="color:var(--pico-muted-color)">—</span>
                 {% endif %}
             </td>
             <td>{{ txn.original_currency }}</td>

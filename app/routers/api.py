@@ -19,11 +19,19 @@ from app.models.transaction import Transaction
 from app.services.account_service import (
     get_account_balance,
     get_account_balance_rich,
+    get_many_account_balances_rich,
     list_accounts,
 )
 from app.services.data_quality import assess_quality
 from app.services.net_worth_service import compute_net_worth, compute_net_worth_series
 from app.services.spend_analysis import compute_spend_summary
+
+
+def _year_month(col) -> any:
+    """Return a dialect-aware year-month expression (YYYY-MM)."""
+    if settings.db_backend == "postgresql":
+        return func.to_char(col, "YYYY-MM")
+    return func.strftime("%Y-%m", col)
 from app.services.document_apply import (
     list_payroll_documents,
     list_property_pnl_series,
@@ -44,20 +52,24 @@ def api_accounts(db: Session = Depends(get_db)):
     """All accounts with current balances in both native and base currency."""
     accounts = list_accounts(db)
     base = settings.base_currency
+
+    # Batch balance computation — one GROUP BY instead of N queries
+    balances_base = get_many_account_balances_rich(db, accounts, target_currency=base)
+
+    # Batch transaction counts — one GROUP BY instead of N queries
+    txn_counts: dict[int, int] = {}
+    if accounts:
+        for row in db.execute(
+            select(Transaction.account_id, func.count(Transaction.id).label("cnt"))
+            .where(Transaction.account_id.in_([a.id for a in accounts]))
+            .group_by(Transaction.account_id)
+        ).all():
+            txn_counts[row.account_id] = row.cnt
+
     result = []
     for acct in accounts:
-        native_bal = get_account_balance(
-            db, acct.id, target_currency=acct.currency,
-        )
-        base_bal = get_account_balance(
-            db, acct.id, target_currency=base,
-        )
-        txn_count = db.execute(
-            select(func.count(Transaction.id)).where(
-                Transaction.account_id == acct.id
-            )
-        ).scalar() or 0
-
+        base_result = balances_base.get(acct.id)
+        base_bal = round(base_result.value, 2) if base_result else 0.0
         result.append({
             "id": acct.id,
             "name": acct.name,
@@ -66,10 +78,9 @@ def api_accounts(db: Session = Depends(get_db)):
             "institution": acct.institution,
             "currency": acct.currency,
             "is_asset": acct.is_asset,
-            "balance_native": round(native_bal, 2),
-            "balance_base": round(base_bal, 2),
+            "balance_base": base_bal,
             "base_currency": base,
-            "transaction_count": txn_count,
+            "transaction_count": txn_counts.get(acct.id, 0),
         })
     return {"accounts": result, "base_currency": base}
 
@@ -240,9 +251,10 @@ def api_spending_monthly(
             EconomicEventType.CARD_PAYMENT_SETTLEMENT.value,
         ]))
     )
+    ym = _year_month(Transaction.date).label("month")
     rows = db.execute(
         select(
-            func.strftime("%Y-%m", Transaction.date).label("month"),
+            ym,
             func.sum(
                 case(
                     (Transaction.amount < 0, Transaction.amount),
@@ -261,8 +273,8 @@ def api_spending_monthly(
             Transaction.date >= since,
             non_transfer_filter,
         )
-        .group_by("month")
-        .order_by("month")
+        .group_by(ym)
+        .order_by(ym)
     ).all()
 
     return {
@@ -384,61 +396,39 @@ def api_agent_context(db: Session = Depends(get_db)):
     """Comprehensive context payload designed for LLM financial agents.
 
     Returns everything an agent needs in a single call: account overview,
-    net worth, recent spending patterns, top expense categories,
-    recurring merchants, and uncategorized transaction stats.
+    net worth, true-spend breakdown (from splits — not raw amounts),
+    recurring merchants, and data quality metrics.
     """
     base = settings.base_currency
     now = datetime.now()
     three_months_ago = now - timedelta(days=90)
     one_month_ago = now - timedelta(days=30)
 
-    # Accounts summary
-    accounts = list_accounts(db)
-    account_summaries = []
-    for acct in accounts:
-        bal = get_account_balance(db, acct.id, target_currency=base)
-        account_summaries.append({
-            "name": acct.name,
-            "type": acct.account_type.value,
-            "balance": round(bal, 2),
-            "currency": acct.currency,
-            "is_asset": acct.is_asset,
-        })
-
-    # Net worth
+    # Net worth — account balances are derived from nw.breakdown, no second pass needed
     nw = compute_net_worth(db)
+    accounts = list_accounts(db)
+    account_summaries = [
+        {
+            "name": b.account_name,
+            "type": b.account_type,
+            "balance": round(b.balance, 2),
+            "currency": b.currency,
+            "is_asset": b.is_asset,
+        }
+        for b in nw.breakdown
+    ]
 
-    # Last 30-day spending by category
-    cat_spending = db.execute(
-        select(
-            Category.name,
-            func.sum(Transaction.amount).label("total"),
-            func.count(Transaction.id).label("count"),
-        )
-        .join(Transaction.category)
-        .where(
-            Transaction.date >= one_month_ago,
-            Transaction.amount < 0,
-            Transaction.is_transfer.is_(False),
-        )
-        .group_by(Category.id)
-        .order_by(func.sum(Transaction.amount))
-    ).all()
-
-    # Last 30-day income
+    # True spend from splits (not raw transaction amounts).
+    # Falls back gracefully to zero totals when no splits exist yet.
+    spend_summary = compute_spend_summary(db, months=1)
     income_30d = db.execute(
         select(func.coalesce(func.sum(Transaction.amount), 0.0)).where(
             Transaction.date >= one_month_ago,
             Transaction.amount > 0,
-            Transaction.is_transfer.is_(False),
-        )
-    ).scalar() or 0.0
-
-    spending_30d = db.execute(
-        select(func.coalesce(func.sum(Transaction.amount), 0.0)).where(
-            Transaction.date >= one_month_ago,
-            Transaction.amount < 0,
-            Transaction.is_transfer.is_(False),
+            Transaction.event_type.notin_([
+                EconomicEventType.INTERNAL_TRANSFER.value,
+                EconomicEventType.CARD_PAYMENT_SETTLEMENT.value,
+            ]),
         )
     ).scalar() or 0.0
 
@@ -497,16 +487,14 @@ def api_agent_context(db: Session = Depends(get_db)):
         "accounts": account_summaries,
         "last_30_days": {
             "income": round(float(income_30d), 2),
-            "spending": round(float(spending_30d), 2),
-            "net_cashflow": round(float(income_30d) + float(spending_30d), 2),
-            "spending_by_category": [
-                {
-                    "category": r.name,
-                    "total": round(float(r.total), 2),
-                    "count": r.count,
-                }
-                for r in cat_spending
-            ],
+            "true_spend": spend_summary.total_true_spend,
+            "net_cashflow": round(float(income_30d) + spend_summary.total_true_spend, 2),
+            "spend_by_category": spend_summary.by_category,
+            "spend_by_type": spend_summary.by_spend_type,
+            "note": (
+                "true_spend and spend_by_category are derived from split allocations "
+                "and exclude transfers, principal payments, and investment contributions."
+            ),
         },
         "recurring_expenses": [
             {
@@ -534,26 +522,11 @@ def api_agent_context(db: Session = Depends(get_db)):
                 ),
                 "uncategorized_count": uncat_count,
             },
-            "available_endpoints": [
-                "GET /api/v1/accounts",
-                "GET /api/v1/transactions",
-                "GET /api/v1/categories",
-                "GET /api/v1/spending/by-category?months=&account_id=",
-                "GET /api/v1/spending/monthly?months=",
-                "GET /api/v1/spending/top-merchants?months=&limit=",
-                "GET /api/v1/spending/true-spend?months=&account_id=",
-                "GET /api/v1/net-worth",
-                "GET /api/v1/net-worth/history?months=",
-                "GET /api/v1/balance-sheet",
-                "GET /api/v1/data-quality",
-                "GET /api/v1/documents/payroll",
-                "GET /api/v1/rental-properties",
-                "GET /api/v1/rental-properties/{id}/pnl",
-                "GET /api/v1/instruments",
-                "POST /api/v1/reconciliation/auto-suggest?limit=",
-                "GET /api/v1/attribution/net-worth-change?start=&end=",
-                "GET /api/v1/agent/context",
-            ],
+            "spend_data_source": (
+                "split_allocations" if spend_summary.total_true_spend != 0
+                else "no_splits_yet — run POST /api/v1/reconciliation/auto-suggest "
+                     "then re-import to populate splits"
+            ),
         },
     }
 
@@ -597,13 +570,19 @@ def api_balance_sheet(db: Session = Depends(get_db)):
     """Full household balance sheet with per-account confidence and freshness."""
     base = settings.base_currency
     accounts = list_accounts(db)
+
+    # Batch balance computation — eliminates N+1 DB roundtrips
+    balances = get_many_account_balances_rich(db, accounts, target_currency=base)
+
     assets = []
     liabilities = []
     total_assets = 0.0
     total_liabilities = 0.0
 
     for acct in accounts:
-        result = get_account_balance_rich(db, acct.id, target_currency=base)
+        result = balances.get(acct.id)
+        if result is None:
+            continue
         entry = {
             "account_id": acct.id,
             "name": acct.name,
