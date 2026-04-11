@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     app_name: str = "Financial Hygiene"
     debug: bool = True
 
+    # Bump when you ship; shown on the dashboard and site footer.
+    app_version: str = "0.2.0"
+    app_last_updated: str = "11 April 2026"
+
     # "sqlite" or "postgresql" — set via env to switch engines
     db_backend: str = "sqlite"
     database_url: str = f"sqlite:///{BASE_DIR / 'data' / 'finance.db'}"

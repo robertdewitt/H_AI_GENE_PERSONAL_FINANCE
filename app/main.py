@@ -37,6 +37,8 @@ static_dir = Path(__file__).parent / "static"
 
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 templates = Jinja2Templates(directory=str(templates_dir))
+templates.env.globals["app_version"] = settings.app_version
+templates.env.globals["app_last_updated"] = settings.app_last_updated
 
 app.include_router(accounts.router)
 app.include_router(transactions.router)

@@ -220,3 +220,11 @@ table {
     gap: 1rem;
     margin-top: 1.5rem;
 }
+
+.text-muted {
+    color: var(--neutral-color);
+}
+
+.app-version-footer {
+    margin-top: 0.25rem;
+}
