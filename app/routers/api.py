@@ -23,6 +23,15 @@ from app.services.account_service import (
 )
 from app.services.data_quality import assess_quality
 from app.services.net_worth_service import compute_net_worth, compute_net_worth_series
+from app.services.spend_analysis import compute_spend_summary
+from app.services.document_apply import (
+    list_payroll_documents,
+    list_property_pnl_series,
+)
+from app.models.rental_property import RentalProperty
+from app.models.instrument import Instrument
+from app.services.auto_reconciliation import create_suggested_transfer_groups
+from app.services.attribution import attribute_nw_change
 
 router = APIRouter(prefix="/api/v1", tags=["api"])
 
@@ -527,15 +536,23 @@ def api_agent_context(db: Session = Depends(get_db)):
             },
             "available_endpoints": [
                 "GET /api/v1/accounts",
-                "GET /api/v1/transactions?account_id=&category_id=&date_from=&date_to=&search=&is_transfer=&limit=&offset=",
+                "GET /api/v1/transactions",
                 "GET /api/v1/categories",
                 "GET /api/v1/spending/by-category?months=&account_id=",
                 "GET /api/v1/spending/monthly?months=",
                 "GET /api/v1/spending/top-merchants?months=&limit=",
+                "GET /api/v1/spending/true-spend?months=&account_id=",
                 "GET /api/v1/net-worth",
                 "GET /api/v1/net-worth/history?months=",
-                "GET /api/v1/agent/context",
+                "GET /api/v1/balance-sheet",
                 "GET /api/v1/data-quality",
+                "GET /api/v1/documents/payroll",
+                "GET /api/v1/rental-properties",
+                "GET /api/v1/rental-properties/{id}/pnl",
+                "GET /api/v1/instruments",
+                "POST /api/v1/reconciliation/auto-suggest?limit=",
+                "GET /api/v1/attribution/net-worth-change?start=&end=",
+                "GET /api/v1/agent/context",
             ],
         },
     }
@@ -546,15 +563,252 @@ def api_agent_context(db: Session = Depends(get_db)):
 
 @router.get("/data-quality")
 def api_data_quality(db: Session = Depends(get_db)):
-    """Blockers, warnings, and a derived close-readiness score.
+    """Blockers, warnings, structured counters, and a derived score.
 
     Agents should enumerate blockers/warnings rather than relying on the
     score alone — the score is a secondary convenience metric.
     """
     report = assess_quality(db)
+    c = report.counters
     return {
         "blockers": report.blockers,
         "warnings": report.warnings,
+        "counters": {
+            "uncategorized_count": c.uncategorized_count,
+            "unclassified_count": c.unclassified_count,
+            "low_confidence_count": c.low_confidence_count,
+            "unresolved_reconciliation_count": c.unresolved_reconciliation_count,
+            "stale_valuation_count": c.stale_valuation_count,
+            "liabilities_without_decomposition": c.liabilities_without_decomposition,
+            "missing_fx_count": c.missing_fx_count,
+            "unsplit_transaction_count": c.unsplit_transaction_count,
+            "reconciliation_fx_gap_count": c.reconciliation_fx_gap_count,
+        },
         "close_readiness_score": round(report.close_readiness_score, 1),
         "as_of": report.as_of.isoformat(),
+    }
+
+
+# ── Balance sheet ────────────────────────────────────────────────────
+
+
+@router.get("/balance-sheet")
+def api_balance_sheet(db: Session = Depends(get_db)):
+    """Full household balance sheet with per-account confidence and freshness."""
+    base = settings.base_currency
+    accounts = list_accounts(db)
+    assets = []
+    liabilities = []
+    total_assets = 0.0
+    total_liabilities = 0.0
+
+    for acct in accounts:
+        result = get_account_balance_rich(db, acct.id, target_currency=base)
+        entry = {
+            "account_id": acct.id,
+            "name": acct.name,
+            "type": acct.account_type.value,
+            "type_group": acct.type_group,
+            "balance_base": round(result.value, 2),
+            "currency": acct.currency,
+            "base_currency": base,
+            "balance_source": result.balance_source_used,
+            "balance_as_of": result.balance_as_of.isoformat() if result.balance_as_of else None,
+            "confidence": result.balance_confidence,
+            "stale": result.balance_stale,
+            "fx": {
+                "pair": result.fx.fx_pair,
+                "rate_date": result.fx.fx_rate_date.isoformat() if result.fx.fx_rate_date else None,
+                "stale": result.fx.fx_stale,
+            } if result.fx.fx_pair else None,
+        }
+        if acct.is_asset:
+            assets.append(entry)
+            total_assets += abs(result.value)
+        else:
+            liabilities.append(entry)
+            total_liabilities += abs(result.value)
+
+    return {
+        "base_currency": base,
+        "total_assets": round(total_assets, 2),
+        "total_liabilities": round(total_liabilities, 2),
+        "net_worth": round(total_assets - total_liabilities, 2),
+        "assets": assets,
+        "liabilities": liabilities,
+    }
+
+
+# ── Spend from splits ───────────────────────────────────────────────
+
+
+@router.get("/spending/true-spend")
+def api_true_spend(
+    months: int = Query(3, ge=1, le=60),
+    account_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """True spend analysis derived from split allocations ONLY.
+
+    Distinguishes: lifestyle, fixed_core, debt_cost, tax, non_spend_cash_use.
+    Raw transaction amounts are NOT used — only splits marked as true spend.
+    """
+    summary = compute_spend_summary(db, months=months, account_id=account_id)
+    return {
+        "period_months": summary.period_months,
+        "total_true_spend": summary.total_true_spend,
+        "by_spend_type": summary.by_spend_type,
+        "by_category": summary.by_category,
+        "monthly": [
+            {
+                "month": m.month,
+                "spend_type": m.spend_type,
+                "total": m.total,
+                "count": m.count,
+            }
+            for m in summary.monthly
+        ],
+    }
+
+
+# ── Structured documents (payroll, rental) ──────────────────────────
+
+
+@router.get("/documents/payroll")
+def api_payroll_documents(
+    limit: int = Query(120, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    """Time series of payroll payslip documents (structured lines + metadata)."""
+    docs = list_payroll_documents(db, limit=limit)
+    return {
+        "documents": [
+            {
+                "id": d.id,
+                "statement_date": d.statement_date.strftime("%Y-%m-%d"),
+                "period_start": d.period_start.strftime("%Y-%m-%d") if d.period_start else None,
+                "period_end": d.period_end.strftime("%Y-%m-%d") if d.period_end else None,
+                "employer": d.employer_or_counterparty,
+                "currency": d.currency,
+                "reference": d.reference,
+                "split_validation_ok": d.split_validation_ok,
+                "line_count": len(d.lines),
+            }
+            for d in docs
+        ],
+    }
+
+
+@router.get("/rental-properties")
+def api_rental_properties(db: Session = Depends(get_db)):
+    """Rental property entities linked to statements and P&L."""
+    rows = db.execute(select(RentalProperty).order_by(RentalProperty.name)).scalars().all()
+    return {
+        "properties": [
+            {
+                "id": p.id,
+                "name": p.name,
+                "code": p.code,
+                "account_id": p.account_id,
+            }
+            for p in rows
+        ],
+    }
+
+
+@router.get("/rental-properties/{property_id}/pnl")
+def api_rental_property_pnl(
+    property_id: int,
+    limit: int = Query(120, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    """Property-level P&L snapshot time series (from rental statements)."""
+    series = list_property_pnl_series(db, rental_property_id=property_id, limit=limit)
+    return {
+        "rental_property_id": property_id,
+        "snapshots": [
+            {
+                "id": s.id,
+                "statement_date": s.statement_date.strftime("%Y-%m-%d"),
+                "period_start": s.period_start.strftime("%Y-%m-%d"),
+                "period_end": s.period_end.strftime("%Y-%m-%d"),
+                "currency": s.currency,
+                "total_income": round(s.total_income, 2),
+                "total_expense": round(s.total_expense, 2),
+                "owner_draw": round(s.owner_draw, 2),
+                "liability_adjustment": round(s.liability_adjustment, 2),
+                "net_operating_income": round(s.net_operating_income, 2),
+                "net_cash_flow": round(s.net_cash_flow, 2),
+                "confidence": s.confidence,
+                "stale": s.stale_flag,
+            }
+            for s in series
+        ],
+    }
+
+
+# ── Instruments & positions (foundation) ────────────────────────────
+
+
+@router.get("/instruments")
+def api_instruments(db: Session = Depends(get_db)):
+    """Listed securities / instruments (symbol-level pricing and lots)."""
+    rows = db.execute(
+        select(Instrument).order_by(Instrument.symbol)
+    ).scalars().all()
+    return {
+        "instruments": [
+            {
+                "id": r.id,
+                "symbol": r.symbol,
+                "name": r.name,
+                "currency": r.currency,
+                "asset_class": r.asset_class,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.post("/reconciliation/auto-suggest")
+def api_reconciliation_auto_suggest(
+    limit: int = Query(200, ge=1, le=2000),
+    db: Session = Depends(get_db),
+):
+    """Create suggested ReconciliationGroups for obvious transfer pairs."""
+    n = create_suggested_transfer_groups(db, limit=limit)
+    db.commit()
+    return {"groups_created": n}
+
+
+@router.get("/attribution/net-worth-change")
+def api_attribution_net_worth_change(
+    start: str = Query(..., description="YYYY-MM-DD"),
+    end: str = Query(..., description="YYYY-MM-DD"),
+    db: Session = Depends(get_db),
+):
+    """Net worth change decomposition (flows + valuation diff + FX translation)."""
+    try:
+        start_d = datetime.strptime(start[:10], "%Y-%m-%d")
+        end_d = datetime.strptime(end[:10], "%Y-%m-%d")
+    except ValueError:
+        return {"error": "Invalid date format; use YYYY-MM-DD"}
+    result = attribute_nw_change(db, start_d, end_d)
+    return {
+        "period_start": result.period_start.isoformat() if result.period_start else None,
+        "period_end": result.period_end.isoformat() if result.period_end else None,
+        "nw_start": round(result.nw_start, 2),
+        "nw_end": round(result.nw_end, 2),
+        "delta_nw": round(result.delta_nw, 2),
+        "unexplained": round(result.unexplained, 2),
+        "warnings": result.warnings,
+        "components": [
+            {
+                "label": c.label,
+                "amount_base": round(c.amount_base, 2),
+                "confidence": c.confidence,
+                "notes": c.notes,
+            }
+            for c in result.components
+        ],
     }

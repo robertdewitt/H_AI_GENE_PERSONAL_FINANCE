@@ -1,154 +1,132 @@
-# Financial Hygiene — Personal Finance Dashboard
+# Financial Hygiene — Personal Finance Truth Engine
 
-A comprehensive personal finance application that tracks transactions across multiple currencies, detects transfers between accounts, calculates net worth across all asset classes, and provides financial insights with auto-categorization. The entire platform is designed as a **data capture and analysis layer for LLM agents** that can reason about spending habits, investments, and financial health.
+A personal finance **data and truth layer**: multi-currency accounts, auditable balances, transaction **splits** (semantic allocations), **reconciliation groups**, structured **documents** (payslips, rental statements), and agent-oriented JSON APIs. It is **not** a budgeting app first—it is infrastructure for accurate net worth, spend semantics, and LLM agents that must see **confidence, freshness, and gaps**.
+
+The app also serves **humans** via server-rendered HTML (Pico CSS, Chart.js) for import, review, and dashboards.
 
 ## Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Browser (Human UI)                       │
-│    Jinja2 Templates · Pico CSS · Chart.js · HTMX-ready         │
+│    Jinja2 · Pico CSS · Chart.js                                 │
 └──────────────────────────────┬──────────────────────────────────┘
-                               │  HTML pages
+                               │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      FastAPI Application                        │
+│  HTML: /accounts /transactions /imports /transfers /net-worth … │
+│  JSON: /api/v1/*  ·  OpenAPI /docs                              │
 │                                                                 │
-│  ┌─────────────┐  ┌─────────────┐  ┌────────────────────────┐  │
-│  │ HTML Routers│  │  JSON API   │  │  OpenAPI / Swagger UI  │  │
-│  │ /accounts   │  │ /api/v1/... │  │  /docs  /openapi.json  │  │
-│  │ /transactions│ │             │  └────────────────────────┘  │
-│  │ /net-worth  │  │ Structured  │                              │
-│  │ /imports    │  │ data for    │                              │
-│  │ /transfers  │  │ LLM agents  │                              │
-│  │ /categories │  │             │                              │
-│  │ /fx         │  │             │                              │
-│  └──────┬──────┘  └──────┬──────┘                              │
-│         │                │                                      │
-│         ▼                ▼                                      │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                   Service Layer                          │   │
-│  │  account_service · categorizer · transfer_detector       │   │
-│  │  net_worth_service · fx_service · import_service         │   │
-│  │  paycheck_service · asset_valuation_service              │   │
-│  └──────────────────────────┬──────────────────────────────┘   │
-│                              │                                  │
-│  ┌──────────────────────────┴──────────────────────────────┐   │
-│  │                   Data Layer (SQLAlchemy)                 │   │
-│  │  9 ORM Models · Composite indexes · WAL mode             │   │
-│  └──────────────────────────┬──────────────────────────────┘   │
-└──────────────────────────────┼──────────────────────────────────┘
-                               │
-              ┌────────────────┼────────────────┐
-              ▼                ▼                 ▼
-        ┌──────────┐   ┌────────────┐   ┌─────────────┐
-        │  SQLite   │   │ PostgreSQL │   │  Ollama LLM │
-        │  (default)│   │ (optional) │   │  (optional)  │
-        └──────────┘   └────────────┘   └─────────────┘
+│  Truth layer: economic event types · splits · reconciliation    │
+│  · payment decomposition · balance truth sources · snapshots    │
+│  · structured documents · data quality · attribution          │
+└──────────────────────────────┬──────────────────────────────────┘
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Services: account_service · split_service · import_service     │
+│  · event_classifier · reconciliation_invariants · data_quality  │
+│  · document_parse / document_apply · snapshot_service            │
+│  · attribution · auto_reconciliation · split_auto              │
+│  · net_worth_service · fx_service · categorizer · …             │
+└──────────────────────────────┬──────────────────────────────────┘
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  SQLAlchemy ORM — SQLite (default) or PostgreSQL               │
+│  See docs/TRUTH_MODEL.md for schema philosophy                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-The application serves two audiences through the same backend:
+**Audiences**
 
-1. **Humans** — Server-rendered HTML pages for importing data, reviewing transactions, editing categories, and viewing dashboards.
-2. **LLM Agents** — A structured JSON API (`/api/v1/`) providing the same financial data in a format optimized for programmatic analysis.
+1. **Humans** — Import, categorize, **edit transactions including splits**, transfers, valuations, paychecks.
+2. **LLM agents** — `GET /api/v1/…` for structured, qualified data (balances, spend-from-splits, data quality blockers, attribution).
 
-## LLM Integration
+Full truth-design reference: **[docs/TRUTH_MODEL.md](docs/TRUTH_MODEL.md)**.
 
-### How agents use the data
+## LLM / Agent API
 
-The JSON API is designed so an LLM agent can understand your full financial picture and provide actionable advice. An agent workflow looks like:
+### Bootstrap
 
-1. **Bootstrap context** — Call `GET /api/v1/agent/context` to get a comprehensive snapshot: net worth, all account balances, 30-day income/spending by category, recurring expenses with estimated monthly cost, largest recent transactions, and data quality metrics.
-2. **Deep-dive** — Use specific endpoints to explore areas of interest:
-   - `/api/v1/spending/by-category?months=6` — Where is the money going?
-   - `/api/v1/spending/monthly?months=12` — Income vs spending trend
-   - `/api/v1/spending/top-merchants?months=3` — Recurring subscriptions and high-spend merchants
-   - `/api/v1/transactions?search=amazon&limit=50` — Drill into specific merchants
-   - `/api/v1/net-worth/history?months=24` — Is net worth growing or shrinking?
-3. **Recommend** — With structured data, the agent can identify: overspending categories, unnecessary subscriptions, savings rate trends, debt payoff strategies, and investment allocation gaps.
+1. **`GET /api/v1/agent/context`** — Net worth, accounts, recent flows, hints to other endpoints.
+2. **`GET /api/v1/data-quality`** — **Blockers** and **warnings** first; `close_readiness_score` is secondary; structured **counters** (uncategorized, unsplit, reconciliation FX gaps, …).
+3. **`GET /api/v1/balance-sheet`** — Full balance sheet with **confidence** and **staleness** per account.
 
-### JSON API Endpoints
+### Core JSON endpoints
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/v1/agent/context` | **Single-call context** — everything an agent needs to start reasoning |
-| `GET /api/v1/accounts` | All accounts with native + base currency balances |
-| `GET /api/v1/transactions` | Filtered/paginated transactions (by account, category, date, search, etc.) |
-| `GET /api/v1/categories` | Categories with transaction counts and totals |
-| `GET /api/v1/spending/by-category` | Spending breakdown by category for N months |
-| `GET /api/v1/spending/monthly` | Monthly income vs spending for trend analysis |
-| `GET /api/v1/spending/top-merchants` | Top merchants by spend, flags likely recurring expenses |
-| `GET /api/v1/net-worth` | Current net worth with full account breakdown |
-| `GET /api/v1/net-worth/history` | Monthly net worth time series |
+| `GET /api/v1/agent/context` | Single-call overview for agents |
+| `GET /api/v1/accounts` | Accounts with balances (native + base) |
+| `GET /api/v1/transactions` | Filtered/paginated transactions (`event_type`, …) |
+| `GET /api/v1/categories` | Categories with stats |
+| `GET /api/v1/spending/by-category` | Category totals (raw rows; use true-spend for semantics) |
+| `GET /api/v1/spending/monthly` | Monthly income vs spending (non-transfer filtered) |
+| `GET /api/v1/spending/true-spend` | **Spend from splits only** — by `spend_type` / category |
+| `GET /api/v1/spending/top-merchants` | Top merchants |
+| `GET /api/v1/net-worth` | Current net worth + breakdown |
+| `GET /api/v1/net-worth/history` | Monthly net worth series |
+| `GET /api/v1/balance-sheet` | Balance sheet + confidence + FX metadata |
+| `GET /api/v1/data-quality` | Blockers, warnings, counters, score |
+| `GET /api/v1/documents/payroll` | Payroll document time series |
+| `GET /api/v1/rental-properties` | Rental property entities |
+| `GET /api/v1/rental-properties/{id}/pnl` | Property P&L snapshots |
+| `GET /api/v1/instruments` | Securities / instruments (foundation) |
+| `POST /api/v1/reconciliation/auto-suggest` | Create **suggested** transfer reconciliation groups |
+| `GET /api/v1/attribution/net-worth-change?start=&end=` | NW change decomposition (flows + valuation diff + FX translation) |
 
-All endpoints are self-documented via **OpenAPI/Swagger** at `/docs`.
+OpenAPI: **`/docs`**.
 
-### Auto-categorization with LLMs
+### Auto-categorization (optional)
 
-Transaction categorization uses a three-tier engine:
+Rules → keywords → **Ollama** (local). See project setup for `ollama pull`.
 
-1. **Learned rules** — When a user corrects a category, the system saves a pattern and retroactively updates all matching transactions (past and future).
-2. **Keyword heuristics** — Built-in mappings for common merchants (groceries, dining, gas, subscriptions, etc.).
-3. **Ollama LLM fallback** — For unrecognized descriptions, a local LLM (llama3.2 via [Ollama](https://ollama.com)) classifies the transaction. The LLM runs locally and is free — no API keys needed.
+### Import date detection
 
-### Agentic date format detection
-
-When importing transaction files, the system scans the date column and auto-detects whether dates are DD/MM (UK/EU) or MM/DD (US) format. It uses multiple signals — values > 12 that can only be a day, chronological ordering analysis, value distribution — and reports its confidence and reasoning on the import mapping page. The user can override the detection with a single click.
+DD/MM vs MM/DD detection with confidence on the import mapping UI.
 
 ## Features
 
-- **Account Management** — Track bank accounts, credit cards, investments, IRAs, pensions, real estate, vehicles, collectibles, and more
-- **Multi-Currency / FX Support** — Accounts in any currency with proper currency symbols (£, €, ¥, etc.); live rate fetching from Yahoo Finance and ECB; automatic conversion to base currency for net worth
-- **FX Rate Bootstrap** — On startup, automatically fetches 5 years of daily historical rates for USD/GBP, USD/EUR, and USD/JPY
-- **CSV/XLS Import** — Upload transaction files with automatic column detection, agentic date format detection, manual mapping override, and batch processing optimized for 1–10M+ transactions
-- **Liability Sign-Flip** — Credit card charges, loan payments, and mortgage transactions are automatically sign-corrected on import so balances reflect money owed
-- **Transaction CRUD** — Edit or delete any individual transaction; bulk select multiple to set category, mark as transfer, or delete. Filter state is preserved across edits.
-- **Auto-Categorization** — Three-tier engine: learned rules → keyword heuristics → local LLM (Ollama)
-- **Category Management** — Add, edit, and delete categories; view transaction counts per category; manage learned rules with hit counts
-- **Spending Summaries** — Category breakdown tables and charts on both account detail pages and the net worth page
-- **Transfer Detection** — Detects transfers including payments, credits, ACH, and autopay; confidence scoring with bulk-confirm; payment scanning for liability accounts
-- **Net Worth Tracking** — FX-aware net worth calculation with time-series charts and asset group breakdowns
-- **Paycheck Stub Tracking** — Import or manually enter paycheck data with full tax, deduction, and benefit breakdowns
-- **Asset Valuations** — Manual valuation entry for real estate, vehicles, collectibles, pensions with history tracking
-- **Currency Converter** — Convert amounts using stored FX rates
+- **Truth layer** — `event_type` (economic role), classification provenance/confidence, balance truth sources, staleness hints.
+- **Transaction splits** — Multiple allocations per transaction; sum must match transaction amount. Editable on **Transaction edit** page; pass-through split created on **import** when missing.
+- **Reconciliation groups** — N-member transfer/settlement groups with explicit allocations and FX-aware validation.
+- **Structured documents** — Payroll and rental JSON → `FinancialDocument` + lines + parent transaction + splits; property P&L snapshots.
+- **Payment decomposition** — Liability payments into principal/interest/escrow/… with validation.
+- **Data quality** — Blockers/warnings + counters (e.g. multi-currency recon without FX → **blocker**).
+- **Attribution** — Net worth change breakdown (income, flows, fees, valuation **market** movement, **FX** translation approximation).
+- **Household / account snapshots** — Stored time series for balances and rollups.
+- **Accounts** — Banking, cards, investments, pensions, real estate, vehicles, loans, mortgages, etc.; multi-currency; FX bootstrap (Yahoo/Frankfurter).
+- **CSV/XLS import** — Column detection, large batching, liability sign handling, **event classification** + **default splits** after import.
+- **Transfers** — Detection, linking, **auto-suggested reconciliation groups** via API.
+- **Net worth** — FX-aware totals and history.
+- **Paychecks** — Stub import/manual entry.
+- **Asset valuations** — History for illiquid assets.
+- **Currency converter** — Stored rates.
 
-## Upcoming Features
+## Roadmap (optional)
 
-- **Phase 2**: Budgeting, spending recommendations, recurring transaction detection
-- **Phase 3**: Retirement planning with Monte Carlo simulations
-- **Phase 4**: Automated bank imports (Plaid API), alerts, scheduled refresh
-- **Phase 5**: Agent-driven insights — connect the API to an LLM agent that proactively identifies savings opportunities, debt payoff strategies, and investment rebalancing
+- Deeper brokerage **lot** / **price** sync (models exist; wiring TBD).
+- Budgeting and proactive alerts (out of scope for core truth layer).
 
 ## Quick Start
 
 ```bash
-# Create a virtual environment
 python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
+source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-
-# Run the app (SQLite — zero config)
 python run.py
 ```
 
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
-API docs at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
+- App: [http://127.0.0.1:8000](http://127.0.0.1:8000)
+- API docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
-### Optional: Local LLM for auto-categorization
-
-Install [Ollama](https://ollama.com), then pull the model:
+### Optional: Ollama for categorization
 
 ```bash
 ollama pull llama3.2
 ```
 
-The categorizer will use it automatically when rules and keywords don't match. If Ollama isn't running, it silently skips the LLM step — no errors.
-
-### Using PostgreSQL (for large-scale datasets)
-
-Set these environment variables (or create a `.env` file):
+### PostgreSQL
 
 ```bash
 DB_BACKEND=postgresql
@@ -157,76 +135,53 @@ DATABASE_URL=postgresql://user:password@localhost:5432/financial_hygiene
 
 ## Workflow
 
-1. **Add accounts** — Create accounts for each bank, brokerage, credit card, property, vehicle, etc.
-2. **Upload transaction files** — Import CSV/XLS exports; columns and date format are auto-detected with manual override. Transactions are auto-categorized on import.
-3. **Review & edit transactions** — Edit individual transactions or bulk-select to set categories, mark transfers, or delete. Category corrections teach the system for future imports.
-4. **Manage categories** — Add/edit/delete categories at `/categories`; view learned rules and their hit counts.
-5. **FX rates load automatically** — On startup, 5 years of daily rates for GBP, EUR, and JPY are fetched. Additional pairs can be fetched or entered manually.
-6. **Review transfers** — Scan for payment-like transactions; confirm transfer pairs individually or in bulk.
-7. **Value assets** — For real estate, vehicles, and collectibles, add periodic valuations.
-8. **Upload paychecks** — Track income details including taxes, 401(k), and benefits.
-9. **View net worth** — See your complete financial picture across all currencies and asset types.
-10. **Query via API** — Use `/api/v1/agent/context` or specific endpoints to feed data to LLM agents for analysis and recommendations.
+1. **Add accounts** — Banks, cards, property, vehicles, loans, etc.
+2. **Import transactions** — CSV/XLS; column + date format detection; classification + default splits.
+3. **Edit transactions** — Date, amount, category, **economic event type**, **splits** (amounts must sum to transaction total), transfers.
+4. **Categories & rules** — Teach patterns; optional Ollama fallback.
+5. **FX** — Rates bootstrap on startup; manual/converter as needed.
+6. **Transfers** — Review; **POST `/api/v1/reconciliation/auto-suggest`** for suggested groups.
+7. **Valuations & paychecks** — As needed.
+8. **Structured documents** — Payroll/rental JSON pipelines (see `tests/fixtures/documents/`, `document_apply` service).
+9. **Agents** — Use `/api/v1/agent/context`, `/api/v1/data-quality`, `/api/v1/balance-sheet`, `/api/v1/spending/true-spend`.
 
-## Project Structure
+## Project structure (high level)
 
 ```
 app/
-├── main.py              # FastAPI app, startup bootstrap (FX, categories)
-├── config.py            # Settings (DB, base currency, date format, batch size)
-├── database.py          # SQLAlchemy setup (SQLite / PostgreSQL)
-├── models/              # ORM models (9 tables)
-│   ├── account.py       # Accounts with asset/liability classification
-│   ├── transaction.py   # Transactions with FX fields
-│   ├── category.py      # Hierarchical categories
-│   ├── category_rule.py # Learned categorization rules
-│   ├── transfer_link.py # Transfer pairs
-│   ├── import_batch.py  # Import tracking
-│   ├── currency_rate.py # Historical FX rates
-│   ├── paycheck_stub.py # Paycheck data
-│   └── asset_valuation.py # Asset valuations
-├── schemas/             # Pydantic validation schemas
-├── routers/             # Route handlers (10 modules)
-│   ├── accounts.py      # Account CRUD + detail with spending summary
-│   ├── transactions.py  # Transaction CRUD, bulk edit, auto-categorize
-│   ├── categories.py    # Category management + learned rules
-│   ├── imports.py       # CSV/XLS upload with date detection + auto-categorize
-│   ├── transfers.py     # Transfer detection, payment scanning, management
-│   ├── net_worth.py     # Net worth + category spending summary
-│   ├── valuations.py    # Asset valuation management
-│   ├── paychecks.py     # Paycheck stub management
-│   ├── fx.py            # FX rates, live fetching, converter
-│   └── api.py           # JSON API for LLM agents (/api/v1/)
-├── services/            # Business logic
-│   ├── account_service.py          # CRUD + FX-aware balance
-│   ├── import_service.py           # Batch import, date detection, liability sign-flip
-│   ├── categorizer.py              # Auto-categorization (rules + keywords + Ollama)
-│   ├── transfer_detector.py        # Transfer matching + payment scanning
-│   ├── net_worth_service.py        # FX-aware net worth
-│   ├── fx_service.py               # Exchange rate management
-│   ├── fx_rate_fetcher.py          # Yahoo Finance + ECB rate fetching
-│   ├── paycheck_service.py         # Paycheck stub parsing
-│   └── asset_valuation_service.py  # Asset valuation management
-├── templates/           # Jinja2 HTML templates
-├── static/              # CSS, JS
-└── seeds/               # Default category data (33 categories)
+├── main.py                 # App, lifespan (init_db, FX bootstrap, categories)
+├── config.py
+├── database.py             # Engine + SQLite migrations (additive columns/indexes)
+├── models/                 # Account, Transaction, TransactionSplit, Category,
+│                           # Reconciliation*, PaymentDecomposition,
+│                           # FinancialDocument*, RentalProperty, snapshots,
+│                           # Instrument/PositionLot/PriceSnapshot, …
+├── routers/                # accounts, transactions, imports, transfers, api, …
+├── services/               # Truth + domain services (see TRUTH_MODEL.md)
+├── templates/
+├── static/
+├── seeds/
+docs/
+├── TRUTH_MODEL.md          # Architecture & migration notes
+tests/
+├── test_truth_engine.py
+├── test_structured_documents.py
+└── fixtures/documents/     # Sample payroll / rental JSON
 ```
 
-## Tech Stack
+## Tech stack
 
-- **Python 3.11+** with **FastAPI**
-- **SQLite** (default) or **PostgreSQL** via **SQLAlchemy** ORM
-- **Pico CSS** + **Chart.js** for the UI
-- **Pandas** for CSV/XLS parsing (batch-optimized for millions of rows)
-- **Ollama** (optional) for LLM-based transaction categorization
-- **yfinance** + **Frankfurter API** for live FX rates
-- **NumPy** for financial simulations (Phase 3)
+- Python **3.11+**, **FastAPI**, **SQLAlchemy**, **SQLite** / **PostgreSQL**
+- **Pico CSS**, **Chart.js**
+- **Pandas** for imports
+- Optional **Ollama**; **yfinance** / **Frankfurter** for FX
 
 ## Scale
 
-The app is designed to handle **1–10 million transactions**:
-- Composite database indexes on (account_id, date), (account_id, amount), category_id, and transfer fields
-- SQLite tuned with WAL mode, 64 MB page cache, 256 MB mmap
-- Batch flushing during imports (configurable via `IMPORT_BATCH_SIZE`)
-- Efficient `COUNT` queries instead of loading full result sets
-- PostgreSQL connection pooling available for production deployments
+Composite indexes, SQLite WAL, batch imports (`IMPORT_BATCH_SIZE`), PostgreSQL pooling optional—suited for **large** transaction volumes.
+
+## Tests
+
+```bash
+pytest tests/
+```

@@ -35,6 +35,8 @@ class ReconciliationGroup(Base):
     tolerance_base: Mapped[float] = mapped_column(Float, default=0.01)
     residual_base: Mapped[float | None] = mapped_column(Float)
     confidence: Mapped[float | None] = mapped_column(Float)
+    reconciliation_confidence: Mapped[float | None] = mapped_column(Float)
+    fx_rate_used: Mapped[float | None] = mapped_column(Float)
     provenance: Mapped[str | None] = mapped_column(
         String(30), default=ClassificationProvenance.INFERRED.value,
     )

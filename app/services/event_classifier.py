@@ -37,7 +37,6 @@ PAYMENT_KEYWORDS = {
     "thank you", "online pmt", "ach payment",
 }
 
-# Multi-word phrases first, then single words matched with word boundaries
 _FEE_PHRASES = {
     "service charge", "annual fee", "late fee", "interest charge",
     "overdraft fee", "maintenance fee", "atm fee", "wire fee",
@@ -45,9 +44,15 @@ _FEE_PHRASES = {
 }
 _FEE_WORD_RE = re.compile(r"\bfee\b", re.IGNORECASE)
 
-# Tax keywords — "tax" alone matched only at word boundary
 _TAX_PHRASES = {"tax payment", "estimated tax", "irs", "hmrc"}
 _TAX_WORD_RE = re.compile(r"\btax\b", re.IGNORECASE)
+
+_INTEREST_RE = re.compile(r"\binterest\b", re.IGNORECASE)
+
+_PAYROLL_KEYWORDS = {
+    "payroll", "salary", "wages", "direct deposit",
+    "net pay", "employer",
+}
 
 
 def classify_transaction(txn: Transaction, account: Account) -> EconomicEventType:
@@ -64,13 +69,22 @@ def classify_transaction(txn: Transaction, account: Account) -> EconomicEventTyp
             return EconomicEventType.CARD_PAYMENT_SETTLEMENT
         return EconomicEventType.CARD_PURCHASE
 
-    if acct_type in {AccountType.LOAN, AccountType.MORTGAGE}:
+    if acct_type == AccountType.MORTGAGE:
+        if txn.amount > 0:
+            return EconomicEventType.MORTGAGE_PAYMENT
+        if _INTEREST_RE.search(desc_lower):
+            return EconomicEventType.MORTGAGE_INTEREST
+        return EconomicEventType.FEE
+
+    if acct_type == AccountType.LOAN:
         if txn.amount > 0:
             return EconomicEventType.LIABILITY_PAYMENT
         return EconomicEventType.FEE
 
     if acct_type in INVESTMENT_ACCOUNT_TYPES:
-        return EconomicEventType.INVESTMENT_FLOW
+        if txn.amount > 0:
+            return EconomicEventType.INVESTMENT_CONTRIBUTION
+        return EconomicEventType.INVESTMENT_WITHDRAWAL
 
     if acct_type in ASSET_ONLY_TYPES:
         return EconomicEventType.ASSET_FLOW
@@ -85,7 +99,10 @@ def classify_transaction(txn: Transaction, account: Account) -> EconomicEventTyp
         return EconomicEventType.TAX_PAYMENT
 
     if txn.amount >= 0:
+        if any(kw in desc_lower for kw in _PAYROLL_KEYWORDS):
+            return EconomicEventType.PAYROLL_INCOME
         return EconomicEventType.EXTERNAL_INCOME
+
     return EconomicEventType.LIFESTYLE_EXPENSE
 
 

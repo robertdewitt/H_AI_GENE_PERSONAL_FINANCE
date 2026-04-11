@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -10,8 +11,11 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.account import Account
 from app.models.category import Category
+from app.models.enums import EconomicEventType
 from app.models.transaction import Transaction
 from app.models.transfer_link import TransferLink
+from app.services.split_service import list_splits, replace_transaction_splits
+from app.services.transaction_truth import apply_truth_after_transaction_update
 from app.services.categorizer import (
     categorize_batch,
     learn_from_correction,
@@ -182,23 +186,43 @@ def transaction_edit_form(
         select(Account).order_by(Account.name)
     ).scalars().all()
 
+    splits_rows = []
+    for s in list_splits(db, txn.id):
+        splits_rows.append({
+            "amount": s.amount_native,
+            "currency": s.currency,
+            "spend_type": s.spend_type or "",
+            "event_type": s.event_type or "",
+            "category_id": s.category_id,
+            "notes": s.notes or "",
+            "counts_as_true_spend": s.counts_as_true_spend,
+        })
+    splits_json = json.dumps(splits_rows)
+
+    event_type_choices = [e.value for e in EconomicEventType]
+
     return templates.TemplateResponse(request, "transactions/edit.html", {
         "txn": txn,
         "categories": categories,
         "accounts": accounts,
         "return_url": return_url or f"/accounts/{txn.account_id}",
+        "splits_json": splits_json,
+        "event_type_choices": event_type_choices,
     })
 
 
 @router.post("/{txn_id:int}/edit")
 def transaction_update(
+    request: Request,
     txn_id: int,
     date: str = Form(...),
     description: str = Form(...),
     amount: float = Form(...),
     category_id: str = Form(""),
+    event_type: str = Form(""),
     is_transfer: bool = Form(False),
     transfer_account_id: str = Form(""),
+    splits_json: str = Form(""),
     return_url: str = Form(""),
     db: Session = Depends(get_db),
 ):
@@ -206,11 +230,76 @@ def transaction_update(
     if not txn:
         return HTMLResponse("Transaction not found", status_code=404)
 
+    categories = db.execute(
+        select(Category).order_by(Category.name)
+    ).scalars().all()
+    accounts = db.execute(
+        select(Account).order_by(Account.name)
+    ).scalars().all()
+    event_type_choices = [e.value for e in EconomicEventType]
+
+    split_error = None
+    lines = None
+    if splits_json.strip():
+        try:
+            lines = json.loads(splits_json)
+        except json.JSONDecodeError:
+            split_error = "Invalid splits JSON."
+        if split_error is None and lines is not None:
+            if not isinstance(lines, list):
+                split_error = "Splits must be a JSON array."
+            else:
+                for row in lines:
+                    if "amount" not in row:
+                        split_error = "Each split needs an amount."
+                        break
+                if split_error is None:
+                    try:
+                        total = sum(float(row["amount"]) for row in lines)
+                    except (TypeError, KeyError):
+                        split_error = "Invalid amount in splits."
+                    else:
+                        if abs(total - amount) > 0.02:
+                            split_error = (
+                                f"Splits sum to {total:.2f} but transaction amount is {amount:.2f}."
+                            )
+
+    if split_error:
+        splits_rows = []
+        try:
+            parsed = json.loads(splits_json) if splits_json.strip() else []
+            if isinstance(parsed, list):
+                for row in parsed:
+                    splits_rows.append({
+                        "amount": row.get("amount"),
+                        "currency": row.get("currency", txn.original_currency),
+                        "spend_type": row.get("spend_type", ""),
+                        "event_type": row.get("event_type", ""),
+                        "category_id": row.get("category_id"),
+                        "notes": row.get("notes", ""),
+                        "counts_as_true_spend": row.get("counts_as_true_spend", False),
+                    })
+        except json.JSONDecodeError:
+            pass
+        return templates.TemplateResponse(request, "transactions/edit.html", {
+            "txn": txn,
+            "categories": categories,
+            "accounts": accounts,
+            "return_url": return_url or f"/accounts/{txn.account_id}",
+            "splits_json": splits_json if splits_json.strip() else json.dumps(splits_rows),
+            "event_type_choices": event_type_choices,
+            "split_error": split_error,
+        }, status_code=400)
+
+    old_event_type = txn.event_type
     old_category_id = txn.category_id
     txn.date = datetime.strptime(date, "%Y-%m-%d")
     txn.description = description
     txn.amount = amount
     txn.is_transfer = is_transfer
+
+    if event_type.strip():
+        txn.event_type = event_type.strip()
 
     new_cat_id = int(category_id) if category_id.strip() else None
     txn.category_id = new_cat_id
@@ -218,12 +307,27 @@ def transaction_update(
     if new_cat_id and new_cat_id != old_category_id:
         learn_from_correction(db, description, new_cat_id)
 
+    if splits_json.strip() and lines is not None:
+        val = replace_transaction_splits(db, txn_id, lines)
+        if not val.valid:
+            return templates.TemplateResponse(request, "transactions/edit.html", {
+                "txn": txn,
+                "categories": categories,
+                "accounts": accounts,
+                "return_url": return_url or f"/accounts/{txn.account_id}",
+                "splits_json": splits_json,
+                "event_type_choices": event_type_choices,
+                "split_error": "; ".join(val.warnings),
+            }, status_code=400)
+
     if is_transfer and transfer_account_id.strip():
         dest_account_id = int(transfer_account_id)
         if dest_account_id != txn.account_id:
             _link_transfer(db, txn, dest_account_id)
     elif not is_transfer and txn.transfer_link_id:
         txn.transfer_link_id = None
+
+    apply_truth_after_transaction_update(db, txn, old_event_type)
 
     db.commit()
 

@@ -664,8 +664,11 @@ def import_transactions(
     # Classify newly imported transactions
     try:
         from app.services.event_classifier import classify_batch
+        from app.services.split_auto import ensure_splits_after_import
         if all_imported_ids:
             classify_batch(db, transaction_ids=all_imported_ids)
+            db.commit()
+            ensure_splits_after_import(db, all_imported_ids)
             db.commit()
     except Exception:
         log.warning("Event classification failed for batch %d", batch.id, exc_info=True)

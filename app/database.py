@@ -167,4 +167,72 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS ix_payment_decomp_txn "
                 "ON payment_decompositions (transaction_id)"
             ))
+
+            # ── v2 recon columns ─────────────────────────────
+            _sqlite_add_column_if_missing(
+                conn, "reconciliation_groups", "reconciliation_confidence",
+                "REAL",
+            )
+            _sqlite_add_column_if_missing(
+                conn, "reconciliation_groups", "fx_rate_used",
+                "REAL",
+            )
+
+            # ── v2 indexes for splits and snapshots ──────────
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_split_txn "
+                "ON transaction_splits (transaction_id)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_split_spend "
+                "ON transaction_splits (counts_as_true_spend, spend_type)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_acct_bal_snap "
+                "ON account_balance_snapshots (account_id, as_of_date)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_household_snap "
+                "ON household_snapshots (as_of_date)"
+            ))
+
+            _sqlite_add_column_if_missing(
+                conn, "transactions", "financial_document_id", "INTEGER",
+            )
+            _sqlite_add_column_if_missing(
+                conn, "transaction_splits", "document_line_id", "INTEGER",
+            )
+
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_txn_fin_doc "
+                "ON transactions (financial_document_id)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_split_doc_line "
+                "ON transaction_splits (document_line_id)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_fin_doc_type_date "
+                "ON financial_documents (document_type, statement_date)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_fin_doc_prop "
+                "ON financial_documents (rental_property_id, statement_date)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_pnl_prop_period "
+                "ON property_pnl_snapshots (rental_property_id, statement_date)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_instrument_symbol "
+                "ON instruments (symbol)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_position_acct_inst "
+                "ON position_lots (account_id, instrument_id, as_of_date)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_price_inst_date "
+                "ON price_snapshots (instrument_id, as_of_date)"
+            ))
             conn.commit()

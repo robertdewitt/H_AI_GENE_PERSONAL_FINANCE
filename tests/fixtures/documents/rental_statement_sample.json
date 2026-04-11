@@ -1,0 +1,17 @@
+{
+  "document_type": "rental_statement",
+  "currency": "USD",
+  "property_code": "oak_st_duplex",
+  "statement_date": "2025-04-30",
+  "period": {"start": "2025-04-01", "end": "2025-04-30"},
+  "counterparty": "Oak St Property Management LLC",
+  "reference": "STMT-2025-04-OAK",
+  "net_bank_deposit": 310.0,
+  "lines": [
+    {"kind": "income", "code": "rent", "label": "Monthly rent — Unit A", "amount": 2400.0, "is_cash": true},
+    {"kind": "expense", "code": "property_management", "label": "Management fee (10%)", "amount": -240.0, "is_cash": true},
+    {"kind": "expense", "code": "repairs", "label": "Plumbing repair", "amount": -350.0, "is_cash": true},
+    {"kind": "transfer", "code": "owner_draw", "label": "Owner distribution to household", "amount": -1500.0, "is_cash": true},
+    {"kind": "liability", "code": "prepaid_rent", "label": "Tenant prepaid rent (deferred revenue)", "amount": 600.0, "is_cash": false, "excluded_from_net_sum": true}
+  ]
+}
