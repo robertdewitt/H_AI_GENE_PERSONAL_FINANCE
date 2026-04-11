@@ -1,4 +1,10 @@
-"""Runtime build identity: semver from config + git SHA, commit time, server start."""
+"""Runtime build identity: semver from config + git SHA, commit time, server start.
+
+Static parts (SHA, commit count, branch, commit date, start time) are computed
+once at module import.  The dirty flag is re-evaluated on every call to
+get_footer() / get_short() so it reflects the actual working-tree state without
+requiring a server restart after a commit.
+"""
 
 from __future__ import annotations
 
@@ -28,6 +34,7 @@ def _git(*args: str) -> str | None:
 
 
 def _git_dirty() -> bool:
+    """Check for uncommitted changes — cheap enough to call per request."""
     try:
         proc = subprocess.run(
             ["git", "status", "--porcelain"],
@@ -59,6 +66,8 @@ def _parse_git_iso(ts: str | None) -> datetime | None:
         return None
 
 
+# ── Static parts — computed once at startup ──────────────────────────
+
 def _git_commit_count() -> int | None:
     raw = _git("rev-list", "--count", "HEAD")
     try:
@@ -67,41 +76,37 @@ def _git_commit_count() -> int | None:
         return None
 
 
-def _git_branch() -> str | None:
-    return _git("rev-parse", "--abbrev-ref", "HEAD")
+_SHA: str = _git("rev-parse", "--short", "HEAD") or "no-git"
+_BRANCH: str | None = _git("rev-parse", "--abbrev-ref", "HEAD")
+_COMMIT_COUNT: int | None = _git_commit_count()
+_STARTED_FMT: str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+_committed_raw = _git("log", "-1", "--format=%cI")
+_committed_dt = _parse_git_iso(_committed_raw)
+_COMMITTED_FMT: str = (
+    _committed_dt.strftime("%Y-%m-%d %H:%M UTC") if _committed_dt else "unknown"
+)
 
 
 def format_build_lines(semver: str) -> tuple[str, str]:
-    """Return (footer_line, dashboard_short_line) with version, git, times.
+    """Kept for backwards compatibility — calls get_footer/get_short."""
+    return get_footer(semver), get_short(semver)
 
-    The displayed version is  v{semver}.{commit_count}  so it increments
-    automatically on every commit without manual version bumping.
-    +dirty is appended when there are uncommitted changes.
-    """
-    sha = _git("rev-parse", "--short", "HEAD")
-    dirty = _git_dirty()
-    commit_count = _git_commit_count()
-    branch = _git_branch()
 
-    # Build the version string: semver + auto-incrementing commit count
-    count_str = str(commit_count) if commit_count is not None else "?"
-    version = f"v{semver}.{count_str}"
-    if dirty:
-        version += "+dirty"
-
-    sha_disp = sha or "no-git"
-    branch_disp = f" [{branch}]" if branch and branch != "HEAD" else ""
-
-    committed_raw = _git("log", "-1", "--format=%cI")
-    committed = _parse_git_iso(committed_raw)
-    committed_fmt = committed.strftime("%Y-%m-%d %H:%M UTC") if committed else "unknown"
-
-    started = datetime.now(timezone.utc)
-    started_fmt = started.strftime("%Y-%m-%d %H:%M UTC")
-
-    footer = (
-        f"{version} · {sha_disp}{branch_disp} · "
-        f"committed {committed_fmt} · started {started_fmt}"
+def get_footer(semver: str) -> str:
+    """Full footer line — dirty flag is live (reflects current working tree)."""
+    count_str = str(_COMMIT_COUNT) if _COMMIT_COUNT is not None else "?"
+    dirty_str = "+dirty" if _git_dirty() else ""
+    branch_str = f" [{_BRANCH}]" if _BRANCH and _BRANCH != "HEAD" else ""
+    return (
+        f"v{semver}.{count_str}{dirty_str} · {_SHA}{branch_str} · "
+        f"committed {_COMMITTED_FMT} · started {_STARTED_FMT}"
     )
-    dash_short = f"{version} · {sha_disp}{branch_disp} · committed {committed_fmt}"
-    return footer, dash_short
+
+
+def get_short(semver: str) -> str:
+    """Short dashboard line — dirty flag is live."""
+    count_str = str(_COMMIT_COUNT) if _COMMIT_COUNT is not None else "?"
+    dirty_str = "+dirty" if _git_dirty() else ""
+    branch_str = f" [{_BRANCH}]" if _BRANCH and _BRANCH != "HEAD" else ""
+    return f"v{semver}.{count_str}{dirty_str} · {_SHA}{branch_str} · committed {_COMMITTED_FMT}"
