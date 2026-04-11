@@ -2,6 +2,9 @@
 
 The classifier assigns only the narrow economic role — not reporting
 nuance, which belongs to Category and PaymentDecomposition.
+
+Users work with categories only.  Economic event types are system-derived
+and are used internally to auto-populate split spend metadata.
 """
 import logging
 import re
@@ -13,8 +16,53 @@ from app.models.account import Account, AccountType, LIABILITY_TYPES
 from app.models.enums import (
     ClassificationProvenance,
     EconomicEventType,
+    SpendType,
 )
 from app.models.transaction import Transaction
+
+
+# ── Spend metadata mapping ───────────────────────────────────────────
+# Maps each EconomicEventType to (SpendType, counts_as_true_spend).
+# Used to auto-populate split metadata so users never need to set these
+# directly — they only pick a category.
+
+_SPEND_METADATA: dict[str, tuple[str, bool]] = {
+    EconomicEventType.UNCLASSIFIED.value:              (SpendType.LIFESTYLE.value, True),
+    EconomicEventType.EXTERNAL_INCOME.value:           (SpendType.NON_SPEND_CASH_USE.value, False),
+    EconomicEventType.PAYROLL_INCOME.value:            (SpendType.NON_SPEND_CASH_USE.value, False),
+    EconomicEventType.EMPLOYER_BENEFIT.value:          (SpendType.NON_SPEND_CASH_USE.value, False),
+    EconomicEventType.LIFESTYLE_EXPENSE.value:         (SpendType.LIFESTYLE.value, True),
+    EconomicEventType.CARD_PURCHASE.value:             (SpendType.LIFESTYLE.value, True),
+    EconomicEventType.INTERNAL_TRANSFER.value:         (SpendType.NON_SPEND_CASH_USE.value, False),
+    EconomicEventType.CARD_PAYMENT_SETTLEMENT.value:   (SpendType.NON_SPEND_CASH_USE.value, False),
+    EconomicEventType.LIABILITY_PAYMENT.value:         (SpendType.DEBT_COST.value, True),
+    EconomicEventType.MORTGAGE_PAYMENT.value:          (SpendType.DEBT_COST.value, True),
+    EconomicEventType.MORTGAGE_INTEREST.value:         (SpendType.DEBT_COST.value, True),
+    EconomicEventType.MORTGAGE_PRINCIPAL.value:        (SpendType.NON_SPEND_CASH_USE.value, False),
+    EconomicEventType.INVESTMENT_CONTRIBUTION.value:   (SpendType.NON_SPEND_CASH_USE.value, False),
+    EconomicEventType.INVESTMENT_WITHDRAWAL.value:     (SpendType.NON_SPEND_CASH_USE.value, False),
+    EconomicEventType.INVESTMENT_FLOW.value:           (SpendType.NON_SPEND_CASH_USE.value, False),
+    EconomicEventType.ASSET_FLOW.value:                (SpendType.NON_SPEND_CASH_USE.value, False),
+    EconomicEventType.FEE.value:                       (SpendType.DEBT_COST.value, True),
+    EconomicEventType.TAX_PAYMENT.value:               (SpendType.TAX.value, True),
+    EconomicEventType.RENTAL_INCOME.value:             (SpendType.NON_SPEND_CASH_USE.value, False),
+    EconomicEventType.RENTAL_EXPENSE.value:            (SpendType.LIFESTYLE.value, True),
+    EconomicEventType.OWNER_DISTRIBUTION.value:        (SpendType.NON_SPEND_CASH_USE.value, False),
+    EconomicEventType.DEFERRED_RENT_LIABILITY.value:   (SpendType.NON_SPEND_CASH_USE.value, False),
+}
+
+
+def event_type_to_spend_metadata(event_type: str | None) -> tuple[str, bool]:
+    """Map an event_type string to (spend_type, counts_as_true_spend).
+
+    Called when creating splits from category-only user input so that
+    spend analysis always has correct metadata without user involvement.
+    Defaults to (LIFESTYLE, True) for unknown/null event types — conservative,
+    treats ambiguous transactions as real spend.
+    """
+    if event_type is None:
+        return SpendType.LIFESTYLE.value, True
+    return _SPEND_METADATA.get(event_type, (SpendType.LIFESTYLE.value, True))
 
 log = logging.getLogger(__name__)
 

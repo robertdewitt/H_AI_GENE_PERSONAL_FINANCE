@@ -10,7 +10,6 @@ from app.database import get_db
 from app.templating import templates
 from app.models.account import Account
 from app.models.category import Category
-from app.models.enums import EconomicEventType
 from app.models.transaction import Transaction
 from app.models.transfer_link import TransferLink
 from app.services.split_service import list_splits, replace_transaction_splits
@@ -184,28 +183,29 @@ def transaction_edit_form(
         select(Account).order_by(Account.name)
     ).scalars().all()
 
-    splits_rows = []
-    for s in list_splits(db, txn.id):
-        splits_rows.append({
+    # Splits serialised as category + amount only — spend metadata is system-derived
+    splits_rows = [
+        {
             "amount": s.amount_native,
             "currency": s.currency,
-            "spend_type": s.spend_type or "",
-            "event_type": s.event_type or "",
             "category_id": s.category_id,
             "notes": s.notes or "",
-            "counts_as_true_spend": s.counts_as_true_spend,
-        })
+        }
+        for s in list_splits(db, txn.id)
+    ]
     splits_json = json.dumps(splits_rows)
-
-    event_type_choices = [e.value for e in EconomicEventType]
+    categories_json = [
+        {"id": c.id, "name": c.name, "type": c.category_type.value}
+        for c in categories
+    ]
 
     return templates.TemplateResponse(request, "transactions/edit.html", {
         "txn": txn,
         "categories": categories,
+        "categories_json": categories_json,
         "accounts": accounts,
         "return_url": return_url or f"/accounts/{txn.account_id}",
         "splits_json": splits_json,
-        "event_type_choices": event_type_choices,
     })
 
 
@@ -217,7 +217,6 @@ def transaction_update(
     description: str = Form(...),
     amount: float = Form(...),
     category_id: str = Form(""),
-    event_type: str = Form(""),
     is_transfer: bool = Form(False),
     transfer_account_id: str = Form(""),
     splits_json: str = Form(""),
@@ -234,7 +233,21 @@ def transaction_update(
     accounts = db.execute(
         select(Account).order_by(Account.name)
     ).scalars().all()
-    event_type_choices = [e.value for e in EconomicEventType]
+    categories_json = [
+        {"id": c.id, "name": c.name, "type": c.category_type.value}
+        for c in categories
+    ]
+
+    def _render_form(split_error=None, status_code=200):
+        return templates.TemplateResponse(request, "transactions/edit.html", {
+            "txn": txn,
+            "categories": categories,
+            "categories_json": categories_json,
+            "accounts": accounts,
+            "return_url": return_url or f"/accounts/{txn.account_id}",
+            "splits_json": splits_json,
+            "split_error": split_error,
+        }, status_code=status_code)
 
     split_error = None
     lines = None
@@ -263,31 +276,7 @@ def transaction_update(
                             )
 
     if split_error:
-        splits_rows = []
-        try:
-            parsed = json.loads(splits_json) if splits_json.strip() else []
-            if isinstance(parsed, list):
-                for row in parsed:
-                    splits_rows.append({
-                        "amount": row.get("amount"),
-                        "currency": row.get("currency", txn.original_currency),
-                        "spend_type": row.get("spend_type", ""),
-                        "event_type": row.get("event_type", ""),
-                        "category_id": row.get("category_id"),
-                        "notes": row.get("notes", ""),
-                        "counts_as_true_spend": row.get("counts_as_true_spend", False),
-                    })
-        except json.JSONDecodeError:
-            pass
-        return templates.TemplateResponse(request, "transactions/edit.html", {
-            "txn": txn,
-            "categories": categories,
-            "accounts": accounts,
-            "return_url": return_url or f"/accounts/{txn.account_id}",
-            "splits_json": splits_json if splits_json.strip() else json.dumps(splits_rows),
-            "event_type_choices": event_type_choices,
-            "split_error": split_error,
-        }, status_code=400)
+        return _render_form(split_error=split_error, status_code=400)
 
     old_event_type = txn.event_type
     old_category_id = txn.category_id
@@ -295,9 +284,6 @@ def transaction_update(
     txn.description = description
     txn.amount = amount
     txn.is_transfer = is_transfer
-
-    if event_type.strip():
-        txn.event_type = event_type.strip()
 
     new_cat_id = int(category_id) if category_id.strip() else None
     txn.category_id = new_cat_id
@@ -308,15 +294,7 @@ def transaction_update(
     if splits_json.strip() and lines is not None:
         val = replace_transaction_splits(db, txn_id, lines)
         if not val.valid:
-            return templates.TemplateResponse(request, "transactions/edit.html", {
-                "txn": txn,
-                "categories": categories,
-                "accounts": accounts,
-                "return_url": return_url or f"/accounts/{txn.account_id}",
-                "splits_json": splits_json,
-                "event_type_choices": event_type_choices,
-                "split_error": "; ".join(val.warnings),
-            }, status_code=400)
+            return _render_form(split_error="; ".join(val.warnings), status_code=400)
 
     if is_transfer and transfer_account_id.strip():
         dest_account_id = int(transfer_account_id)
