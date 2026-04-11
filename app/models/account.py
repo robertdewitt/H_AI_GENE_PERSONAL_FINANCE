@@ -14,6 +14,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.enums import BalanceTruthSource, LiabilityBalanceSource
 
 
 class AccountType(str, enum.Enum):
@@ -68,6 +69,21 @@ class Account(Base):
     current_value: Mapped[float | None] = mapped_column(Float)
     value_as_of_date: Mapped[datetime | None] = mapped_column(DateTime)
     notes: Mapped[str | None] = mapped_column(Text)
+
+    # ── Truth layer columns ──────────────────────────────────────
+    balance_truth_source: Mapped[str | None] = mapped_column(
+        String(30), default=BalanceTruthSource.TRANSACTION_SUM.value,
+    )
+    liability_balance_source: Mapped[str | None] = mapped_column(
+        String(40),
+    )
+    statement_balance: Mapped[float | None] = mapped_column(Float)
+    statement_balance_as_of: Mapped[datetime | None] = mapped_column(DateTime)
+    original_principal_balance: Mapped[float | None] = mapped_column(Float)
+    balance_confidence: Mapped[float | None] = mapped_column(Float)
+    balance_stale_hint: Mapped[bool | None] = mapped_column(Boolean)
+    liability_balance_stale: Mapped[bool | None] = mapped_column(Boolean)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )

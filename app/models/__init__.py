@@ -7,6 +7,8 @@ from app.models.asset_valuation import AssetValuation
 from app.models.currency_rate import CurrencyRate
 from app.models.paycheck_stub import PaycheckStub
 from app.models.category_rule import CategoryRule
+from app.models.reconciliation import ReconciliationGroup, ReconciliationMember
+from app.models.payment_decomposition import PaymentDecomposition
 
 __all__ = [
     "Account",
@@ -18,4 +20,7 @@ __all__ = [
     "CurrencyRate",
     "PaycheckStub",
     "CategoryRule",
+    "ReconciliationGroup",
+    "ReconciliationMember",
+    "PaymentDecomposition",
 ]
