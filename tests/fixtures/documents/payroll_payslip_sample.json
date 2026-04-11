@@ -1,0 +1,19 @@
+{
+  "document_type": "payroll",
+  "currency": "USD",
+  "employer": "ACME Corp",
+  "pay_date": "2025-05-15",
+  "pay_period": {"start": "2025-05-01", "end": "2025-05-15"},
+  "reference": "PAY-2025-05-15-001",
+  "net_pay": 5238.72,
+  "lines": [
+    {"kind": "income", "code": "salary_gross", "label": "Gross earnings", "amount": 8500.0, "is_cash": false},
+    {"kind": "expense", "code": "federal_tax", "label": "Federal withholding", "amount": -1275.5, "is_cash": false},
+    {"kind": "expense", "code": "state_tax", "label": "State withholding", "amount": -425.0, "is_cash": false},
+    {"kind": "expense", "code": "social_security", "label": "OASDI", "amount": -527.0, "is_cash": false},
+    {"kind": "expense", "code": "medicare", "label": "Medicare", "amount": -123.28, "is_cash": false},
+    {"kind": "expense", "code": "retirement_401k", "label": "401(k) deferral", "amount": -510.5, "is_cash": false},
+    {"kind": "expense", "code": "health_insurance", "label": "Medical premium", "amount": -400.0, "is_cash": false},
+    {"kind": "income", "code": "employer_401k_match", "label": "Employer 401(k) match (non-cash)", "amount": 255.25, "is_cash": false, "excluded_from_net_sum": true}
+  ]
+}

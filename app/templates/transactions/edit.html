@@ -7,8 +7,14 @@
     <p>{{ txn.account.name }} &mdash; {{ txn.date.strftime("%b %d, %Y") }}</p>
 </hgroup>
 
-<form method="post" action="/transactions/{{ txn.id }}/edit">
+{% if split_error %}
+<p class="error" style="color: var(--pico-del-color, #c0392b);">{{ split_error }}</p>
+{% endif %}
+
+<form method="post" action="/transactions/{{ txn.id }}/edit" id="edit-txn-form">
     <input type="hidden" name="return_url" value="{{ return_url }}">
+    <input type="hidden" name="splits_json" id="splits_json" value="{{ splits_json | e }}">
+
     <div class="grid">
         <div>
             <label for="date">Date *</label>
@@ -37,6 +43,15 @@
     </select>
     <small>Changing the category teaches the system to recognize similar transactions in the future.</small>
 
+    <label for="event_type">Economic event (truth layer)</label>
+    <select id="event_type" name="event_type">
+        <option value="">— keep / unclassified —</option>
+        {% for ev in event_type_choices %}
+        <option value="{{ ev }}" {% if txn.event_type == ev %}selected{% endif %}>{{ ev }}</option>
+        {% endfor %}
+    </select>
+    <small>Narrow economic role — not the same as reporting category. Updating this syncs to manual splits when possible.</small>
+
     <fieldset>
         <label>
             <input type="checkbox" id="is_transfer_check" name="is_transfer" value="true"
@@ -61,7 +76,25 @@
         <small>Select the other account involved in this transfer. The system will try to find a matching transaction to link.</small>
     </div>
 
-    <div class="btn-group">
+    <hr>
+    <h2>Allocations (splits)</h2>
+    <p class="small">Each line is part of this transaction. <strong>Sum of amounts must equal the transaction amount</strong> ({{ txn.original_currency }}).</p>
+    <table class="striped" id="splits-table">
+        <thead>
+            <tr>
+                <th>Amount</th>
+                <th>Spend type</th>
+                <th>Split event (optional)</th>
+                <th>Notes</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody id="splits-body"></tbody>
+    </table>
+    <button type="button" class="outline" id="add-split-row">Add split line</button>
+    <button type="button" class="outline secondary" id="one-split-pass">One line = full amount</button>
+
+    <div class="btn-group" style="margin-top: 1rem;">
         <button type="submit">Save Changes</button>
         <a href="{{ return_url }}" role="button" class="outline">Cancel</a>
     </div>
@@ -78,6 +111,82 @@
 {% endblock %}
 
 {% block scripts %}
+<script>
+(function() {
+    const SPEND_TYPES = ["", "lifestyle", "fixed_core", "debt_cost", "tax", "non_spend_cash_use"];
+    const EVENT_TYPES = {{ event_type_choices | tojson }};
+    let initialRows = [];
+    try {
+        initialRows = JSON.parse(document.getElementById('splits_json').value || '[]');
+    } catch (e) { initialRows = []; }
+
+    const tbody = document.getElementById('splits-body');
+    const amountInput = document.getElementById('amount');
+    const hiddenJson = document.getElementById('splits_json');
+    const ccy = {{ txn.original_currency | tojson }};
+
+    function rowTemplate(r) {
+        const tr = document.createElement('tr');
+        const amt = r.amount != null && r.amount !== '' ? r.amount : '';
+        const n = (r.notes || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+        tr.innerHTML = `
+            <td><input type="number" step="0.01" class="split-amt" value="${amt}" required></td>
+            <td><select class="split-spend">${SPEND_TYPES.map(s => `<option value="${s}" ${(r.spend_type||'')===s?'selected':''}>${s||'—'}</option>`).join('')}</select></td>
+            <td><select class="split-ev"><option value="">—</option>${EVENT_TYPES.map(ev => `<option value="${ev}" ${(r.event_type||'')===ev?'selected':''}>${ev}</option>`).join('')}</select></td>
+            <td><input type="text" class="split-notes" value="${n}" placeholder="Notes"></td>
+            <td><button type="button" class="outline secondary split-rm">Remove</button></td>
+        `;
+        tr.querySelector('.split-rm').addEventListener('click', () => { tr.remove(); serialize(); });
+        tr.querySelectorAll('input,select').forEach(el => el.addEventListener('input', serialize));
+        tr.querySelectorAll('input,select').forEach(el => el.addEventListener('change', serialize));
+        return tr;
+    }
+
+    function render() {
+        tbody.innerHTML = '';
+        const data = initialRows.length ? initialRows : [{ amount: '', currency: ccy, spend_type: '', event_type: '', notes: '' }];
+        data.forEach((r) => tbody.appendChild(rowTemplate(r)));
+        serialize();
+    }
+
+    function serialize() {
+        const out = [];
+        tbody.querySelectorAll('tr').forEach(tr => {
+            const amt = tr.querySelector('.split-amt');
+            const sp = tr.querySelector('.split-spend');
+            const ev = tr.querySelector('.split-ev');
+            const notes = tr.querySelector('.split-notes');
+            const v = parseFloat(amt.value);
+            if (amt.value === '' || isNaN(v)) return;
+            out.push({
+                amount: v,
+                currency: ccy,
+                spend_type: sp.value || null,
+                event_type: ev.value || null,
+                category_id: null,
+                notes: notes.value || null,
+                counts_as_true_spend: !!(sp.value && sp.value.length)
+            });
+        });
+        hiddenJson.value = JSON.stringify(out);
+    }
+
+    document.getElementById('add-split-row').addEventListener('click', () => {
+        tbody.appendChild(rowTemplate({ amount: '', spend_type: '', event_type: '', notes: '' }));
+        serialize();
+    });
+    document.getElementById('one-split-pass').addEventListener('click', () => {
+        tbody.innerHTML = '';
+        const a = parseFloat(amountInput.value);
+        const tr = rowTemplate({ amount: isNaN(a) ? '' : a, spend_type: '', event_type: '', notes: 'Pass-through' });
+        tbody.appendChild(tr);
+        serialize();
+    });
+    document.getElementById('edit-txn-form').addEventListener('submit', serialize);
+
+    render();
+})();
+</script>
 <script>
 document.getElementById('is_transfer_check').addEventListener('change', function() {
     document.getElementById('transferAccountSection').style.display = this.checked ? 'block' : 'none';

@@ -14,10 +14,21 @@ class EconomicEventType(str, enum.Enum):
     CARD_PURCHASE = "card_purchase"
     CARD_PAYMENT_SETTLEMENT = "card_payment_settlement"
     LIABILITY_PAYMENT = "liability_payment"
+    MORTGAGE_PAYMENT = "mortgage_payment"
+    MORTGAGE_INTEREST = "mortgage_interest"
+    MORTGAGE_PRINCIPAL = "mortgage_principal"
+    INVESTMENT_CONTRIBUTION = "investment_contribution"
+    INVESTMENT_WITHDRAWAL = "investment_withdrawal"
     INVESTMENT_FLOW = "investment_flow"
     ASSET_FLOW = "asset_flow"
     FEE = "fee"
     TAX_PAYMENT = "tax_payment"
+    PAYROLL_INCOME = "payroll_income"
+    EMPLOYER_BENEFIT = "employer_benefit"
+    RENTAL_INCOME = "rental_income"
+    RENTAL_EXPENSE = "rental_expense"
+    OWNER_DISTRIBUTION = "owner_distribution"
+    DEFERRED_RENT_LIABILITY = "deferred_rent_liability"
 
 
 class ClassificationProvenance(str, enum.Enum):
@@ -80,3 +91,49 @@ class PaymentComponent(str, enum.Enum):
     TAX = "tax"
     FEE = "fee"
     OTHER = "other"
+
+
+class SpendType(str, enum.Enum):
+    """Semantic spend classification for splits — NOT a reporting category."""
+    LIFESTYLE = "lifestyle"
+    FIXED_CORE = "fixed_core"
+    DEBT_COST = "debt_cost"
+    TAX = "tax"
+    NON_SPEND_CASH_USE = "non_spend_cash_use"
+
+
+class MemberRole(str, enum.Enum):
+    SOURCE = "source"
+    DESTINATION = "destination"
+    FEE = "fee"
+
+
+class PayrollComponent(str, enum.Enum):
+    SALARY_GROSS = "salary_gross"
+    PAYROLL_TAX = "payroll_tax"
+    PENSION_CONTRIBUTION_EMPLOYEE = "pension_contribution_employee"
+    PENSION_CONTRIBUTION_EMPLOYER = "pension_contribution_employer"
+    HEALTH_BENEFIT = "health_benefit"
+    WELLBEING_BENEFIT = "wellbeing_benefit"
+    OTHER_DEDUCTION = "other_deduction"
+    NET_SALARY_CASH = "net_salary_cash"
+
+
+class SnapshotSource(str, enum.Enum):
+    COMPUTED = "computed"
+    IMPORTED = "imported"
+    MANUAL = "manual"
+    STALE_CARRYFORWARD = "stale_carryforward"
+
+
+class DocumentType(str, enum.Enum):
+    PAYROLL = "payroll"
+    RENTAL_STATEMENT = "rental_statement"
+
+
+class DocumentLineKind(str, enum.Enum):
+    """Semantic role of a line on a structured financial document."""
+    INCOME = "income"
+    EXPENSE = "expense"
+    TRANSFER = "transfer"
+    LIABILITY = "liability"

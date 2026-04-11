@@ -9,6 +9,20 @@ from app.models.paycheck_stub import PaycheckStub
 from app.models.category_rule import CategoryRule
 from app.models.reconciliation import ReconciliationGroup, ReconciliationMember
 from app.models.payment_decomposition import PaymentDecomposition
+from app.models.transaction_split import TransactionSplit
+from app.models.instrument import Instrument, PositionLot, PriceSnapshot
+from app.models.rental_property import RentalProperty
+from app.models.financial_document import (
+    FinancialDocument,
+    FinancialDocumentLine,
+    PropertyPnLSnapshot,
+)
+from app.models.snapshots import (
+    AccountBalanceSnapshot,
+    AssetValuationSnapshot,
+    HouseholdSnapshot,
+    LiabilityBalanceSnapshot,
+)
 
 __all__ = [
     "Account",
@@ -23,4 +37,16 @@ __all__ = [
     "ReconciliationGroup",
     "ReconciliationMember",
     "PaymentDecomposition",
+    "TransactionSplit",
+    "AccountBalanceSnapshot",
+    "AssetValuationSnapshot",
+    "LiabilityBalanceSnapshot",
+    "HouseholdSnapshot",
+    "RentalProperty",
+    "FinancialDocument",
+    "FinancialDocumentLine",
+    "PropertyPnLSnapshot",
+    "Instrument",
+    "PositionLot",
+    "PriceSnapshot",
 ]

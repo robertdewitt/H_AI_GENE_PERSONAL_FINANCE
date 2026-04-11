@@ -60,6 +60,10 @@ class Transaction(Base):
     )
     classification_confidence: Mapped[float | None] = mapped_column(Float)
 
+    financial_document_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("financial_documents.id"), index=True,
+    )
+
     raw_data: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
@@ -72,6 +76,13 @@ class Transaction(Base):
     category = relationship("Category", back_populates="transactions")
     transfer_link = relationship("TransferLink", foreign_keys=[transfer_link_id])
     import_batch = relationship("ImportBatch", back_populates="transactions")
+    splits = relationship(
+        "TransactionSplit", back_populates="transaction",
+        cascade="all, delete-orphan",
+    )
+    financial_document = relationship(
+        "FinancialDocument", foreign_keys=[financial_document_id],
+    )
 
     @property
     def effective_amount(self) -> float:
