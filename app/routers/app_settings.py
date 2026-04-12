@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.services.fx_service import COMMON_CURRENCIES
+from app.services.property_valuation import provider_status
 from app.services.user_profile_service import get_profile, update_profile
 from app.templating import templates
 
@@ -28,11 +29,22 @@ COUNTRIES = [
 @router.get("", response_class=HTMLResponse)
 def settings_page(request: Request, db: Session = Depends(get_db)):
     profile = get_profile(db)
+    prop_status = {
+        region: provider_status(
+            currency={"US": "USD", "UK": "GBP", "AU": "AUD"}.get(region, "USD"),
+            country_of_residence=profile.country_of_residence,
+            rentcast_api_key=profile.rentcast_api_key,
+            property_data_api_key=profile.property_data_api_key,
+            domain_api_key=profile.domain_api_key,
+        )
+        for region in ("US", "UK", "AU")
+    }
     return templates.TemplateResponse(request, "settings/index.html", {
         "profile": profile,
         "currencies": COMMON_CURRENCIES,
         "countries": COUNTRIES,
         "saved": request.query_params.get("saved"),
+        "prop_status": prop_status,
     })
 
 
@@ -44,6 +56,9 @@ def settings_save(
     nationality: str = Form(""),
     has_spouse: bool = Form(False),
     spouse_nationality: str = Form(""),
+    rentcast_api_key: str = Form(""),
+    property_data_api_key: str = Form(""),
+    domain_api_key: str = Form(""),
     db: Session = Depends(get_db),
 ):
     update_profile(
@@ -53,6 +68,9 @@ def settings_save(
         nationality=nationality.strip() or None,
         has_spouse=has_spouse,
         spouse_nationality=spouse_nationality.strip() or None,
+        rentcast_api_key=rentcast_api_key or None,
+        property_data_api_key=property_data_api_key or None,
+        domain_api_key=domain_api_key or None,
     )
 
     # Ensure current FX rates exist for the chosen display currency

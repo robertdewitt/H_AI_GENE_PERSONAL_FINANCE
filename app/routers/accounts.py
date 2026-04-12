@@ -23,6 +23,7 @@ from app.services.account_service import (
     update_account,
 )
 from app.services.user_profile_service import get_profile
+from app.services.property_valuation import estimate_property_value, provider_status as prop_provider_status
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
@@ -239,6 +240,18 @@ def account_detail(
         for txn_id, cat_name in rows:
             split_categories.setdefault(txn_id, []).append(cat_name)
 
+    # For real estate accounts, determine which provider will be used
+    prop_status = None
+    if acct.account_type.value == "real_estate":
+        profile = get_profile(db)
+        prop_status = prop_provider_status(
+            currency=acct.currency,
+            country_of_residence=profile.country_of_residence,
+            rentcast_api_key=profile.rentcast_api_key,
+            property_data_api_key=profile.property_data_api_key,
+            domain_api_key=profile.domain_api_key,
+        )
+
     return templates.TemplateResponse(request, "accounts/detail.html", {
         "account": acct,
         "balance": balance,
@@ -248,6 +261,7 @@ def account_detail(
         "category_summary": category_summary,
         "monthly_spend_labels": monthly_spend_labels,
         "monthly_spend_datasets": monthly_spend_datasets,
+        "prop_status": prop_status,
     })
 
 
@@ -330,64 +344,45 @@ def account_refresh_value(account_id: int, db: Session = Depends(get_db)):
 
 
 def _try_fetch_property_value(db: Session, acct) -> None:
-    """Best-effort property value lookup using free public APIs.
+    """Fetch an estimated property value using the appropriate regional provider.
 
-    Uses the ATTOM Data API (free tier) if ATTOM_API_KEY is set,
-    otherwise falls back to a Rentcast public estimate.
-    If neither is available, stores nothing and logs a warning.
+    Routes to Rentcast (US), HM Land Registry / PropertyData (UK),
+    or Domain API (AU) based on account currency and user profile.
+    Stores the result as an AssetValuation row and updates current_value.
     """
     from app.models.asset_valuation import AssetValuation
-    from app.config import settings as _settings
 
-    address = acct.property_address
-    if not address:
+    if not acct.property_address:
         return
 
-    estimated = _fetch_rentcast_value(address)
+    profile = get_profile(db)
+    result = estimate_property_value(
+        address=acct.property_address,
+        currency=acct.currency,
+        country_of_residence=profile.country_of_residence,
+        rentcast_api_key=profile.rentcast_api_key,
+        property_data_api_key=profile.property_data_api_key,
+        domain_api_key=profile.domain_api_key,
+    )
 
-    if estimated is None:
-        log.warning("Property value lookup returned no result for: %s", address)
+    if result is None:
+        log.warning("Property value lookup returned no result for: %s", acct.property_address)
         return
 
-    log.info("Property estimate for '%s': %.2f", address, estimated)
+    log.info(
+        "Property estimate for '%s': %.2f (source: %s, is_estimate: %s)",
+        acct.property_address, result.value, result.source, result.is_estimate,
+    )
 
-    # Store as an AssetValuation row so history is preserved
     val = AssetValuation(
         account_id=acct.id,
         date=datetime.now(),
-        value=estimated,
+        value=result.value,
         currency=acct.currency,
-        source="rentcast_api",
-        notes="Auto-fetched estimate",
+        source=result.source,
+        notes=result.notes or result.source_label,
     )
     db.add(val)
-
-    # Also update current_value for immediate display
-    acct.current_value = estimated
+    acct.current_value = result.value
     acct.value_as_of_date = datetime.now()
     db.commit()
-
-
-def _fetch_rentcast_value(address: str) -> float | None:
-    """Query Rentcast public API for an AVM (automated valuation model) estimate.
-
-    Rentcast has a free tier. No API key required for the basic AVM endpoint.
-    Returns estimated value in USD, or None on failure.
-    """
-    import urllib.parse
-    import urllib.request
-    import json as _json
-
-    try:
-        encoded = urllib.parse.quote(address)
-        url = f"https://api.rentcast.io/v1/avm/value?address={encoded}"
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            data = _json.loads(resp.read())
-            price = data.get("price") or data.get("value")
-            if price:
-                return float(price)
-    except Exception as e:
-        log.debug("Rentcast AVM failed for '%s': %s", address, e)
-
-    return None

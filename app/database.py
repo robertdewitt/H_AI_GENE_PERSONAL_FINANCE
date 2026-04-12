@@ -112,6 +112,11 @@ def init_db():
         _col("accounts", "property_address", "VARCHAR(500)")
         _col("accounts", "purchase_price",   "REAL")
 
+        # ── User profile API keys ─────────────────────────────
+        _col("user_profile", "rentcast_api_key",      "VARCHAR(200)")
+        _col("user_profile", "property_data_api_key", "VARCHAR(200)")
+        _col("user_profile", "domain_api_key",         "VARCHAR(200)")
+
         # ── v2 recon columns ─────────────────────────────────
         _col("reconciliation_groups", "reconciliation_confidence", "REAL")
         _col("reconciliation_groups", "fx_rate_used",              "REAL")

@@ -82,14 +82,28 @@
     {% endif %}
 </div>
 {% if account.property_address %}
-<form method="post" action="/accounts/{{ account.id }}/refresh-value" style="margin-bottom:1.5rem">
-    <button type="submit" class="outline" style="margin:0">
-        Refresh Estimated Value
-    </button>
+<div style="margin-bottom:1.5rem">
+    <form method="post" action="/accounts/{{ account.id }}/refresh-value" style="display:inline;margin:0">
+        <button type="submit" class="outline" style="margin:0">Refresh Estimated Value</button>
+    </form>
     {% if request.query_params.get("value_refreshed") %}
-    <small style="color:var(--pico-ins-color);margin-left:0.5rem">Value updated.</small>
+    <small style="color:var(--pico-ins-color);margin-left:0.75rem">Value updated.</small>
     {% endif %}
-</form>
+    {% if prop_status %}
+    <small style="display:block;margin-top:0.4rem;color:var(--pico-muted-color)">
+        Provider: <strong>{{ prop_status.provider }}</strong>
+        {% if not prop_status.is_estimate if prop_status.is_estimate is defined else "" %}
+        &bull; Shows last-sold price, not a live estimate.
+        {% endif %}
+        {% if not prop_status.key_present and prop_status.key_required %}
+        &bull; <a href="/settings">Add an API key</a> for live estimates.
+        {% endif %}
+        {% for label, href in prop_status.links %}
+        &bull; <a href="{{ href }}" target="_blank" rel="noopener">{{ label }}</a>
+        {% endfor %}
+    </small>
+    {% endif %}
+</div>
 {% endif %}
 {% endif %}
 
