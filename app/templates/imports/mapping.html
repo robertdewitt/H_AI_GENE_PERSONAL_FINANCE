@@ -30,14 +30,34 @@
                 {% endfor %}
             </select>
         </div>
-        <div>
-            <label for="col_amount">Amount Column *</label>
-            <select id="col_amount" name="col_amount" required>
-                <option value="">Select...</option>
+        <div id="amount-section">
+            <label for="col_amount">Amount Column</label>
+            <select id="col_amount" name="col_amount">
+                <option value="">None (use Debit/Credit below)</option>
                 {% for col in columns %}
                 <option value="{{ col }}" {% if mapping.amount == col %}selected{% endif %}>{{ col }}</option>
                 {% endfor %}
             </select>
+        </div>
+        <div>
+            <label for="col_debit">Debit Column (optional)</label>
+            <select id="col_debit" name="col_debit">
+                <option value="">None</option>
+                {% for col in columns %}
+                <option value="{{ col }}" {% if mapping.debit == col %}selected{% endif %}>{{ col }}</option>
+                {% endfor %}
+            </select>
+            <small>Money out — stored as negative. Used when file has separate debit/credit columns.</small>
+        </div>
+        <div>
+            <label for="col_credit">Credit Column (optional)</label>
+            <select id="col_credit" name="col_credit">
+                <option value="">None</option>
+                {% for col in columns %}
+                <option value="{{ col }}" {% if mapping.credit == col %}selected{% endif %}>{{ col }}</option>
+                {% endfor %}
+            </select>
+            <small>Money in — stored as positive.</small>
         </div>
         <div>
             <label for="col_balance">Balance Column (optional)</label>
@@ -162,8 +182,23 @@
     </div>
 
     <div class="btn-group">
-        <button type="submit">Import {{ total_rows }} Transactions</button>
+        <button type="submit" onclick="return validateAmount()">Import {{ total_rows }} Transactions</button>
         <a href="/import" role="button" class="outline">Cancel</a>
     </div>
 </form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function validateAmount() {
+    const amt = document.getElementById('col_amount').value;
+    const dbt = document.getElementById('col_debit').value;
+    const crd = document.getElementById('col_credit').value;
+    if (!amt && !dbt && !crd) {
+        alert('Please select either an Amount column, or at least one of Debit/Credit columns.');
+        return false;
+    }
+    return true;
+}
+</script>
 {% endblock %}

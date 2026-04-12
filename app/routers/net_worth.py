@@ -7,6 +7,7 @@ from app.database import get_db
 from app.models.category import Category
 from app.models.transaction import Transaction
 from app.services.net_worth_service import compute_net_worth, compute_net_worth_series
+from app.templating import templates
 
 router = APIRouter(prefix="/net-worth", tags=["net_worth"])
 
