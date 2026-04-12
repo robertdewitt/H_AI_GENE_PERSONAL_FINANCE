@@ -92,7 +92,7 @@
     {% if prop_status %}
     <small style="display:block;margin-top:0.4rem;color:var(--pico-muted-color)">
         Provider: <strong>{{ prop_status.provider }}</strong>
-        {% if not prop_status.is_estimate if prop_status.is_estimate is defined else "" %}
+        {% if prop_status.provider == "HM Land Registry (last sold price)" %}
         &bull; Shows last-sold price, not a live estimate.
         {% endif %}
         {% if not prop_status.key_present and prop_status.key_required %}

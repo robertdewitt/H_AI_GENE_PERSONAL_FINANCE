@@ -98,6 +98,15 @@ def account_create(
             acct.property_address = property_address.strip()
         if purchase_price.strip():
             acct.purchase_price = float(purchase_price)
+        # Real estate balance comes from manual mark, not transactions
+        acct.balance_truth_source = "manual_mark"
+        if val:
+            acct.current_value = val
+            acct.value_as_of_date = datetime.now()
+        elif acct.purchase_price and not acct.current_value:
+            # Fall back to purchase price until a market value is fetched
+            acct.current_value = acct.purchase_price
+            acct.value_as_of_date = datetime.now()
         db.commit()
 
         # Auto-fetch estimated value if address provided and no manual value given
@@ -315,6 +324,13 @@ def account_update(
     if acct and acct_type == AccountType.REAL_ESTATE:
         acct.property_address = property_address.strip() or None
         acct.purchase_price = float(purchase_price) if purchase_price.strip() else None
+        acct.balance_truth_source = "manual_mark"
+        if val:
+            acct.current_value = val
+            acct.value_as_of_date = datetime.now()
+        elif acct.purchase_price and not acct.current_value:
+            acct.current_value = acct.purchase_price
+            acct.value_as_of_date = datetime.now()
         db.commit()
 
         # Re-fetch estimated value when address changes and no manual value set
@@ -385,4 +401,5 @@ def _try_fetch_property_value(db: Session, acct) -> None:
     db.add(val)
     acct.current_value = result.value
     acct.value_as_of_date = datetime.now()
+    acct.balance_truth_source = "manual_mark"
     db.commit()
