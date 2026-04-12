@@ -70,6 +70,10 @@ class Account(Base):
     value_as_of_date: Mapped[datetime | None] = mapped_column(DateTime)
     notes: Mapped[str | None] = mapped_column(Text)
 
+    # Real estate specific
+    property_address: Mapped[str | None] = mapped_column(String(500))
+    purchase_price: Mapped[float | None] = mapped_column(Float)
+
     # ── Truth layer columns ──────────────────────────────────────
     balance_truth_source: Mapped[str | None] = mapped_column(
         String(30), default=BalanceTruthSource.TRANSACTION_SUM.value,

@@ -54,6 +54,45 @@
 <blockquote>{{ account.notes }}</blockquote>
 {% endif %}
 
+{% if account.account_type.value == "real_estate" %}
+<div class="summary-grid" style="margin-bottom:1.5rem">
+    {% if account.property_address %}
+    <div class="summary-card">
+        <div class="label">Address</div>
+        <div class="value" style="font-size:0.95rem">{{ account.property_address }}</div>
+    </div>
+    {% endif %}
+    {% if account.purchase_price is not none %}
+    <div class="summary-card">
+        <div class="label">Purchase Price</div>
+        <div class="value" style="font-size:1.1rem">
+            {{ account.currency_symbol }}{{ "{:,.0f}".format(account.purchase_price) }}
+        </div>
+    </div>
+    {% if balance %}
+    <div class="summary-card">
+        <div class="label">Unrealized Gain / Loss</div>
+        {% set gain = balance - account.purchase_price %}
+        <div class="value {% if gain >= 0 %}positive{% else %}negative{% endif %}">
+            {% if gain >= 0 %}+{% endif %}{{ account.currency_symbol }}{{ "{:,.0f}".format(gain) }}
+            <small>({% if gain >= 0 %}+{% endif %}{{ "{:.1f}".format(gain / account.purchase_price * 100) }}%)</small>
+        </div>
+    </div>
+    {% endif %}
+    {% endif %}
+</div>
+{% if account.property_address %}
+<form method="post" action="/accounts/{{ account.id }}/refresh-value" style="margin-bottom:1.5rem">
+    <button type="submit" class="outline" style="margin:0">
+        Refresh Estimated Value
+    </button>
+    {% if request.query_params.get("value_refreshed") %}
+    <small style="color:var(--pico-ins-color);margin-left:0.5rem">Value updated.</small>
+    {% endif %}
+</form>
+{% endif %}
+{% endif %}
+
 {% if category_summary %}
 <h2>Spending by Category</h2>
 <div class="grid">
@@ -118,7 +157,7 @@
             </td>
             <td>
                 {% set split_cats = split_categories.get(txn.id, []) %}
-                {% if split_cats | length > 1 %}
+                {% if split_cats | length >= 1 %}
                     {% for cat in split_cats | unique %}
                     <span class="badge">{{ cat }}</span>
                     {% endfor %}

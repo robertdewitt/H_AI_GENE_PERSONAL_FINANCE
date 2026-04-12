@@ -108,6 +108,10 @@ def init_db():
         _col("accounts", "balance_stale_hint",         "BOOLEAN")
         _col("accounts", "liability_balance_stale",    "BOOLEAN")
 
+        # ── Real estate fields ────────────────────────────────
+        _col("accounts", "property_address", "VARCHAR(500)")
+        _col("accounts", "purchase_price",   "REAL")
+
         # ── v2 recon columns ─────────────────────────────────
         _col("reconciliation_groups", "reconciliation_confidence", "REAL")
         _col("reconciliation_groups", "fx_rate_used",              "REAL")

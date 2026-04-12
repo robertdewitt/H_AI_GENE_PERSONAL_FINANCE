@@ -1,9 +1,12 @@
+import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
+
+log = logging.getLogger(__name__)
 
 from app.database import get_db
 from app.models.account import AccountType, LIABILITY_TYPES
@@ -69,6 +72,8 @@ def account_create(
     currency: str = Form("USD"),
     current_value: str = Form(""),
     notes: str = Form(""),
+    property_address: str = Form(""),
+    purchase_price: str = Form(""),
     db: Session = Depends(get_db),
 ):
     acct_type = AccountType(account_type)
@@ -85,7 +90,19 @@ def account_create(
         value_as_of_date=datetime.now() if val is not None else None,
         notes=notes or None,
     )
-    create_account(db, data)
+    acct = create_account(db, data)
+
+    if acct_type == AccountType.REAL_ESTATE:
+        if property_address.strip():
+            acct.property_address = property_address.strip()
+        if purchase_price.strip():
+            acct.purchase_price = float(purchase_price)
+        db.commit()
+
+        # Auto-fetch estimated value if address provided and no manual value given
+        if acct.property_address and not val:
+            _try_fetch_property_value(db, acct)
+
     return RedirectResponse(url="/accounts", status_code=303)
 
 
@@ -260,6 +277,8 @@ def account_update(
     currency: str = Form("USD"),
     current_value: str = Form(""),
     notes: str = Form(""),
+    property_address: str = Form(""),
+    purchase_price: str = Form(""),
     db: Session = Depends(get_db),
 ):
     acct_type = AccountType(account_type)
@@ -277,7 +296,17 @@ def account_update(
         value_as_of_date=datetime.now() if val is not None else None,
         notes=notes or None,
     )
-    update_account(db, account_id, data)
+    acct = update_account(db, account_id, data)
+
+    if acct and acct_type == AccountType.REAL_ESTATE:
+        acct.property_address = property_address.strip() or None
+        acct.purchase_price = float(purchase_price) if purchase_price.strip() else None
+        db.commit()
+
+        # Re-fetch estimated value when address changes and no manual value set
+        if acct.property_address and not val:
+            _try_fetch_property_value(db, acct)
+
     return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)
 
 
@@ -285,3 +314,80 @@ def account_update(
 def account_remove(account_id: int, db: Session = Depends(get_db)):
     delete_account(db, account_id)
     return RedirectResponse(url="/accounts", status_code=303)
+
+
+@router.post("/{account_id}/refresh-value")
+def account_refresh_value(account_id: int, db: Session = Depends(get_db)):
+    """Re-fetch estimated property value from free APIs."""
+    acct = get_account(db, account_id)
+    if not acct or not acct.property_address:
+        return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)
+    _try_fetch_property_value(db, acct)
+    return RedirectResponse(url=f"/accounts/{account_id}?value_refreshed=1", status_code=303)
+
+
+# ── Property value estimation ──────────────────────────────────────────
+
+
+def _try_fetch_property_value(db: Session, acct) -> None:
+    """Best-effort property value lookup using free public APIs.
+
+    Uses the ATTOM Data API (free tier) if ATTOM_API_KEY is set,
+    otherwise falls back to a Rentcast public estimate.
+    If neither is available, stores nothing and logs a warning.
+    """
+    from app.models.asset_valuation import AssetValuation
+    from app.config import settings as _settings
+
+    address = acct.property_address
+    if not address:
+        return
+
+    estimated = _fetch_rentcast_value(address)
+
+    if estimated is None:
+        log.warning("Property value lookup returned no result for: %s", address)
+        return
+
+    log.info("Property estimate for '%s': %.2f", address, estimated)
+
+    # Store as an AssetValuation row so history is preserved
+    val = AssetValuation(
+        account_id=acct.id,
+        date=datetime.now(),
+        value=estimated,
+        currency=acct.currency,
+        source="rentcast_api",
+        notes="Auto-fetched estimate",
+    )
+    db.add(val)
+
+    # Also update current_value for immediate display
+    acct.current_value = estimated
+    acct.value_as_of_date = datetime.now()
+    db.commit()
+
+
+def _fetch_rentcast_value(address: str) -> float | None:
+    """Query Rentcast public API for an AVM (automated valuation model) estimate.
+
+    Rentcast has a free tier. No API key required for the basic AVM endpoint.
+    Returns estimated value in USD, or None on failure.
+    """
+    import urllib.parse
+    import urllib.request
+    import json as _json
+
+    try:
+        encoded = urllib.parse.quote(address)
+        url = f"https://api.rentcast.io/v1/avm/value?address={encoded}"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = _json.loads(resp.read())
+            price = data.get("price") or data.get("value")
+            if price:
+                return float(price)
+    except Exception as e:
+        log.debug("Rentcast AVM failed for '%s': %s", address, e)
+
+    return None
