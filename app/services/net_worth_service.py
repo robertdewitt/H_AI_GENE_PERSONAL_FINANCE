@@ -37,7 +37,7 @@ def compute_net_worth(
         signed_balance = balance if acct.is_asset else -abs(balance)
 
         if acct.is_asset:
-            total_assets += abs(balance)
+            total_assets += balance  # negative = overdraft, correctly reduces assets
         else:
             total_liabilities += abs(balance)
 
