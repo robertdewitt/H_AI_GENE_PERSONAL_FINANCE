@@ -19,13 +19,17 @@ from app.services.account_service import (
     list_accounts,
     update_account,
 )
+from app.services.user_profile_service import get_profile
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
 
 @router.get("", response_class=HTMLResponse)
 def accounts_list(request: Request, db: Session = Depends(get_db)):
-    groups = get_accounts_grouped(db)
+    profile = get_profile(db)
+    display_ccy = profile.display_currency or "USD"
+
+    groups = get_accounts_grouped(db, target_currency=display_ccy)
     total_assets = sum(
         item["balance"]
         for items in groups.values()
@@ -43,6 +47,7 @@ def accounts_list(request: Request, db: Session = Depends(get_db)):
         "total_assets": total_assets,
         "total_liabilities": total_liabilities,
         "net_worth": total_assets - total_liabilities,
+        "display_currency": display_ccy,
     })
 
 

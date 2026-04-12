@@ -15,6 +15,7 @@ from app.routers import (
     accounts, api, transactions, imports, transfers, net_worth,
     paychecks, valuations, fx, categories,
 )
+from app.routers import app_settings
 from app.services.net_worth_service import compute_net_worth, compute_net_worth_series
 from app.templating import templates
 
@@ -45,6 +46,7 @@ app.include_router(paychecks.router)
 app.include_router(valuations.router)
 app.include_router(fx.router)
 app.include_router(categories.router)
+app.include_router(app_settings.router)
 app.include_router(api.router)
 
 
@@ -125,11 +127,24 @@ def _bootstrap_fx_rates():
 
         from app.database import SessionLocal
         from app.models.currency_rate import CurrencyRate
-        from app.services.fx_rate_fetcher import sync_historical_rates
+        from app.services.fx_rate_fetcher import sync_current_rates, sync_historical_rates
+        from app.services.user_profile_service import get_profile
 
         db = SessionLocal()
         try:
             base = settings.base_currency
+            # Always sync today's rates for key currencies
+            profile = get_profile(db)
+            current_quotes = list({
+                "GBP", "EUR", "JPY", "AUD", "CAD", "CHF",
+                "HKD", "SGD", "NZD",
+                profile.display_currency,
+            } - {base})
+            try:
+                sync_current_rates(db, base=base, quotes=current_quotes)
+            except Exception as exc:
+                log.warning("FX startup current-rate sync failed: %s", exc)
+
             key_quotes = ["GBP", "EUR", "JPY"]
             five_years_ago = datetime.now() - timedelta(days=5 * 365)
 

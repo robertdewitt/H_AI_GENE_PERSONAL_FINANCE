@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Settings &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Settings</h1>
+    <p>Display preferences and personal context</p>
+</hgroup>
+
+{% if saved %}
+<article style="margin-bottom:1rem;padding:0.75rem 1rem;border-left:4px solid var(--pico-ins-color)">
+    <strong>Settings saved.</strong>
+</article>
+{% endif %}
+
+<form method="post" action="/settings">
+
+    <h2>Display</h2>
+    <div class="grid">
+        <div>
+            <label for="display_currency">Default Display Currency</label>
+            <select id="display_currency" name="display_currency">
+                {% for ccy in currencies %}
+                <option value="{{ ccy }}" {% if profile.display_currency == ccy %}selected{% endif %}>{{ ccy }}</option>
+                {% endfor %}
+            </select>
+            <small>All account totals, net worth, and charts will be shown in this currency.</small>
+        </div>
+    </div>
+
+    <h2>Personal Details</h2>
+    <p style="color:var(--pico-muted-color);font-size:0.9rem">
+        Used by AI assistants for personalised tax planning. Not shared externally.
+    </p>
+    <div class="grid">
+        <div>
+            <label for="country_of_residence">Country of Residence</label>
+            <select id="country_of_residence" name="country_of_residence">
+                <option value="">Not specified</option>
+                {% for country in countries %}
+                <option value="{{ country }}" {% if profile.country_of_residence == country %}selected{% endif %}>{{ country }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label for="nationality">Nationality</label>
+            <select id="nationality" name="nationality">
+                <option value="">Not specified</option>
+                {% for country in countries %}
+                <option value="{{ country }}" {% if profile.nationality == country %}selected{% endif %}>{{ country }}</option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+
+    <h2>Spouse</h2>
+    <div class="grid">
+        <div>
+            <label>
+                <input type="checkbox" id="has_spouse" name="has_spouse" value="true"
+                       {% if profile.has_spouse %}checked{% endif %}
+                       onchange="document.getElementById('spouse-section').style.display=this.checked?'block':'none'">
+                I have a spouse / partner
+            </label>
+        </div>
+    </div>
+    <div id="spouse-section" style="display:{% if profile.has_spouse %}block{% else %}none{% endif %}">
+        <div class="grid">
+            <div>
+                <label for="spouse_nationality">Spouse Nationality</label>
+                <select id="spouse_nationality" name="spouse_nationality">
+                    <option value="">Not specified</option>
+                    {% for country in countries %}
+                    <option value="{{ country }}" {% if profile.spouse_nationality == country %}selected{% endif %}>{{ country }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div></div>
+        </div>
+    </div>
+
+    <div class="btn-group" style="margin-top:1.5rem">
+        <button type="submit">Save Settings</button>
+    </div>
+</form>
+{% endblock %}
