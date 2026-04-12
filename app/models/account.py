@@ -70,9 +70,11 @@ class Account(Base):
     value_as_of_date: Mapped[datetime | None] = mapped_column(DateTime)
     notes: Mapped[str | None] = mapped_column(Text)
 
-    # Real estate specific
+    # Real estate / physical asset fields
     property_address: Mapped[str | None] = mapped_column(String(500))
     purchase_price: Mapped[float | None] = mapped_column(Float)
+    purchase_date: Mapped[datetime | None] = mapped_column(DateTime)
+    linked_mortgage_account_id: Mapped[int | None] = mapped_column(Integer)
 
     # ── Truth layer columns ──────────────────────────────────────
     balance_truth_source: Mapped[str | None] = mapped_column(

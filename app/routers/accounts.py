@@ -56,11 +56,16 @@ def accounts_list(request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/new", response_class=HTMLResponse)
-def account_new_form(request: Request):
+def account_new_form(request: Request, db: Session = Depends(get_db)):
+    mortgage_accounts = [
+        a for a in list_accounts(db)
+        if a.account_type == AccountType.MORTGAGE
+    ]
     return templates.TemplateResponse(request, "accounts/form.html", {
         "account": None,
         "account_types": list(AccountType),
         "liability_types": [t.value for t in LIABILITY_TYPES],
+        "mortgage_accounts": mortgage_accounts,
     })
 
 
@@ -75,6 +80,8 @@ def account_create(
     notes: str = Form(""),
     property_address: str = Form(""),
     purchase_price: str = Form(""),
+    purchase_date: str = Form(""),
+    linked_mortgage_account_id: str = Form(""),
     db: Session = Depends(get_db),
 ):
     acct_type = AccountType(account_type)
@@ -93,11 +100,24 @@ def account_create(
     )
     acct = create_account(db, data)
 
+    _PHYSICAL_ASSET_TYPES = {AccountType.REAL_ESTATE, AccountType.VEHICLE, AccountType.COLLECTIBLE}
+    if acct_type in _PHYSICAL_ASSET_TYPES:
+        if purchase_price.strip():
+            acct.purchase_price = float(purchase_price)
+        if purchase_date.strip():
+            try:
+                acct.purchase_date = datetime.strptime(purchase_date.strip(), "%Y-%m-%d")
+            except ValueError:
+                pass
+
     if acct_type == AccountType.REAL_ESTATE:
         if property_address.strip():
             acct.property_address = property_address.strip()
-        if purchase_price.strip():
-            acct.purchase_price = float(purchase_price)
+        if linked_mortgage_account_id.strip():
+            try:
+                acct.linked_mortgage_account_id = int(linked_mortgage_account_id)
+            except ValueError:
+                pass
         # Real estate balance comes from manual mark, not transactions
         acct.balance_truth_source = "manual_mark"
         if val:
@@ -112,6 +132,15 @@ def account_create(
         # Auto-fetch estimated value if address provided and no manual value given
         if acct.property_address and not val:
             _try_fetch_property_value(db, acct)
+    elif acct_type in _PHYSICAL_ASSET_TYPES:
+        acct.balance_truth_source = "manual_mark"
+        if val:
+            acct.current_value = val
+            acct.value_as_of_date = datetime.now()
+        elif acct.purchase_price and not acct.current_value:
+            acct.current_value = acct.purchase_price
+            acct.value_as_of_date = datetime.now()
+        db.commit()
 
     return RedirectResponse(url="/accounts", status_code=303)
 
@@ -251,6 +280,8 @@ def account_detail(
 
     # For real estate accounts, determine which provider will be used
     prop_status = None
+    mortgage_balance = None
+    mortgage_account = None
     if acct.account_type.value == "real_estate":
         profile = get_profile(db)
         prop_status = prop_provider_status(
@@ -260,6 +291,12 @@ def account_detail(
             property_data_api_key=profile.property_data_api_key,
             domain_api_key=profile.domain_api_key,
         )
+        if acct.linked_mortgage_account_id:
+            mortgage_account = get_account(db, acct.linked_mortgage_account_id)
+            if mortgage_account:
+                mortgage_balance = get_account_balance(
+                    db, acct.linked_mortgage_account_id, target_currency=acct.currency,
+                )
 
     return templates.TemplateResponse(request, "accounts/detail.html", {
         "account": acct,
@@ -271,6 +308,9 @@ def account_detail(
         "monthly_spend_labels": monthly_spend_labels,
         "monthly_spend_datasets": monthly_spend_datasets,
         "prop_status": prop_status,
+        "mortgage_account": mortgage_account,
+        "mortgage_balance": mortgage_balance,
+        "now": datetime.now(),
     })
 
 
@@ -284,10 +324,15 @@ def account_edit_form(
     if not acct:
         return HTMLResponse("Account not found", status_code=404)
 
+    mortgage_accounts = [
+        a for a in list_accounts(db)
+        if a.account_type == AccountType.MORTGAGE and a.id != account_id
+    ]
     return templates.TemplateResponse(request, "accounts/form.html", {
         "account": acct,
         "account_types": list(AccountType),
         "liability_types": [t.value for t in LIABILITY_TYPES],
+        "mortgage_accounts": mortgage_accounts,
     })
 
 
@@ -302,6 +347,8 @@ def account_update(
     notes: str = Form(""),
     property_address: str = Form(""),
     purchase_price: str = Form(""),
+    purchase_date: str = Form(""),
+    linked_mortgage_account_id: str = Form(""),
     db: Session = Depends(get_db),
 ):
     acct_type = AccountType(account_type)
@@ -320,10 +367,23 @@ def account_update(
         notes=notes or None,
     )
     acct = update_account(db, account_id, data)
+    if not acct:
+        return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)
 
-    if acct and acct_type == AccountType.REAL_ESTATE:
-        acct.property_address = property_address.strip() or None
+    _PHYSICAL_ASSET_TYPES = {AccountType.REAL_ESTATE, AccountType.VEHICLE, AccountType.COLLECTIBLE}
+    if acct_type in _PHYSICAL_ASSET_TYPES:
         acct.purchase_price = float(purchase_price) if purchase_price.strip() else None
+        if purchase_date.strip():
+            try:
+                acct.purchase_date = datetime.strptime(purchase_date.strip(), "%Y-%m-%d")
+            except ValueError:
+                pass
+        else:
+            acct.purchase_date = None
+
+    if acct_type == AccountType.REAL_ESTATE:
+        acct.property_address = property_address.strip() or None
+        acct.linked_mortgage_account_id = int(linked_mortgage_account_id) if linked_mortgage_account_id.strip() else None
         acct.balance_truth_source = "manual_mark"
         if val:
             acct.current_value = val
@@ -336,6 +396,15 @@ def account_update(
         # Re-fetch estimated value when address changes and no manual value set
         if acct.property_address and not val:
             _try_fetch_property_value(db, acct)
+    elif acct_type in _PHYSICAL_ASSET_TYPES:
+        acct.balance_truth_source = "manual_mark"
+        if val:
+            acct.current_value = val
+            acct.value_as_of_date = datetime.now()
+        elif acct.purchase_price and not acct.current_value:
+            acct.current_value = acct.purchase_price
+            acct.value_as_of_date = datetime.now()
+        db.commit()
 
     return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)
 

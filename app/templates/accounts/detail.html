@@ -54,12 +54,27 @@
 <blockquote>{{ account.notes }}</blockquote>
 {% endif %}
 
-{% if account.account_type.value == "real_estate" %}
+{% if account.account_type.value in ["real_estate", "vehicle", "collectible"] %}
 <div class="summary-grid" style="margin-bottom:1.5rem">
-    {% if account.property_address %}
+    {% if account.account_type.value == "real_estate" and account.property_address %}
     <div class="summary-card">
         <div class="label">Address</div>
         <div class="value" style="font-size:0.95rem">{{ account.property_address }}</div>
+    </div>
+    {% endif %}
+    {% if account.purchase_date %}
+    <div class="summary-card">
+        <div class="label">Purchase Date</div>
+        <div class="value" style="font-size:1rem">{{ account.purchase_date.strftime("%b %d, %Y") }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Held</div>
+        {% set days_held = (now - account.purchase_date).days %}
+        {% set years_held = (days_held / 365.25) | int %}
+        {% set months_held = ((days_held % 365.25) / 30.44) | int %}
+        <div class="value" style="font-size:1rem">
+            {% if years_held > 0 %}{{ years_held }}y {% endif %}{{ months_held }}m
+        </div>
     </div>
     {% endif %}
     {% if account.purchase_price is not none %}
@@ -79,6 +94,21 @@
         </div>
     </div>
     {% endif %}
+    {% endif %}
+    {% if mortgage_account and mortgage_balance is not none %}
+    <div class="summary-card">
+        <div class="label">Mortgage (<a href="/accounts/{{ mortgage_account.id }}" style="font-size:0.85rem">{{ mortgage_account.name }}</a>)</div>
+        <div class="value negative" style="font-size:1.1rem">
+            {{ account.currency_symbol }}{{ "{:,.0f}".format(mortgage_balance | abs) }}
+        </div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Equity</div>
+        {% set equity = balance - (mortgage_balance | abs) %}
+        <div class="value {% if equity >= 0 %}positive{% else %}negative{% endif %}" style="font-size:1.1rem">
+            {{ account.currency_symbol }}{{ "{:,.0f}".format(equity) }}
+        </div>
+    </div>
     {% endif %}
 </div>
 {% if account.property_address %}

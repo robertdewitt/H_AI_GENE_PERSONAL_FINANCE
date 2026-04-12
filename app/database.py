@@ -108,9 +108,11 @@ def init_db():
         _col("accounts", "balance_stale_hint",         "BOOLEAN")
         _col("accounts", "liability_balance_stale",    "BOOLEAN")
 
-        # ── Real estate fields ────────────────────────────────
-        _col("accounts", "property_address", "VARCHAR(500)")
-        _col("accounts", "purchase_price",   "REAL")
+        # ── Real estate / physical asset fields ──────────────
+        _col("accounts", "property_address",          "VARCHAR(500)")
+        _col("accounts", "purchase_price",             "REAL")
+        _col("accounts", "purchase_date",              "DATETIME")
+        _col("accounts", "linked_mortgage_account_id", "INTEGER")
 
         # ── User profile API keys ─────────────────────────────
         _col("user_profile", "rentcast_api_key",      "VARCHAR(200)")
