@@ -72,9 +72,9 @@
     <form method="post" action="/transfers/bulk-link" style="margin:0;display:flex;gap:0.5rem;align-items:center">
         <label style="margin:0;white-space:nowrap">Min confidence:</label>
         <select name="min_confidence" style="width:auto;margin:0">
+            <option value="0.9">90%</option>
+            <option value="0.8" selected>80%</option>
             <option value="0.7">70%</option>
-            <option value="0.5">50%</option>
-            <option value="0.3">30%</option>
         </select>
         <button type="submit" class="outline" style="margin:0">Confirm All Above Threshold</button>
     </form>
