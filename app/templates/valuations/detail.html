@@ -68,15 +68,33 @@
 <h2>History</h2>
 {% if history %}
 <table>
-    <thead><tr><th>Date</th><th style="text-align:right">Value</th><th>Currency</th><th>Source</th><th>Notes</th></tr></thead>
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th style="text-align:right">Value</th>
+            <th>Currency</th>
+            <th>Source</th>
+            <th>Notes</th>
+            <th></th>
+        </tr>
+    </thead>
     <tbody>
         {% for v in history %}
         <tr>
-            <td>{{ v.date.strftime("%b %d, %Y") }}</td>
+            <td style="white-space:nowrap">{{ v.date.strftime("%b %d, %Y") }}</td>
             <td style="text-align:right" class="txn-amount">{{ "{:,.2f}".format(v.value) }}</td>
             <td>{{ v.currency }}</td>
             <td>{{ v.source }}</td>
-            <td>{{ v.notes or "" }}</td>
+            <td style="font-size:0.9rem;color:var(--pico-muted-color)">{{ v.notes or "" }}</td>
+            <td style="white-space:nowrap">
+                <a href="/valuations/{{ account.id }}/edit/{{ v.id }}" style="font-size:0.85rem">Edit</a>
+                &nbsp;
+                <form method="post" action="/valuations/{{ account.id }}/delete/{{ v.id }}" style="display:inline;margin:0">
+                    <button type="submit" class="outline secondary"
+                            style="margin:0;padding:0.1rem 0.4rem;font-size:0.8rem"
+                            onclick="return confirm('Delete this valuation?')">Delete</button>
+                </form>
+            </td>
         </tr>
         {% endfor %}
     </tbody>

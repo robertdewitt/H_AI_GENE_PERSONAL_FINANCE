@@ -118,6 +118,11 @@
     </form>
     {% if request.query_params.get("value_refreshed") %}
     <small style="color:var(--pico-ins-color);margin-left:0.75rem">Value updated.</small>
+    {% elif request.query_params.get("value_refresh_failed") %}
+    <small style="color:var(--pico-del-color);margin-left:0.75rem">
+        Could not fetch value automatically — check server logs or enter a value manually via
+        <a href="/valuations/{{ account.id }}">Valuations</a>.
+    </small>
     {% endif %}
     {% if prop_status %}
     <small style="display:block;margin-top:0.4rem;color:var(--pico-muted-color)">

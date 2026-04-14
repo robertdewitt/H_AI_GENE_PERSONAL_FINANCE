@@ -165,6 +165,7 @@ def _detect_region(currency: str, country: str | None) -> str:
 # ── Rentcast (US) ──────────────────────────────────────────────────────────────
 
 def _rentcast(address: str, api_key: str | None) -> PropertyEstimate | None:
+    import urllib.error
     try:
         encoded = urllib.parse.quote(address)
         url = f"https://api.rentcast.io/v1/avm/value?address={encoded}"
@@ -174,7 +175,8 @@ def _rentcast(address: str, api_key: str | None) -> PropertyEstimate | None:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
             data = _json.loads(resp.read())
-            price = data.get("price") or data.get("value") or data.get("priceRangeLow")
+            # Rentcast returns: {"price": N, "priceRangeLow": N, "priceRangeHigh": N}
+            price = data.get("price") or data.get("priceRangeLow") or data.get("value")
             if price:
                 return PropertyEstimate(
                     value=float(price),
@@ -182,8 +184,16 @@ def _rentcast(address: str, api_key: str | None) -> PropertyEstimate | None:
                     source_label="Rentcast AVM",
                     is_estimate=True,
                 )
+            log.warning("Rentcast: response missing price field for %r: %s", address, data)
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:200]
+        except Exception:
+            pass
+        log.warning("Rentcast HTTP %s for %r: %s", e.code, address, body)
     except Exception as e:
-        log.debug("Rentcast failed for %r: %s", address, e)
+        log.warning("Rentcast failed for %r: %s", address, e)
     return None
 
 
@@ -229,7 +239,7 @@ def _hm_land_registry(address: str) -> PropertyEstimate | None:
                     notes=f"Last sold: {date_str[:10] if date_str else 'unknown date'}",
                 )
     except Exception as e:
-        log.debug("HM Land Registry failed for postcode %s: %s", postcode, e)
+        log.warning("HM Land Registry failed for postcode %s: %s", postcode, e)
     return None
 
 
@@ -266,7 +276,7 @@ def _property_data_uk(address: str, api_key: str) -> PropertyEstimate | None:
                     is_estimate=True,
                 )
     except Exception as e:
-        log.debug("PropertyData failed for %r: %s", address, e)
+        log.warning("PropertyData failed for %r: %s", address, e)
     return None
 
 
@@ -310,5 +320,5 @@ def _domain_au(address: str, api_key: str) -> PropertyEstimate | None:
                     is_estimate=True,
                 )
     except Exception as e:
-        log.debug("Domain API failed for %r: %s", address, e)
+        log.warning("Domain API failed for %r: %s", address, e)
     return None

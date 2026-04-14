@@ -421,8 +421,16 @@ def account_refresh_value(account_id: int, db: Session = Depends(get_db)):
     acct = get_account(db, account_id)
     if not acct or not acct.property_address:
         return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)
+
+    from app.models.asset_valuation import AssetValuation as _AV
+    before_count = db.query(_AV).filter(_AV.account_id == account_id).count()
     _try_fetch_property_value(db, acct)
-    return RedirectResponse(url=f"/accounts/{account_id}?value_refreshed=1", status_code=303)
+    after_count = db.query(_AV).filter(_AV.account_id == account_id).count()
+
+    if after_count > before_count:
+        return RedirectResponse(url=f"/accounts/{account_id}?value_refreshed=1", status_code=303)
+    else:
+        return RedirectResponse(url=f"/accounts/{account_id}?value_refresh_failed=1", status_code=303)
 
 
 # ── Property value estimation ──────────────────────────────────────────
