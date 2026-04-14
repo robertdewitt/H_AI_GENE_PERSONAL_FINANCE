@@ -44,6 +44,7 @@ class Transaction(Base):
         Integer, ForeignKey("categories.id")
     )
     is_transfer: Mapped[bool] = mapped_column(Boolean, default=False)
+    transfer_dismissed: Mapped[bool] = mapped_column(Boolean, default=False)
     transfer_link_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("transfer_links.id")
     )

@@ -84,25 +84,34 @@
 <div style="border:1px solid var(--pico-muted-border-color);border-radius:8px;padding:1rem;margin-bottom:0.75rem">
     <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
         <div style="flex:1;min-width:200px">
+            <div style="font-size:0.8rem;color:var(--pico-muted-color);text-transform:uppercase;letter-spacing:0.05em">From</div>
             <strong>{{ candidate.from_account_name }}</strong><br>
-            <small style="color:var(--pico-muted-color)">{{ candidate.from_description }}</small><br>
+            <span style="font-size:0.95rem">{{ candidate.from_description }}</span><br>
             <span class="txn-amount negative">-${{ "{:,.2f}".format(candidate.amount) }}</span>
-            <small style="color:var(--pico-muted-color)">{{ candidate.date.strftime("%b %d, %Y") }}</small>
+            &nbsp;<small style="color:var(--pico-muted-color)">{{ candidate.date.strftime("%b %d, %Y") }}</small>
         </div>
-        <div style="font-size:1.5rem">&rarr;</div>
+        <div style="font-size:1.5rem;color:var(--pico-muted-color)">&rarr;</div>
         <div style="flex:1;min-width:200px">
+            <div style="font-size:0.8rem;color:var(--pico-muted-color);text-transform:uppercase;letter-spacing:0.05em">To</div>
             <strong>{{ candidate.to_account_name }}</strong><br>
-            <small style="color:var(--pico-muted-color)">{{ candidate.to_description }}</small><br>
+            <span style="font-size:0.95rem">{{ candidate.to_description }}</span><br>
             <span class="txn-amount positive">+${{ "{:,.2f}".format(candidate.amount) }}</span>
         </div>
-        <div style="display:flex;align-items:center;gap:0.5rem">
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.4rem">
             <span class="badge badge-confidence" style="font-size:0.9rem">{{ "{:.0%}".format(candidate.confidence) }}</span>
-            <form method="post" action="/transfers/link" style="margin:0">
-                <input type="hidden" name="from_transaction_id" value="{{ candidate.from_transaction_id }}">
-                <input type="hidden" name="to_transaction_id" value="{{ candidate.to_transaction_id }}">
-                <input type="hidden" name="confidence" value="{{ candidate.confidence }}">
-                <button type="submit" class="outline" style="margin:0;padding:0.25rem 0.75rem">Confirm</button>
-            </form>
+            <div style="display:flex;gap:0.4rem">
+                <form method="post" action="/transfers/link" style="margin:0">
+                    <input type="hidden" name="from_transaction_id" value="{{ candidate.from_transaction_id }}">
+                    <input type="hidden" name="to_transaction_id" value="{{ candidate.to_transaction_id }}">
+                    <input type="hidden" name="confidence" value="{{ candidate.confidence }}">
+                    <button type="submit" class="outline" style="margin:0;padding:0.25rem 0.75rem">Confirm</button>
+                </form>
+                <form method="post" action="/transfers/dismiss" style="margin:0">
+                    <input type="hidden" name="from_transaction_id" value="{{ candidate.from_transaction_id }}">
+                    <input type="hidden" name="to_transaction_id" value="{{ candidate.to_transaction_id }}">
+                    <button type="submit" class="outline secondary" style="margin:0;padding:0.25rem 0.75rem">Not a Transfer</button>
+                </form>
+            </div>
         </div>
     </div>
 </div>

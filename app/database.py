@@ -97,6 +97,7 @@ def init_db():
         _col("transactions", "classification_provenance",  "VARCHAR(30)",  "'imported'")
         _col("transactions", "classification_confidence",  "REAL")
         _col("transactions", "financial_document_id",      "INTEGER")
+        _col("transactions", "transfer_dismissed",         "BOOLEAN",      "0")
 
         # ── Truth layer columns on accounts ──────────────────
         _col("accounts", "balance_truth_source",       "VARCHAR(30)",  "'transaction_sum'")

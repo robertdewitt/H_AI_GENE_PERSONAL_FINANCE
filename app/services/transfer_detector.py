@@ -58,6 +58,7 @@ def detect_transfers(
         select(Transaction).where(
             Transaction.amount < 0,
             Transaction.transfer_link_id.is_(None),
+            Transaction.transfer_dismissed.is_(False),
         )
     ).scalars().all()
 
@@ -75,6 +76,7 @@ def detect_transfers(
                     Transaction.amount > 0,
                     Transaction.account_id != out_txn.account_id,
                     Transaction.transfer_link_id.is_(None),
+                    Transaction.transfer_dismissed.is_(False),
                     Transaction.date >= date_lo,
                     Transaction.date <= date_hi,
                     Transaction.amount >= out_abs - tolerance,
@@ -230,6 +232,24 @@ def scan_and_flag_payments(db: Session) -> int:
     if count:
         db.commit()
     return count
+
+
+def dismiss_transfer_pair(
+    db: Session,
+    from_transaction_id: int,
+    to_transaction_id: int,
+) -> bool:
+    """Mark both transactions as not transfers so they don't appear as candidates again."""
+    from_txn = db.get(Transaction, from_transaction_id)
+    to_txn = db.get(Transaction, to_transaction_id)
+    if not from_txn or not to_txn:
+        return False
+    from_txn.is_transfer = False
+    from_txn.transfer_dismissed = True
+    to_txn.is_transfer = False
+    to_txn.transfer_dismissed = True
+    db.commit()
+    return True
 
 
 def list_unmatched_transfers(db: Session) -> list[dict]:
