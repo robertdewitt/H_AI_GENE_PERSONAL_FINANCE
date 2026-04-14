@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel
 
@@ -10,19 +11,19 @@ class PaycheckCreate(BaseModel):
     pay_period_end: datetime | None = None
     employer: str | None = None
     currency: str = "USD"
-    gross_pay: float
-    net_pay: float
-    federal_tax: float = 0.0
-    state_tax: float = 0.0
-    local_tax: float = 0.0
-    social_security: float = 0.0
-    medicare: float = 0.0
-    retirement_401k: float = 0.0
-    health_insurance: float = 0.0
-    dental_insurance: float = 0.0
-    vision_insurance: float = 0.0
-    hsa_contribution: float = 0.0
-    other_deductions: float = 0.0
+    gross_pay: Decimal
+    net_pay: Decimal
+    federal_tax: Decimal = Decimal("0.00")
+    state_tax: Decimal = Decimal("0.00")
+    local_tax: Decimal = Decimal("0.00")
+    social_security: Decimal = Decimal("0.00")
+    medicare: Decimal = Decimal("0.00")
+    retirement_401k: Decimal = Decimal("0.00")
+    health_insurance: Decimal = Decimal("0.00")
+    dental_insurance: Decimal = Decimal("0.00")
+    vision_insurance: Decimal = Decimal("0.00")
+    hsa_contribution: Decimal = Decimal("0.00")
+    other_deductions: Decimal = Decimal("0.00")
     notes: str | None = None
 
 
@@ -32,19 +33,19 @@ class PaycheckResponse(BaseModel):
     pay_date: datetime
     employer: str | None
     currency: str
-    gross_pay: float
-    net_pay: float
-    total_taxes: float
-    total_deductions: float
-    retirement_401k: float
+    gross_pay: Decimal
+    net_pay: Decimal
+    total_taxes: Decimal
+    total_deductions: Decimal
+    retirement_401k: Decimal
 
     model_config = {"from_attributes": True}
 
 
 class PaycheckSummary(BaseModel):
     count: int
-    total_gross: float
-    total_net: float
-    total_taxes: float
-    total_retirement: float
-    total_benefits: float
+    total_gross: Decimal
+    total_net: Decimal
+    total_taxes: Decimal
+    total_retirement: Decimal
+    total_benefits: Decimal

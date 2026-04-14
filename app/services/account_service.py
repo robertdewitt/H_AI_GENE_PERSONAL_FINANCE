@@ -6,6 +6,7 @@ signature is preserved as a thin wrapper for backward compatibility.
 """
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -41,7 +42,7 @@ class FxMetadata:
 
 @dataclass
 class AccountBalanceResult:
-    value: float = 0.0
+    value: Decimal = Decimal("0.00")
     currency: str = "USD"
     balance_as_of: datetime | None = None
     balance_source_used: str = BalanceTruthSource.TRANSACTION_SUM.value
@@ -151,13 +152,13 @@ def get_account_balance_rich(
     result.currency = base_ccy
 
     # FX conversion if needed
-    if account.currency != base_ccy and result.value != 0.0:
+    if account.currency != base_ccy and result.value != Decimal("0.00"):
         rate_date = as_of_date or now
         converted, rate_used = convert_amount(
             db, result.value, account.currency, base_ccy, rate_date,
         )
         if converted is not None:
-            result.value = converted
+            result.value = Decimal(str(converted))
             result.fx = FxMetadata(
                 fx_pair=f"{account.currency}/{base_ccy}",
                 fx_rate_date=rate_date,
@@ -171,7 +172,7 @@ def get_account_balance_rich(
                     db, result.value, account.currency, base_ccy, rate_date,
                 )
                 if converted is not None:
-                    result.value = converted
+                    result.value = Decimal(str(converted))
                     result.fx = FxMetadata(
                         fx_pair=f"{account.currency}/{base_ccy}",
                         fx_rate_date=rate_date,
@@ -191,21 +192,21 @@ def _balance_from_txn_sum(
     as_of_date: datetime | None, now: datetime,
 ) -> AccountBalanceResult:
     query = select(
-        func.coalesce(func.sum(Transaction.amount), 0.0)
+        func.coalesce(func.sum(Transaction.amount), 0)
     ).where(Transaction.account_id == account_id)
     if as_of_date:
         query = query.where(Transaction.date <= as_of_date)
     raw = db.execute(query).scalar()
-    balance = float(raw) if raw else 0.0
+    balance = raw or Decimal("0.00")
 
-    if balance == 0.0 and account.current_value is not None:
+    if balance == Decimal("0.00") and account.current_value is not None:
         balance = account.current_value
 
     return AccountBalanceResult(
         value=balance,
         balance_as_of=as_of_date or now,
         balance_source_used=BalanceTruthSource.TRANSACTION_SUM.value,
-        balance_confidence=0.8 if balance != 0.0 else 0.3,
+        balance_confidence=0.8 if balance != Decimal("0.00") else 0.3,
         balance_stale=False,
     )
 
@@ -213,7 +214,7 @@ def _balance_from_txn_sum(
 def _balance_from_statement(
     account: Account, as_of_date: datetime | None, now: datetime,
 ) -> AccountBalanceResult:
-    balance = account.statement_balance or account.current_value or 0.0
+    balance = account.statement_balance or account.current_value or Decimal("0.00")
     stmt_date = account.statement_balance_as_of
     stale = False
     if stmt_date and (now - stmt_date).days > 45:
@@ -257,7 +258,7 @@ def _balance_from_valuation(
         )
 
     return AccountBalanceResult(
-        value=account.current_value or 0.0,
+        value=account.current_value or Decimal("0.00"),
         balance_as_of=account.value_as_of_date or now,
         balance_source_used=BalanceTruthSource.MANUAL_MARK.value,
         balance_confidence=0.3,
@@ -274,7 +275,7 @@ def _balance_from_liability(
     elif account.statement_balance is not None:
         balance = account.statement_balance
     else:
-        balance = account.current_value or 0.0
+        balance = account.current_value or Decimal("0.00")
 
     stmt_date = account.statement_balance_as_of
     stale = bool(account.liability_balance_stale)
@@ -297,7 +298,7 @@ def _balance_from_manual(
     if account.value_as_of_date and (now - account.value_as_of_date).days > 90:
         stale = True
     return AccountBalanceResult(
-        value=account.current_value or 0.0,
+        value=account.current_value or Decimal("0.00"),
         balance_as_of=account.value_as_of_date or now,
         balance_source_used=BalanceTruthSource.MANUAL_MARK.value,
         balance_confidence=0.5 if not stale else 0.2,
@@ -311,7 +312,7 @@ def _balance_hybrid(
 ) -> AccountBalanceResult:
     """Transaction sum preferred; fall back to statement if txn sum is zero."""
     txn_result = _balance_from_txn_sum(db, account, account_id, as_of_date, now)
-    if txn_result.value != 0.0:
+    if txn_result.value != Decimal("0.00"):
         return txn_result
     if account.statement_balance is not None:
         return _balance_from_statement(account, as_of_date, now)
@@ -326,7 +327,7 @@ def get_account_balance(
     account_id: int,
     as_of_date: datetime | None = None,
     target_currency: str | None = None,
-) -> float:
+) -> Decimal:
     """Legacy signature — returns a plain float for existing callers."""
     return get_account_balance_rich(
         db, account_id, as_of_date=as_of_date, target_currency=target_currency,
@@ -373,20 +374,20 @@ def get_many_account_balances_rich(
     ]
 
     # Batch: transaction sums
-    txn_sums: dict[int, float] = {}
+    txn_sums: dict[int, Decimal] = {}
     if txn_sum_ids:
         for row in db.execute(
             select(
                 Transaction.account_id,
-                func.coalesce(func.sum(Transaction.amount), 0.0).label("total"),
+                func.coalesce(func.sum(Transaction.amount), 0).label("total"),
             )
             .where(Transaction.account_id.in_(txn_sum_ids))
             .group_by(Transaction.account_id)
         ).all():
-            txn_sums[row.account_id] = float(row.total)
+            txn_sums[row.account_id] = row.total
 
     # Batch: latest valuation dates
-    latest_val: dict[int, tuple[datetime, float, str]] = {}
+    latest_val: dict[int, tuple[datetime, Decimal, str]] = {}
     if valuation_ids:
         for row in db.execute(
             select(
@@ -426,24 +427,24 @@ def get_many_account_balances_rich(
             BalanceTruthSource.TRANSACTION_SUM.value,
             BalanceTruthSource.HYBRID.value,
         ):
-            balance = txn_sums.get(acct.id, 0.0)
+            balance = txn_sums.get(acct.id, Decimal("0.00"))
             # HYBRID fallback to statement when txn sum is zero
-            if balance == 0.0 and truth_source == BalanceTruthSource.HYBRID.value:
+            if balance == Decimal("0.00") and truth_source == BalanceTruthSource.HYBRID.value:
                 if acct.statement_balance is not None:
                     balance = acct.statement_balance
-            if balance == 0.0 and acct.current_value is not None:
+            if balance == Decimal("0.00") and acct.current_value is not None:
                 balance = acct.current_value
             result = AccountBalanceResult(
                 value=balance,
                 balance_as_of=now,
                 balance_source_used=truth_source,
-                balance_confidence=0.8 if balance != 0.0 else 0.3,
+                balance_confidence=0.8 if balance != Decimal("0.00") else 0.3,
                 balance_stale=False,
                 currency=base_ccy,
             )
 
         elif truth_source == BalanceTruthSource.LATEST_STATEMENT.value:
-            balance = acct.statement_balance or acct.current_value or 0.0
+            balance = acct.statement_balance or acct.current_value or Decimal("0.00")
             stmt_date = acct.statement_balance_as_of
             stale = bool(stmt_date and (now - stmt_date).days > 45)
             result = AccountBalanceResult(
@@ -462,7 +463,7 @@ def get_many_account_balances_rich(
             elif acct.statement_balance is not None:
                 balance = acct.statement_balance
             else:
-                balance = acct.current_value or 0.0
+                balance = acct.current_value or Decimal("0.00")
             stmt_date = acct.statement_balance_as_of
             stale = bool(acct.liability_balance_stale) or bool(
                 stmt_date and (now - stmt_date).days > 45
@@ -481,7 +482,7 @@ def get_many_account_balances_rich(
                 acct.value_as_of_date and (now - acct.value_as_of_date).days > 90
             ) or acct.value_as_of_date is None
             result = AccountBalanceResult(
-                value=acct.current_value or 0.0,
+                value=acct.current_value or Decimal("0.00"),
                 balance_as_of=acct.value_as_of_date or now,
                 balance_source_used=BalanceTruthSource.MANUAL_MARK.value,
                 balance_confidence=0.5 if not stale else 0.2,
@@ -503,7 +504,7 @@ def get_many_account_balances_rich(
                 )
             else:
                 result = AccountBalanceResult(
-                    value=acct.current_value or 0.0,
+                    value=acct.current_value or Decimal("0.00"),
                     balance_as_of=acct.value_as_of_date or now,
                     balance_source_used=BalanceTruthSource.MANUAL_MARK.value,
                     balance_confidence=0.3,
@@ -512,7 +513,7 @@ def get_many_account_balances_rich(
                 )
         else:
             result = AccountBalanceResult(
-                value=acct.current_value or 0.0,
+                value=acct.current_value or Decimal("0.00"),
                 balance_as_of=now,
                 balance_source_used=truth_source,
                 balance_confidence=0.3,
@@ -521,11 +522,11 @@ def get_many_account_balances_rich(
             )
 
         # FX conversion using pre-cached rates
-        if acct.currency != base_ccy and result.value != 0.0:
+        if acct.currency != base_ccy and result.value != Decimal("0.00"):
             fx_entry = fx_rates.get(acct.currency)
             if fx_entry is not None:
                 rate, rate_date = fx_entry
-                result.value = result.value * rate
+                result.value = result.value * Decimal(str(rate))
                 result.fx = FxMetadata(
                     fx_pair=f"{acct.currency}/{base_ccy}",
                     fx_rate_date=rate_date,

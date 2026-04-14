@@ -1,5 +1,6 @@
 """Asset valuation management — manual entry + future API hooks."""
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -29,7 +30,7 @@ def add_valuation(
     db: Session,
     account_id: int,
     date: datetime,
-    value: float,
+    value: Decimal,
     currency: str = "USD",
     source: str = "manual",
     notes: str | None = None,
@@ -87,12 +88,12 @@ def get_valuation_in_base_currency(
     account_id: int,
     base_currency: str = "USD",
     as_of_date: datetime | None = None,
-) -> float:
+) -> Decimal:
     """Return the latest valuation converted to the base currency."""
     val = get_latest_valuation(db, account_id, as_of_date)
     if not val:
         account = db.get(Account, account_id)
-        return account.current_value or 0.0 if account else 0.0
+        return account.current_value or Decimal("0.00") if account else Decimal("0.00")
 
     if val.currency == base_currency:
         return val.value

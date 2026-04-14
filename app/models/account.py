@@ -1,5 +1,6 @@
 import enum
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
@@ -7,6 +8,7 @@ from sqlalchemy import (
     Enum,
     Float,
     Integer,
+    Numeric,
     String,
     Text,
     func,
@@ -66,7 +68,7 @@ class Account(Base):
     institution: Mapped[str | None] = mapped_column(String(200))
     currency: Mapped[str] = mapped_column(String(10), default="USD")
     is_asset: Mapped[bool] = mapped_column(Boolean, default=True)
-    current_value: Mapped[float | None] = mapped_column(Float)
+    current_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     value_as_of_date: Mapped[datetime | None] = mapped_column(DateTime)
     notes: Mapped[str | None] = mapped_column(Text)
 
@@ -77,9 +79,9 @@ class Account(Base):
     liability_balance_source: Mapped[str | None] = mapped_column(
         String(40),
     )
-    statement_balance: Mapped[float | None] = mapped_column(Float)
+    statement_balance: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     statement_balance_as_of: Mapped[datetime | None] = mapped_column(DateTime)
-    original_principal_balance: Mapped[float | None] = mapped_column(Float)
+    original_principal_balance: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     balance_confidence: Mapped[float | None] = mapped_column(Float)
     balance_stale_hint: Mapped[bool | None] = mapped_column(Boolean)
     liability_balance_stale: Mapped[bool | None] = mapped_column(Boolean)

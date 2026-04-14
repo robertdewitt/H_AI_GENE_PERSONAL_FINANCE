@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
@@ -7,11 +8,11 @@ class TransactionCreate(BaseModel):
     account_id: int
     date: datetime
     description: str = Field(..., min_length=1, max_length=500)
-    amount: float
+    amount: Decimal
     original_currency: str = "USD"
-    amount_base: float | None = None
+    amount_base: Decimal | None = None
     exchange_rate: float | None = None
-    balance_after: float | None = None
+    balance_after: Decimal | None = None
     category_id: int | None = None
     is_transfer: bool = False
 
@@ -21,11 +22,11 @@ class TransactionResponse(BaseModel):
     account_id: int
     date: datetime
     description: str
-    amount: float
+    amount: Decimal
     original_currency: str
-    amount_base: float | None
+    amount_base: Decimal | None
     exchange_rate: float | None
-    balance_after: float | None
+    balance_after: Decimal | None
     category_id: int | None
     is_transfer: bool
     transfer_link_id: int | None
@@ -40,8 +41,8 @@ class TransactionFilter(BaseModel):
     category_id: int | None = None
     date_from: datetime | None = None
     date_to: datetime | None = None
-    min_amount: float | None = None
-    max_amount: float | None = None
+    min_amount: Decimal | None = None
+    max_amount: Decimal | None = None
     search: str | None = None
     is_transfer: bool | None = None
     currency: str | None = None

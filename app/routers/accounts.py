@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -68,7 +69,7 @@ def account_create(
 ):
     acct_type = AccountType(account_type)
     is_asset = acct_type not in LIABILITY_TYPES
-    val = float(current_value) if current_value.strip() else None
+    val = Decimal(current_value) if current_value.strip() else None
 
     data = AccountCreate(
         name=name,
@@ -172,10 +173,12 @@ def account_detail(
 
     # Pivot: {month -> {category -> abs_total}}
     months_ordered = sorted({r.month for r in monthly_rows})
-    cat_totals: dict[str, float] = defaultdict(float)
-    spend_map: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    cat_totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0.00"))
+    spend_map: dict[str, dict[str, Decimal]] = defaultdict(
+        lambda: defaultdict(lambda: Decimal("0.00"))
+    )
     for r in monthly_rows:
-        amt = abs(float(r.total))
+        amt = abs(r.total or Decimal("0.00"))
         spend_map[r.month][r.category] = amt
         cat_totals[r.category] += amt
 
@@ -197,7 +200,7 @@ def account_detail(
     monthly_spend_datasets = [
         {
             "label": cat,
-            "data": [round(spend_map[m].get(cat, 0.0), 2) for m in months_ordered],
+            "data": [round(spend_map[m].get(cat, Decimal("0.00")), 2) for m in months_ordered],
             "backgroundColor": _COLORS[i % len(_COLORS)],
         }
         for i, cat in enumerate(sorted_cats)
@@ -259,7 +262,7 @@ def account_update(
 ):
     acct_type = AccountType(account_type)
     is_asset = acct_type not in LIABILITY_TYPES
-    val = float(current_value) if current_value.strip() else None
+    val = Decimal(current_value) if current_value.strip() else None
 
     from app.schemas.account import AccountUpdate
     data = AccountUpdate(

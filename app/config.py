@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from decimal import Decimal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -32,7 +33,7 @@ class Settings(BaseSettings):
 
     # Transfer detection
     transfer_date_window_days: int = 3
-    transfer_amount_tolerance: float = 0.01
+    transfer_amount_tolerance: Decimal = Decimal("0.01")
 
     # Date parsing — True = dd/mm (UK/EU), False = mm/dd (US)
     date_dayfirst: bool = True

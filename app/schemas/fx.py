@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel
 
@@ -24,15 +25,15 @@ class FXRateResponse(BaseModel):
 
 
 class FXConvertRequest(BaseModel):
-    amount: float
+    amount: Decimal
     from_currency: str
     to_currency: str
     date: datetime
 
 
 class FXConvertResponse(BaseModel):
-    original_amount: float
-    converted_amount: float | None
+    original_amount: Decimal
+    converted_amount: Decimal | None
     rate: float | None
     from_currency: str
     to_currency: str

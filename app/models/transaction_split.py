@@ -6,6 +6,7 @@ split amounts must equal the parent transaction amount (enforced at
 service layer, not DB constraint).
 """
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
     func,
@@ -32,9 +34,9 @@ class TransactionSplit(Base):
         Integer, ForeignKey("transactions.id"), nullable=False, index=True,
     )
 
-    amount_native: Mapped[float] = mapped_column(Float, nullable=False)
+    amount_native: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), nullable=False)
-    amount_base: Mapped[float | None] = mapped_column(Float)
+    amount_base: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     fx_rate: Mapped[float | None] = mapped_column(Float)
 
     event_type: Mapped[str | None] = mapped_column(String(50))

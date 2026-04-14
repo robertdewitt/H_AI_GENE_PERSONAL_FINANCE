@@ -4,6 +4,7 @@ Invariant: component amounts for a transaction should sum to the
 transaction's amount (within tolerance).
 """
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,10 +17,10 @@ from app.models.transaction import Transaction
 @dataclass
 class DecompositionValidation:
     valid: bool = False
-    component_sum: float = 0.0
-    transaction_amount: float = 0.0
-    residual: float = 0.0
-    tolerance: float = 0.01
+    component_sum: Decimal = Decimal("0.00")
+    transaction_amount: Decimal = Decimal("0.00")
+    residual: Decimal = Decimal("0.00")
+    tolerance: Decimal = Decimal("0.01")
     warnings: list[str] = field(default_factory=list)
 
 
@@ -37,9 +38,9 @@ def add_component(
     db: Session,
     transaction_id: int,
     component: PaymentComponent,
-    amount: float,
+    amount: Decimal,
     currency: str,
-    amount_base: float | None = None,
+    amount_base: Decimal | None = None,
     provenance: ClassificationProvenance = ClassificationProvenance.IMPORTED,
     confidence: float | None = None,
     notes: str | None = None,
@@ -60,7 +61,7 @@ def add_component(
 
 
 def validate_decomposition(
-    db: Session, transaction_id: int, tolerance: float = 0.01,
+    db: Session, transaction_id: int, tolerance: Decimal = Decimal("0.01"),
 ) -> DecompositionValidation:
     """Check that component amounts sum to the transaction amount."""
     txn = db.get(Transaction, transaction_id)

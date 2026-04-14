@@ -1,6 +1,7 @@
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -21,27 +22,27 @@ class PaycheckStub(Base):
     employer: Mapped[str | None] = mapped_column(String(200))
     currency: Mapped[str] = mapped_column(String(10), default="USD")
 
-    gross_pay: Mapped[float] = mapped_column(Float, nullable=False)
-    net_pay: Mapped[float] = mapped_column(Float, nullable=False)
+    gross_pay: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    net_pay: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
 
-    federal_tax: Mapped[float] = mapped_column(Float, default=0.0)
-    state_tax: Mapped[float] = mapped_column(Float, default=0.0)
-    local_tax: Mapped[float] = mapped_column(Float, default=0.0)
-    social_security: Mapped[float] = mapped_column(Float, default=0.0)
-    medicare: Mapped[float] = mapped_column(Float, default=0.0)
+    federal_tax: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
+    state_tax: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
+    local_tax: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
+    social_security: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
+    medicare: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
 
-    retirement_401k: Mapped[float] = mapped_column(Float, default=0.0)
-    health_insurance: Mapped[float] = mapped_column(Float, default=0.0)
-    dental_insurance: Mapped[float] = mapped_column(Float, default=0.0)
-    vision_insurance: Mapped[float] = mapped_column(Float, default=0.0)
-    hsa_contribution: Mapped[float] = mapped_column(Float, default=0.0)
-    other_deductions: Mapped[float] = mapped_column(Float, default=0.0)
+    retirement_401k: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
+    health_insurance: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
+    dental_insurance: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
+    vision_insurance: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
+    hsa_contribution: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
+    other_deductions: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
 
-    ytd_gross: Mapped[float | None] = mapped_column(Float)
-    ytd_net: Mapped[float | None] = mapped_column(Float)
-    ytd_federal_tax: Mapped[float | None] = mapped_column(Float)
-    ytd_state_tax: Mapped[float | None] = mapped_column(Float)
-    ytd_retirement_401k: Mapped[float | None] = mapped_column(Float)
+    ytd_gross: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    ytd_net: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    ytd_federal_tax: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    ytd_state_tax: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    ytd_retirement_401k: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
 
     # Raw text from OCR / CSV upload for auditing
     raw_text: Mapped[str | None] = mapped_column(Text)
@@ -55,7 +56,7 @@ class PaycheckStub(Base):
     account = relationship("Account", backref="paycheck_stubs")
 
     @property
-    def total_taxes(self) -> float:
+    def total_taxes(self) -> Decimal:
         return (
             self.federal_tax
             + self.state_tax
@@ -65,11 +66,11 @@ class PaycheckStub(Base):
         )
 
     @property
-    def total_deductions(self) -> float:
+    def total_deductions(self) -> Decimal:
         return self.gross_pay - self.net_pay
 
     @property
-    def total_benefits(self) -> float:
+    def total_benefits(self) -> Decimal:
         return (
             self.health_insurance
             + self.dental_insurance

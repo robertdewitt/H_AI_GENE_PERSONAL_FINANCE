@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -159,7 +160,7 @@ def fx_convert_form(request: Request, db: Session = Depends(get_db)):
 @router.post("/convert")
 def fx_convert(
     request: Request,
-    amount: float = Form(...),
+    amount: Decimal = Form(...),
     from_currency: str = Form(...),
     to_currency: str = Form(...),
     date: str = Form(...),

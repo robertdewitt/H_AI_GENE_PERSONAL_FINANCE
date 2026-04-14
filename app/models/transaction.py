@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
@@ -7,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     func,
@@ -31,14 +33,14 @@ class Transaction(Base):
     description: Mapped[str] = mapped_column(String(500), nullable=False)
 
     # Amounts stored in the account's native currency
-    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     original_currency: Mapped[str] = mapped_column(String(10), default="USD")
 
     # If a foreign-currency transaction, this is the amount in the base currency
-    amount_base: Mapped[float | None] = mapped_column(Float)
+    amount_base: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     exchange_rate: Mapped[float | None] = mapped_column(Float)
 
-    balance_after: Mapped[float | None] = mapped_column(Float)
+    balance_after: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
 
     category_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("categories.id")
@@ -85,7 +87,7 @@ class Transaction(Base):
     )
 
     @property
-    def effective_amount(self) -> float:
+    def effective_amount(self) -> Decimal:
         """Amount in the reporting (base) currency."""
         if self.amount_base is not None:
             return self.amount_base

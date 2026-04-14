@@ -1,6 +1,7 @@
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -32,8 +33,8 @@ class ReconciliationGroup(Base):
     fee_treatment: Mapped[str] = mapped_column(
         String(30), default=FeeTreatment.EXCLUDE_FROM_NET.value,
     )
-    tolerance_base: Mapped[float] = mapped_column(Float, default=0.01)
-    residual_base: Mapped[float | None] = mapped_column(Float)
+    tolerance_base: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.01"))
+    residual_base: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     confidence: Mapped[float | None] = mapped_column(Float)
     reconciliation_confidence: Mapped[float | None] = mapped_column(Float)
     fx_rate_used: Mapped[float | None] = mapped_column(Float)
@@ -69,11 +70,11 @@ class ReconciliationMember(Base):
         Integer, ForeignKey("transactions.id"), nullable=False, index=True,
     )
 
-    allocated_amount_native: Mapped[float] = mapped_column(Float, nullable=False)
+    allocated_amount_native: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     allocated_currency: Mapped[str] = mapped_column(
         String(10), nullable=False,
     )
-    allocated_amount_base: Mapped[float | None] = mapped_column(Float)
+    allocated_amount_base: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
 
     role: Mapped[str | None] = mapped_column(String(30))
     is_fee_leg: Mapped[bool | None] = mapped_column(default=False)

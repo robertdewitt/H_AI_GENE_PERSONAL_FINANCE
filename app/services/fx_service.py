@@ -5,6 +5,7 @@ To convert an amount FROM quote TO base:  amount_base = amount_quote / rate
 To convert an amount FROM base TO quote:  amount_quote = amount_base * rate
 """
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
@@ -122,11 +123,11 @@ def get_rate(
 
 def convert_amount(
     db: Session,
-    amount: float,
+    amount: Decimal,
     from_currency: str,
     to_currency: str,
     date: datetime,
-) -> tuple[float | None, float | None]:
+) -> tuple[Decimal | None, float | None]:
     """Convert an amount and return (converted_amount, rate_used).
 
     Returns (None, None) if no rate is available.
@@ -138,7 +139,8 @@ def convert_amount(
     if rate is None:
         return None, None
 
-    return round(amount * rate, 2), rate
+    converted = (amount * Decimal(str(rate))).quantize(Decimal("0.01"))
+    return converted, rate
 
 
 def bulk_upsert_rates(

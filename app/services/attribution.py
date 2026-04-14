@@ -1,6 +1,7 @@
 """Attribution engine — explain net worth change using flows + valuations + FX."""
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
@@ -17,7 +18,7 @@ from app.services.fx_service import convert_amount
 @dataclass
 class AttributionComponent:
     label: str
-    amount_base: float = 0.0
+    amount_base: Decimal = Decimal("0.00")
     confidence: float | None = None
     notes: str | None = None
 
@@ -26,11 +27,11 @@ class AttributionComponent:
 class NetWorthAttribution:
     period_start: datetime | None = None
     period_end: datetime | None = None
-    nw_start: float = 0.0
-    nw_end: float = 0.0
-    delta_nw: float = 0.0
+    nw_start: Decimal = Decimal("0.00")
+    nw_end: Decimal = Decimal("0.00")
+    delta_nw: Decimal = Decimal("0.00")
     components: list[AttributionComponent] = field(default_factory=list)
-    unexplained: float = 0.0
+    unexplained: Decimal = Decimal("0.00")
     warnings: list[str] = field(default_factory=list)
 
 
@@ -50,7 +51,7 @@ def _latest_valuation_on_or_before(
 
 def _valuation_in_base(
     db: Session, v: AssetValuation, as_of: datetime,
-) -> tuple[float | None, float | None]:
+) -> tuple[Decimal | None, float | None]:
     base = settings.base_currency
     if v.currency == base:
         return v.value, 1.0
@@ -60,12 +61,12 @@ def _valuation_in_base(
 
 def compute_market_movement_from_valuations(
     db: Session, start_date: datetime, end_date: datetime,
-) -> tuple[float, float]:
+) -> tuple[Decimal, float]:
     """Sum of (end valuation - start valuation) in base, per account with data.
 
     Returns (movement, confidence 0..1).
     """
-    total = 0.0
+    total = Decimal("0.00")
     used = 0
     skipped = 0
     accounts = db.execute(select(Account)).scalars().all()
@@ -92,26 +93,26 @@ def compute_market_movement_from_valuations(
 
 def _balance_native_as_of(
     db: Session, account_id: int, as_of: datetime,
-) -> float:
+) -> Decimal:
     raw = db.execute(
-        select(func.coalesce(func.sum(Transaction.amount), 0.0)).where(
+        select(func.coalesce(func.sum(Transaction.amount), 0)).where(
             Transaction.account_id == account_id,
             Transaction.date <= as_of,
         )
     ).scalar()
-    return float(raw or 0.0)
+    return raw or Decimal("0.00")
 
 
 def compute_fx_translation_effect(
     db: Session, start_date: datetime, end_date: datetime,
-) -> tuple[float, float]:
+) -> tuple[Decimal, float]:
     """Approximate FX P&L: same native balance valued at start vs end rates.
 
     Uses cumulative transaction balance at end_date as the native notional.
     Returns (fx_movement, confidence).
     """
     base = settings.base_currency
-    total = 0.0
+    total = Decimal("0.00")
     n = 0
     accounts = db.execute(select(Account)).scalars().all()
     for acct in accounts:
@@ -119,7 +120,7 @@ def compute_fx_translation_effect(
         if ccy == base:
             continue
         bal = _balance_native_as_of(db, acct.id, end_date)
-        if bal == 0.0:
+        if bal == Decimal("0.00"):
             continue
         c0, r0 = convert_amount(db, bal, ccy, base, start_date)
         c1, r1 = convert_amount(db, bal, ccy, base, end_date)
@@ -237,7 +238,7 @@ def attribute_nw_change(
 
     explained = sum(c.amount_base for c in result.components)
     result.unexplained = result.delta_nw - explained
-    if abs(result.unexplained) > 1.0:
+    if abs(result.unexplained) > Decimal("1.00"):
         result.warnings.append(
             f"Residual after attribution: {result.unexplained:.2f} "
             f"(flows, timing, or missing marks)"
@@ -246,9 +247,9 @@ def attribute_nw_change(
     return result
 
 
-def _sum_by_event_types(db: Session, event_types: list[str], date_filter) -> float:
+def _sum_by_event_types(db: Session, event_types: list[str], date_filter) -> Decimal:
     raw = db.execute(
-        select(func.coalesce(func.sum(Transaction.amount), 0.0))
+        select(func.coalesce(func.sum(Transaction.amount), 0))
         .where(date_filter, Transaction.event_type.in_(event_types))
     ).scalar()
-    return float(raw or 0.0)
+    return raw or Decimal("0.00")

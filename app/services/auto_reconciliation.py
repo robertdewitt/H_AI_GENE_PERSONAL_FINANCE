@@ -1,5 +1,6 @@
 """Create reconciliation groups for obvious transfer pairs."""
 from datetime import timedelta
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -26,7 +27,7 @@ def _txn_in_any_group(db: Session, txn_id: int) -> bool:
 def create_suggested_transfer_groups(
     db: Session,
     limit: int = 200,
-    amount_tolerance: float = 0.02,
+    amount_tolerance: Decimal = Decimal("0.02"),
 ) -> int:
     """Pair unmatched transfer rows into ReconciliationGroup (suggested).
 

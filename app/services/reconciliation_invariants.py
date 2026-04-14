@@ -7,6 +7,7 @@ as_of_date and flags staleness explicitly.
 """
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
@@ -18,8 +19,8 @@ from app.services.fx_service import convert_amount
 @dataclass
 class InvariantResult:
     balanced: bool = False
-    net_base: float = 0.0
-    tolerance: float = 0.01
+    net_base: Decimal = Decimal("0.00")
+    tolerance: Decimal = Decimal("0.01")
     members_converted: int = 0
     members_missing_base: int = 0
     fx_stale_members: list[int] = field(default_factory=list)
@@ -32,14 +33,14 @@ def validate_group(
 ) -> InvariantResult:
     """Check whether the group's members net to zero in base currency."""
     members: list[ReconciliationMember] = group.members
-    tolerance = group.tolerance_base or 0.01
+    tolerance = group.tolerance_base or Decimal("0.01")
     base_ccy = group.base_currency or "USD"
     fx_treatment = group.fx_treatment or FxTreatmentMode.NONE.value
     fee_treatment = group.fee_treatment or FeeTreatment.EXCLUDE_FROM_NET.value
     as_of = group.as_of_date or datetime.now()
 
     result = InvariantResult(tolerance=tolerance)
-    net = 0.0
+    net = Decimal("0.00")
 
     for member in members:
         if fee_treatment == FeeTreatment.EXCLUDE_FROM_NET.value and member.is_fee_leg:
@@ -81,7 +82,7 @@ def validate_group(
                     f"and FX treatment is {fx_treatment}"
                 )
 
-    result.net_base = round(net, 6)
+    result.net_base = net.quantize(Decimal("0.000001"))
     result.balanced = abs(result.net_base) <= tolerance
 
     if not result.balanced:

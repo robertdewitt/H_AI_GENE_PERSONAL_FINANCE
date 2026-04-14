@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -69,11 +70,11 @@ def _safe_int(val: str | None) -> int | None:
         return None
 
 
-def _safe_float(val: str | None) -> float | None:
+def _safe_decimal(val: str | None) -> Decimal | None:
     if not val or not val.strip():
         return None
     try:
-        return float(val)
+        return Decimal(val)
     except (ValueError, TypeError):
         return None
 
@@ -97,8 +98,8 @@ def transactions_list(
 ):
     account_id_val = _safe_int(account_id)
     category_id_val = _safe_int(category_id)
-    amount_min_val = _safe_float(amount_min)
-    amount_max_val = _safe_float(amount_max)
+    amount_min_val = _safe_decimal(amount_min)
+    amount_max_val = _safe_decimal(amount_max)
 
     transfer_flag = None
     if is_transfer == "true":
@@ -234,7 +235,7 @@ def transaction_update(
     txn_id: int,
     date: str = Form(...),
     description: str = Form(...),
-    amount: float = Form(...),
+    amount: Decimal = Form(...),
     category_id: str = Form(""),
     is_transfer: bool = Form(False),
     transfer_account_id: str = Form(""),
@@ -285,11 +286,11 @@ def transaction_update(
                         break
                 if split_error is None:
                     try:
-                        total = sum(float(row["amount"]) for row in lines)
+                        total = sum(Decimal(str(row["amount"])) for row in lines)
                     except (TypeError, KeyError):
                         split_error = "Invalid amount in splits."
                     else:
-                        if abs(total - amount) > 0.02:
+                        if abs(total - amount) > Decimal("0.02"):
                             split_error = (
                                 f"Splits sum to {total:.2f} but transaction amount is {amount:.2f}."
                             )

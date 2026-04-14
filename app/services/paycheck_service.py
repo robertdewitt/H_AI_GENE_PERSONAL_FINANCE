@@ -1,5 +1,6 @@
 """Parse and manage paycheck stubs — CSV/XLS and future PDF/OCR."""
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -84,12 +85,12 @@ def import_paycheck_stubs(
         if pay_date is None or gross is None or net is None:
             continue
 
-        def _get_float(field: str) -> float:
+        def _get_decimal(field: str) -> Decimal:
             col = column_mapping.get(field)
             if not col:
-                return 0.0
+                return Decimal("0.00")
             val = parse_amount(row.get(col, ""))
-            return val if val is not None else 0.0
+            return Decimal(str(val)) if val is not None else Decimal("0.00")
 
         def _get_date(field: str) -> datetime | None:
             col = column_mapping.get(field)
@@ -106,18 +107,18 @@ def import_paycheck_stubs(
             pay_period_start=_get_date("period_start"),
             pay_period_end=_get_date("period_end"),
             employer=employer or None,
-            gross_pay=gross,
-            net_pay=net,
-            federal_tax=_get_float("federal_tax"),
-            state_tax=_get_float("state_tax"),
-            local_tax=_get_float("local_tax"),
-            social_security=_get_float("social_security"),
-            medicare=_get_float("medicare"),
-            retirement_401k=_get_float("retirement_401k"),
-            health_insurance=_get_float("health_insurance"),
-            dental_insurance=_get_float("dental_insurance"),
-            vision_insurance=_get_float("vision_insurance"),
-            hsa_contribution=_get_float("hsa_contribution"),
+            gross_pay=Decimal(str(gross)),
+            net_pay=Decimal(str(net)),
+            federal_tax=_get_decimal("federal_tax"),
+            state_tax=_get_decimal("state_tax"),
+            local_tax=_get_decimal("local_tax"),
+            social_security=_get_decimal("social_security"),
+            medicare=_get_decimal("medicare"),
+            retirement_401k=_get_decimal("retirement_401k"),
+            health_insurance=_get_decimal("health_insurance"),
+            dental_insurance=_get_decimal("dental_insurance"),
+            vision_insurance=_get_decimal("vision_insurance"),
+            hsa_contribution=_get_decimal("hsa_contribution"),
             source_filename=filename,
         )
         db.add(stub)
@@ -168,8 +169,8 @@ def get_paycheck_summary(
 
     if not stubs:
         return {
-            "count": 0, "total_gross": 0, "total_net": 0,
-            "total_taxes": 0, "total_retirement": 0, "total_benefits": 0,
+            "count": 0, "total_gross": Decimal("0.00"), "total_net": Decimal("0.00"),
+            "total_taxes": Decimal("0.00"), "total_retirement": Decimal("0.00"), "total_benefits": Decimal("0.00"),
         }
 
     return {

@@ -1,6 +1,7 @@
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -19,9 +20,9 @@ class PaymentDecomposition(Base):
     component: Mapped[str] = mapped_column(
         String(30), nullable=False,
     )
-    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), nullable=False)
-    amount_base: Mapped[float | None] = mapped_column(Float)
+    amount_base: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     provenance: Mapped[str] = mapped_column(
         String(30), default=ClassificationProvenance.IMPORTED.value,
     )
