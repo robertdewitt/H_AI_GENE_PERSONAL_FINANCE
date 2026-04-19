@@ -6,6 +6,7 @@ spend analysis, attribution, data quality, and snapshots.
 """
 import pytest
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -293,12 +294,12 @@ class TestBalanceDispatch:
         assert result.value == 180000.0
         assert result.balance_source_used == BalanceTruthSource.LIABILITY_BALANCE.value
 
-    def test_backward_compat_float(self, db):
+    def test_balance_returns_decimal(self, db):
         from app.services.account_service import get_account_balance
         acct = _make_account(db)
         _make_txn(db, acct.id, 100.0)
         db.commit()
-        assert isinstance(get_account_balance(db, acct.id), float)
+        assert isinstance(get_account_balance(db, acct.id), Decimal)
 
 
 # ── Reconciliation invariants ───────────────────────────────────────

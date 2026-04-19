@@ -5,8 +5,9 @@ source, confidence, and staleness metadata so consumers never mistake
 stale data for live precision.
 """
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -20,8 +21,8 @@ class AccountBalanceSnapshot(Base):
         Integer, ForeignKey("accounts.id"), nullable=False, index=True,
     )
     as_of_date: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
-    value_native: Mapped[float] = mapped_column(Float, nullable=False)
-    value_base: Mapped[float | None] = mapped_column(Float)
+    value_native: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    value_base: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     currency: Mapped[str] = mapped_column(String(10), nullable=False)
     fx_rate: Mapped[float | None] = mapped_column(Float)
     source: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -38,8 +39,8 @@ class AssetValuationSnapshot(Base):
         Integer, ForeignKey("accounts.id"), nullable=False, index=True,
     )
     as_of_date: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
-    value_native: Mapped[float] = mapped_column(Float, nullable=False)
-    value_base: Mapped[float | None] = mapped_column(Float)
+    value_native: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    value_base: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     currency: Mapped[str] = mapped_column(String(10), nullable=False)
     fx_rate: Mapped[float | None] = mapped_column(Float)
     source: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -56,8 +57,8 @@ class LiabilityBalanceSnapshot(Base):
         Integer, ForeignKey("accounts.id"), nullable=False, index=True,
     )
     as_of_date: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
-    value_native: Mapped[float] = mapped_column(Float, nullable=False)
-    value_base: Mapped[float | None] = mapped_column(Float)
+    value_native: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    value_base: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     currency: Mapped[str] = mapped_column(String(10), nullable=False)
     fx_rate: Mapped[float | None] = mapped_column(Float)
     source: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -71,9 +72,9 @@ class HouseholdSnapshot(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     as_of_date: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
-    total_assets_base: Mapped[float] = mapped_column(Float, nullable=False)
-    total_liabilities_base: Mapped[float] = mapped_column(Float, nullable=False)
-    net_worth_base: Mapped[float] = mapped_column(Float, nullable=False)
+    total_assets_base: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    total_liabilities_base: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    net_worth_base: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     base_currency: Mapped[str] = mapped_column(String(10), default="USD")
     accounts_included: Mapped[int] = mapped_column(Integer, default=0)
     stale_accounts: Mapped[int] = mapped_column(Integer, default=0)

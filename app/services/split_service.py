@@ -10,6 +10,7 @@ amount (within tolerance), unless explicitly marked unresolved.
 """
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -23,10 +24,10 @@ from app.services.event_classifier import event_type_to_spend_metadata
 @dataclass
 class SplitValidation:
     valid: bool = False
-    split_sum: float = 0.0
-    transaction_amount: float = 0.0
-    residual: float = 0.0
-    tolerance: float = 0.01
+    split_sum: Decimal = Decimal("0.00")
+    transaction_amount: Decimal = Decimal("0.00")
+    residual: Decimal = Decimal("0.00")
+    tolerance: Decimal = Decimal("0.01")
     split_count: int = 0
     warnings: list[str] = field(default_factory=list)
 
@@ -42,7 +43,7 @@ def list_splits(db: Session, transaction_id: int) -> list[TransactionSplit]:
 def add_split(
     db: Session,
     transaction_id: int,
-    amount_native: float,
+    amount_native: Decimal,
     currency: str,
     category_id: int | None = None,
     # Spend metadata — auto-derived from parent event_type when omitted.
@@ -53,7 +54,7 @@ def add_split(
     linked_account_id: int | None = None,
     linked_reconciliation_group_id: int | None = None,
     document_line_id: int | None = None,
-    amount_base: float | None = None,
+    amount_base: Decimal | None = None,
     fx_rate: float | None = None,
     provenance: str = ClassificationProvenance.IMPORTED.value,
     confidence: float | None = None,
@@ -105,7 +106,7 @@ def add_split(
 
 
 def validate_splits(
-    db: Session, transaction_id: int, tolerance: float = 0.01,
+    db: Session, transaction_id: int, tolerance: Decimal = Decimal("0.01"),
 ) -> SplitValidation:
     txn = db.get(Transaction, transaction_id)
     if not txn:
@@ -203,7 +204,7 @@ def replace_transaction_splits(
 
     ccy = txn.original_currency or "USD"
     for row in lines:
-        amt = float(row["amount"])
+        amt = Decimal(str(row["amount"]))
         line_ccy = str(row.get("currency") or ccy)
         cat_id = row.get("category_id")
         if cat_id is not None:
@@ -228,11 +229,11 @@ def replace_transaction_splits(
 
 def get_true_spend(
     db: Session, account_id: int | None = None,
-) -> float:
+) -> Decimal:
     """Sum all splits where counts_as_true_spend is True."""
-    q = select(func.coalesce(func.sum(TransactionSplit.amount_native), 0.0)).where(
+    q = select(func.coalesce(func.sum(TransactionSplit.amount_native), 0)).where(
         TransactionSplit.counts_as_true_spend.is_(True),
     )
     if account_id:
         q = q.join(Transaction).where(Transaction.account_id == account_id)
-    return float(db.execute(q).scalar() or 0.0)
+    return db.execute(q).scalar() or Decimal("0.00")

@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel
 
@@ -6,7 +7,7 @@ from pydantic import BaseModel
 class TransferCandidate(BaseModel):
     from_transaction_id: int
     to_transaction_id: int
-    amount: float
+    amount: Decimal
     date: datetime
     confidence: float
     from_account_name: str
@@ -24,7 +25,7 @@ class TransferLinkResponse(BaseModel):
     id: int
     from_transaction_id: int
     to_transaction_id: int
-    amount: float
+    amount: Decimal
     date: datetime
     confidence: float
     confirmed_by_user: bool

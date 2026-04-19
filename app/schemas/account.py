@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
@@ -11,7 +12,7 @@ class AccountCreate(BaseModel):
     institution: str | None = None
     currency: str = "USD"
     is_asset: bool = True
-    current_value: float | None = None
+    current_value: Decimal | None = None
     value_as_of_date: datetime | None = None
     notes: str | None = None
 
@@ -22,7 +23,7 @@ class AccountUpdate(BaseModel):
     institution: str | None = None
     currency: str | None = None
     is_asset: bool | None = None
-    current_value: float | None = None
+    current_value: Decimal | None = None
     value_as_of_date: datetime | None = None
     notes: str | None = None
 
@@ -34,7 +35,7 @@ class AccountResponse(BaseModel):
     institution: str | None
     currency: str
     is_asset: bool
-    current_value: float | None
+    current_value: Decimal | None
     value_as_of_date: datetime | None
     notes: str | None
     created_at: datetime

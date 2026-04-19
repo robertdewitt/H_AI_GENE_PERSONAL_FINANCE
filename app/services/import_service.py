@@ -5,6 +5,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import pandas as pd
@@ -494,7 +495,7 @@ def parse_date(value, dayfirst: bool | None = None) -> datetime | None:
         return None
 
 
-def parse_amount(value) -> float | None:
+def parse_amount(value) -> Decimal | None:
     if pd.isna(value):
         return None
     s = str(value).strip()
@@ -506,9 +507,9 @@ def parse_amount(value) -> float | None:
     if parens:
         s = s[1:-1]
     try:
-        result = float(s)
+        result = Decimal(s)
         return -result if parens else result
-    except ValueError:
+    except (InvalidOperation, ValueError):
         return None
 
 

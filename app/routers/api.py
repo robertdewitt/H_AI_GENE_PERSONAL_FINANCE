@@ -4,6 +4,7 @@ All endpoints return structured JSON designed for consumption by LLM agents
 that analyze spending habits, investments, and financial health.
 """
 from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
@@ -69,7 +70,7 @@ def api_accounts(db: Session = Depends(get_db)):
     result = []
     for acct in accounts:
         base_result = balances_base.get(acct.id)
-        base_bal = round(base_result.value, 2) if base_result else 0.0
+        base_bal = round(base_result.value, 2) if base_result else Decimal("0.00")
         result.append({
             "id": acct.id,
             "name": acct.name,
@@ -176,7 +177,7 @@ def api_categories(db: Session = Depends(get_db)):
         stats = db.execute(
             select(
                 func.count(Transaction.id),
-                func.coalesce(func.sum(Transaction.amount), 0.0),
+                func.coalesce(func.sum(Transaction.amount), 0),
             ).where(Transaction.category_id == cat.id)
         ).one()
         result.append({
@@ -185,7 +186,7 @@ def api_categories(db: Session = Depends(get_db)):
             "type": cat.category_type.value,
             "parent_id": cat.parent_id,
             "transaction_count": stats[0],
-            "total_amount": round(float(stats[1]), 2),
+            "total_amount": round(stats[1] or Decimal("0.00"), 2),
         })
     return {"categories": result}
 
@@ -228,8 +229,8 @@ def api_spending_by_category(
                 "name": r.name,
                 "type": str(r.category_type),
                 "transaction_count": r.count,
-                "total_spent": round(float(r.total), 2),
-                "avg_per_transaction": round(float(r.avg), 2),
+                "total_spent": round(r.total or Decimal("0.00"), 2),
+                "avg_per_transaction": round(r.avg or Decimal("0.00"), 2),
             }
             for r in rows
         ],
@@ -282,9 +283,9 @@ def api_spending_monthly(
         "months": [
             {
                 "month": r.month,
-                "spending": round(float(r.spending), 2),
-                "income": round(float(r.income), 2),
-                "net": round(float(r.income) + float(r.spending), 2),
+                "spending": round(r.spending or Decimal("0.00"), 2),
+                "income": round(r.income or Decimal("0.00"), 2),
+                "net": round((r.income or Decimal("0.00")) + (r.spending or Decimal("0.00")), 2),
                 "transaction_count": r.count,
             }
             for r in rows
@@ -326,9 +327,9 @@ def api_top_merchants(
             {
                 "description": r.description,
                 "transaction_count": r.count,
-                "total_spent": round(float(r.total), 2),
+                "total_spent": round(r.total or Decimal("0.00"), 2),
                 "avg_per_transaction": round(
-                    float(r.total) / r.count, 2
+                    (r.total or Decimal("0.00")) / r.count, 2
                 ) if r.count else 0,
                 "first_seen": r.first_seen.strftime("%Y-%m-%d"),
                 "last_seen": r.last_seen.strftime("%Y-%m-%d"),
@@ -422,7 +423,7 @@ def api_agent_context(db: Session = Depends(get_db)):
     # Falls back gracefully to zero totals when no splits exist yet.
     spend_summary = compute_spend_summary(db, months=1)
     income_30d = db.execute(
-        select(func.coalesce(func.sum(Transaction.amount), 0.0)).where(
+        select(func.coalesce(func.sum(Transaction.amount), 0)).where(
             Transaction.date >= one_month_ago,
             Transaction.amount > 0,
             Transaction.event_type.notin_([
@@ -430,7 +431,7 @@ def api_agent_context(db: Session = Depends(get_db)):
                 EconomicEventType.CARD_PAYMENT_SETTLEMENT.value,
             ]),
         )
-    ).scalar() or 0.0
+    ).scalar() or Decimal("0.00")
 
     # Uncategorized stats
     uncat_count = db.execute(
@@ -486,9 +487,9 @@ def api_agent_context(db: Session = Depends(get_db)):
         },
         "accounts": account_summaries,
         "last_30_days": {
-            "income": round(float(income_30d), 2),
+            "income": round(income_30d, 2),
             "true_spend": spend_summary.total_true_spend,
-            "net_cashflow": round(float(income_30d) + spend_summary.total_true_spend, 2),
+            "net_cashflow": round(income_30d + spend_summary.total_true_spend, 2),
             "spend_by_category": spend_summary.by_category,
             "spend_by_type": spend_summary.by_spend_type,
             "note": (
@@ -500,8 +501,8 @@ def api_agent_context(db: Session = Depends(get_db)):
             {
                 "description": r.description,
                 "occurrences_3mo": r.count,
-                "total_3mo": round(float(r.total), 2),
-                "est_monthly": round(float(r.total) / 3, 2),
+                "total_3mo": round(r.total or Decimal("0.00"), 2),
+                "est_monthly": round((r.total or Decimal("0.00")) / 3, 2),
             }
             for r in top_recurring
         ],
@@ -576,8 +577,8 @@ def api_balance_sheet(db: Session = Depends(get_db)):
 
     assets = []
     liabilities = []
-    total_assets = 0.0
-    total_liabilities = 0.0
+    total_assets = Decimal("0.00")
+    total_liabilities = Decimal("0.00")
 
     for acct in accounts:
         result = balances.get(acct.id)

@@ -1,5 +1,6 @@
 import shutil
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
@@ -132,19 +133,19 @@ def paycheck_manual_create(
     account_id: int = Form(...),
     pay_date: str = Form(...),
     employer: str = Form(""),
-    gross_pay: float = Form(...),
-    net_pay: float = Form(...),
-    federal_tax: float = Form(0),
-    state_tax: float = Form(0),
-    local_tax: float = Form(0),
-    social_security: float = Form(0),
-    medicare: float = Form(0),
-    retirement_401k: float = Form(0),
-    health_insurance: float = Form(0),
-    dental_insurance: float = Form(0),
-    vision_insurance: float = Form(0),
-    hsa_contribution: float = Form(0),
-    other_deductions: float = Form(0),
+    gross_pay: Decimal = Form(...),
+    net_pay: Decimal = Form(...),
+    federal_tax: Decimal = Form(Decimal("0.00")),
+    state_tax: Decimal = Form(Decimal("0.00")),
+    local_tax: Decimal = Form(Decimal("0.00")),
+    social_security: Decimal = Form(Decimal("0.00")),
+    medicare: Decimal = Form(Decimal("0.00")),
+    retirement_401k: Decimal = Form(Decimal("0.00")),
+    health_insurance: Decimal = Form(Decimal("0.00")),
+    dental_insurance: Decimal = Form(Decimal("0.00")),
+    vision_insurance: Decimal = Form(Decimal("0.00")),
+    hsa_contribution: Decimal = Form(Decimal("0.00")),
+    other_deductions: Decimal = Form(Decimal("0.00")),
     db: Session = Depends(get_db),
 ):
     from app.services.paycheck_service import create_paycheck_manual

@@ -1,5 +1,6 @@
 """Net worth computation — FX-aware, works with mixed-currency accounts."""
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -27,8 +28,8 @@ def compute_net_worth(
 
     accounts = db.execute(select(Account)).scalars().all()
     breakdown: list[AccountBalance] = []
-    total_assets = 0.0
-    total_liabilities = 0.0
+    total_assets = Decimal("0.00")
+    total_liabilities = Decimal("0.00")
 
     for acct in accounts:
         balance = get_account_balance(

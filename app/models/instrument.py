@@ -4,8 +4,9 @@ Lot-level cost basis and price history are stored separately from account-level
 AssetValuation for household rollup.
 """
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -38,7 +39,7 @@ class PositionLot(Base):
         Integer, ForeignKey("instruments.id"), nullable=False, index=True,
     )
     quantity: Mapped[float] = mapped_column(Float, nullable=False)
-    cost_basis_total: Mapped[float | None] = mapped_column(Float)
+    cost_basis_total: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     as_of_date: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     source: Mapped[str] = mapped_column(String(40), default="manual")
     confidence: Mapped[float | None] = mapped_column(Float)
@@ -57,7 +58,7 @@ class PriceSnapshot(Base):
         Integer, ForeignKey("instruments.id"), nullable=False, index=True,
     )
     as_of_date: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
-    price: Mapped[float] = mapped_column(Float, nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="USD")
     source: Mapped[str] = mapped_column(String(40), default="manual")
     confidence: Mapped[float | None] = mapped_column(Float)

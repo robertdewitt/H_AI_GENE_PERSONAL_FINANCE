@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -68,10 +69,10 @@ def _spend_for_payroll_line(event: EconomicEventType) -> SpendType | None:
     return None
 
 
-def _split_amount_for_line(line: ParsedLine) -> float:
+def _split_amount_for_line(line: ParsedLine) -> Decimal:
     """Cash/economic amount on the parent transaction's currency."""
     if line.excluded_from_net_sum:
-        return 0.0
+        return Decimal("0.00")
     return line.amount
 
 
@@ -217,7 +218,7 @@ def apply_financial_document(
             sa = _split_amount_for_line(pr_line)
             linked = None
             if pr_line.kind == DocumentLineKind.LIABILITY.value and not pr_line.is_cash:
-                sa = 0.0
+                sa = Decimal("0.00")
 
         add_split(
             db,
@@ -263,23 +264,23 @@ def _write_property_pnl_snapshot(
     parsed: ParsedFinancialDocument,
     confidence: float,
 ) -> int:
-    inc = 0.0
-    exp = 0.0
-    draw = 0.0
-    liab = 0.0
+    inc = Decimal("0.00")
+    exp = Decimal("0.00")
+    draw = Decimal("0.00")
+    liab = Decimal("0.00")
     for ln in parsed.lines:
         k = ln.kind
         if k == DocumentLineKind.INCOME.value:
-            inc += max(0.0, ln.amount)
+            inc += max(Decimal("0.00"), ln.amount)
         elif k == DocumentLineKind.EXPENSE.value:
-            exp += abs(min(0.0, ln.amount))
+            exp += abs(min(Decimal("0.00"), ln.amount))
         elif k == DocumentLineKind.TRANSFER.value:
-            draw += abs(min(0.0, ln.amount))
+            draw += abs(min(Decimal("0.00"), ln.amount))
         elif k == DocumentLineKind.LIABILITY.value:
             liab += ln.amount
 
     noi = inc - exp
-    cash = parsed.net_bank_deposit or 0.0
+    cash = parsed.net_bank_deposit or Decimal("0.00")
 
     snap = PropertyPnLSnapshot(
         rental_property_id=property_id,

@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -58,7 +59,7 @@ def valuation_detail(
 @router.post("/{account_id}/add")
 def valuation_add(
     account_id: int,
-    value: float = Form(...),
+    value: Decimal = Form(...),
     date: str = Form(...),
     currency: str = Form("USD"),
     source: str = Form("manual"),

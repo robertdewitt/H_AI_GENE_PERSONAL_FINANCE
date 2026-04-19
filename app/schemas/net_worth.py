@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel
 
@@ -8,9 +9,9 @@ class AccountBalance(BaseModel):
     account_name: str
     account_type: str
     type_group: str
-    balance: float
+    balance: Decimal
     currency: str
-    balance_base: float | None = None
+    balance_base: Decimal | None = None
     is_asset: bool
     as_of_date: datetime
 
@@ -18,9 +19,9 @@ class AccountBalance(BaseModel):
 class NetWorthSnapshot(BaseModel):
     date: datetime
     currency: str
-    total_assets: float
-    total_liabilities: float
-    net_worth: float
+    total_assets: Decimal
+    total_liabilities: Decimal
+    net_worth: Decimal
     breakdown: list[AccountBalance]
 
 

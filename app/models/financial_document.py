@@ -5,6 +5,7 @@ Splits on a parent transaction reference lines via document_line_id.
 """
 import json
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
@@ -12,6 +13,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
     func,
@@ -66,7 +68,7 @@ class FinancialDocumentLine(Base):
     line_kind: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     component_code: Mapped[str | None] = mapped_column(String(80), index=True)
     label: Mapped[str] = mapped_column(String(500), nullable=False)
-    amount_native: Mapped[float] = mapped_column(Float, nullable=False)
+    amount_native: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="USD")
     is_cash: Mapped[bool] = mapped_column(Boolean, default=True)
     rental_property_id: Mapped[int | None] = mapped_column(
@@ -101,12 +103,12 @@ class PropertyPnLSnapshot(Base):
     period_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     statement_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="USD")
-    total_income: Mapped[float] = mapped_column(Float, default=0.0)
-    total_expense: Mapped[float] = mapped_column(Float, default=0.0)
-    owner_draw: Mapped[float] = mapped_column(Float, default=0.0)
-    liability_adjustment: Mapped[float] = mapped_column(Float, default=0.0)
-    net_operating_income: Mapped[float] = mapped_column(Float, default=0.0)
-    net_cash_flow: Mapped[float] = mapped_column(Float, default=0.0)
+    total_income: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
+    total_expense: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
+    owner_draw: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
+    liability_adjustment: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
+    net_operating_income: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
+    net_cash_flow: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"))
     source: Mapped[str] = mapped_column(String(40), default="document")
     confidence: Mapped[float | None] = mapped_column(Float)
     stale_flag: Mapped[bool] = mapped_column(Boolean, default=False)

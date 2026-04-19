@@ -1,6 +1,7 @@
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Numeric, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -16,7 +17,7 @@ class TransferLink(Base):
     to_transaction_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("transactions.id"), nullable=False
     )
-    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     confirmed_by_user: Mapped[bool] = mapped_column(Boolean, default=False)

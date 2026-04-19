@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,7 @@ from typing import Any
 class ParsedLine:
     kind: str
     label: str
-    amount: float
+    amount: Decimal
     currency: str
     code: str | None = None
     is_cash: bool = True
@@ -35,8 +36,8 @@ class ParsedFinancialDocument:
     reference: str | None = None
     employer_or_counterparty: str | None = None
     property_code: str | None = None
-    net_pay: float | None = None
-    net_bank_deposit: float | None = None
+    net_pay: Decimal | None = None
+    net_bank_deposit: Decimal | None = None
     lines: list[ParsedLine] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -63,7 +64,7 @@ def _line_from_dict(d: dict[str, Any], default_currency: str) -> ParsedLine:
     return ParsedLine(
         kind=str(d.get("kind", "income")).lower(),
         label=str(d.get("label", d.get("code", ""))),
-        amount=float(d.get("amount", 0)),
+        amount=Decimal(str(d.get("amount", 0))),
         currency=str(d.get("currency", default_currency)),
         code=d.get("code"),
         is_cash=bool(d.get("is_cash", True)),
@@ -103,12 +104,12 @@ def parse_document_dict(data: dict[str, Any]) -> ParsedFinancialDocument:
     if doc_type == "payroll":
         if net_pay is None:
             raise ValueError("payroll document requires net_pay")
-        net_pay = float(net_pay)
+        net_pay = Decimal(str(net_pay))
         _validate_payroll_sum(lines, net_pay)
     else:
         if net_bank is None:
             raise ValueError("rental_statement requires net_bank_deposit")
-        net_bank = float(net_bank)
+        net_bank = Decimal(str(net_bank))
         _validate_rental_sum(lines, net_bank)
 
     return ParsedFinancialDocument(
@@ -120,14 +121,16 @@ def parse_document_dict(data: dict[str, Any]) -> ParsedFinancialDocument:
         reference=data.get("reference"),
         employer_or_counterparty=data.get("employer") or data.get("counterparty"),
         property_code=data.get("property_code"),
-        net_pay=float(net_pay) if net_pay is not None else None,
-        net_bank_deposit=float(net_bank) if net_bank is not None else None,
+        net_pay=Decimal(str(net_pay)) if net_pay is not None else None,
+        net_bank_deposit=Decimal(str(net_bank)) if net_bank is not None else None,
         lines=lines,
         raw=dict(data),
     )
 
 
-def _validate_payroll_sum(lines: list[ParsedLine], net_pay: float, tol: float = 0.02) -> None:
+def _validate_payroll_sum(
+    lines: list[ParsedLine], net_pay: Decimal, tol: Decimal = Decimal("0.02")
+) -> None:
     included = [ln for ln in lines if not ln.excluded_from_net_sum]
     s = sum(ln.amount for ln in included)
     if abs(s - net_pay) > tol:
@@ -136,7 +139,9 @@ def _validate_payroll_sum(lines: list[ParsedLine], net_pay: float, tol: float = 
         )
 
 
-def _validate_rental_sum(lines: list[ParsedLine], net_bank: float, tol: float = 0.02) -> None:
+def _validate_rental_sum(
+    lines: list[ParsedLine], net_bank: Decimal, tol: Decimal = Decimal("0.02")
+) -> None:
     included = [ln for ln in lines if not ln.excluded_from_net_sum]
     s = sum(ln.amount for ln in included)
     if abs(s - net_bank) > tol:

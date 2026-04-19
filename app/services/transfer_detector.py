@@ -1,5 +1,6 @@
 import re
 from datetime import timedelta
+from decimal import Decimal
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
@@ -79,7 +80,7 @@ def _description_score(
 def detect_transfers(
     db: Session,
     date_window: int | None = None,
-    amount_tolerance: float | None = None,
+    amount_tolerance: Decimal | None = None,
 ) -> list[TransferCandidate]:
     """Find unlinked transaction pairs that look like transfers.
 
@@ -132,7 +133,7 @@ def detect_transfers(
             date_score = max(0, 1.0 - (date_diff / (window + 1)))
 
             amount_diff = abs(in_txn.amount - out_abs)
-            amount_score = 1.0 if amount_diff <= 0.01 else max(0, 1.0 - amount_diff)
+            amount_score = 1.0 if amount_diff <= Decimal("0.01") else max(0, 1.0 - float(amount_diff))
 
             desc_score = _description_score(
                 out_txn.description, in_txn.description, learned_tokens,

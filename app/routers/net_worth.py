@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
+from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -21,9 +22,9 @@ def net_worth_page(
     current = compute_net_worth(db)
     series = compute_net_worth_series(db, months=months)
 
-    groups: dict[str, float] = {}
+    groups: dict[str, Decimal] = {}
     for item in current.breakdown:
-        groups.setdefault(item.type_group, 0.0)
+        groups.setdefault(item.type_group, Decimal("0.00"))
         groups[item.type_group] += item.balance
 
     # Spending by category across ALL accounts

@@ -7,6 +7,7 @@ stored with stale_flag=True rather than omitted.
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -42,8 +43,8 @@ def compute_household_snapshot(
     base_ccy = settings.base_currency
 
     accounts = db.execute(select(Account)).scalars().all()
-    total_assets = 0.0
-    total_liabilities = 0.0
+    total_assets = Decimal("0.00")
+    total_liabilities = Decimal("0.00")
     stale_count = 0
     low_conf_count = 0
 
