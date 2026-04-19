@@ -218,7 +218,7 @@ def transaction_edit_form(
         }
         for s in list_splits(db, txn.id)
     ]
-    splits_json = json.dumps(splits_rows)
+    splits_json = json.dumps(splits_rows, default=lambda o: float(o) if isinstance(o, Decimal) else str(o))
     categories_json = [
         {"id": c.id, "name": c.name, "type": c.category_type.value}
         for c in categories
