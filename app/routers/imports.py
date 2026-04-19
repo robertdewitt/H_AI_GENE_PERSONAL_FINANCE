@@ -33,6 +33,13 @@ async def upload_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
+    ext = Path(file.filename).suffix.lower()
+    if ext not in (".csv", ".xls", ".xlsx", ".pdf"):
+        return templates.TemplateResponse(request, "imports/upload.html", {
+            "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+            "error": f"Unsupported file type '{ext}'. Please upload a CSV, XLS, XLSX, or PDF.",
+        })
+
     upload_dir = Path(settings.upload_dir)
     dest = upload_dir / file.filename
     with open(dest, "wb") as f:

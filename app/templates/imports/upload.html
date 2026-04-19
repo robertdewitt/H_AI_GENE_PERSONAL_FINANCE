@@ -4,8 +4,14 @@
 {% block content %}
 <hgroup>
     <h1>Import Transactions</h1>
-    <p>Upload a CSV or Excel file from your bank or financial institution</p>
+    <p>Upload a CSV, Excel, or PDF bank statement</p>
 </hgroup>
+
+{% if error %}
+<article style="margin-bottom:1rem;padding:0.75rem 1rem;border-left:4px solid var(--pico-del-color)">
+    {{ error }}
+</article>
+{% endif %}
 
 {% if accounts %}
 <form method="post" action="/import/upload" enctype="multipart/form-data">
@@ -18,8 +24,12 @@
     </select>
 
     <label for="file">Transaction File *</label>
-    <input type="file" id="file" name="file" accept=".csv,.xls,.xlsx" required>
-    <small>Supported formats: CSV, XLS, XLSX</small>
+    <input type="file" id="file" name="file" accept=".csv,.xls,.xlsx,.pdf" required>
+    <small>
+        Supported formats: CSV, XLS, XLSX, PDF
+        &bull; PDF imports extract tables or text from bank statement PDFs.
+        Review the column mapping carefully after upload.
+    </small>
 
     <button type="submit">Upload &amp; Preview</button>
 </form>

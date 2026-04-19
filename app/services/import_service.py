@@ -372,8 +372,12 @@ def _row_looks_like_header(cells: list[str]) -> bool:
 def read_file(filepath: str) -> pd.DataFrame:
     path = Path(filepath)
     ext = path.suffix.lower()
-    if ext not in (".csv", ".xls", ".xlsx"):
+    if ext not in (".csv", ".xls", ".xlsx", ".pdf"):
         raise ValueError(f"Unsupported file type: {ext}")
+
+    if ext == ".pdf":
+        from app.services.pdf_import import pdf_to_dataframe
+        return pdf_to_dataframe(filepath)
 
     header_row = _find_header_row(filepath, ext)
     if header_row is None:

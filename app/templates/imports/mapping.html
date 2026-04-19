@@ -7,6 +7,14 @@
     <p>{{ total_rows }} rows found. Map the file columns to transaction fields.</p>
 </hgroup>
 
+{% if filepath.endswith('.pdf') %}
+<article style="margin-bottom:1rem;padding:0.75rem 1rem;border-left:4px solid var(--pico-primary)">
+    <strong>PDF import</strong> — columns were extracted automatically from the PDF.
+    Check the preview below and adjust the column mapping if anything looks off.
+    For best results, use a text-based PDF (not a scanned image).
+</article>
+{% endif %}
+
 <form method="post" action="/import/confirm" class="mapping-form">
     <input type="hidden" name="account_id" value="{{ account_id }}">
     <input type="hidden" name="filepath" value="{{ filepath }}">
