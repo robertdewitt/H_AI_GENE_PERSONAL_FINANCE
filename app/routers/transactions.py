@@ -36,8 +36,12 @@ def _build_filters(
     if uncategorized:
         from sqlalchemy import exists
         clauses.append(Transaction.category_id.is_(None))
+        # Exclude transactions that have at least one split with a category assigned
         clauses.append(
-            ~exists().where(TransactionSplit.transaction_id == Transaction.id)
+            ~exists().where(
+                TransactionSplit.transaction_id == Transaction.id,
+                TransactionSplit.category_id.is_not(None),
+            )
         )
     if date_from:
         try:
