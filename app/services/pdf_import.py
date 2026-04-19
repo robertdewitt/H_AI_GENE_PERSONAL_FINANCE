@@ -1,14 +1,12 @@
 """PDF bank statement extraction.
 
 Strategy (in order):
-  1. Extract tables via pdfplumber — works well for PDFs with embedded table
-     structure (most modern bank statements).
-  2. Text-line heuristic — for scanned-style or column-aligned PDFs with no
-     proper table structure: parse each line looking for date + description +
-     amount patterns.
+  1. Extract tables via pdfplumber — works for PDFs with embedded table structure.
+  2. Bank-statement text parser — for column-aligned text statements (Chase, Amex,
+     Barclays, etc.):  each transaction line is  DATE  DESCRIPTION  AMOUNT
+     where DATE may be MM/DD (no year), DD/MM/YYYY, YYYY-MM-DD, etc.
 
-Returns a pandas DataFrame ready to be fed into the existing
-detect_columns / import_transactions pipeline.
+Returns a pandas DataFrame ready for detect_columns → import_transactions.
 """
 from __future__ import annotations
 
@@ -20,48 +18,29 @@ import pandas as pd
 
 log = logging.getLogger(__name__)
 
-# Regex that matches common date formats on a statement line
-_DATE_RE = re.compile(
-    r"\b(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4})"   # DD/MM/YY, MM-DD-YYYY …
-    r"|\b(\d{4}[/\-\.]\d{1,2}[/\-\.]\d{1,2})\b"   # YYYY-MM-DD
-    r"|\b(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{2,4})\b"
-    r"|\b((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2}[,\s]+\d{4})\b",
-    re.IGNORECASE,
-)
-
-# Regex that matches a monetary amount (with optional sign, currency symbol, commas)
-_AMOUNT_RE = re.compile(
-    r"[-+]?\s*[$£€¥]?\s*\d{1,3}(?:[,\s]\d{3})*(?:\.\d{2})?"
-    r"|[$£€¥]\s*\d+(?:\.\d{2})?"
-)
-
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def pdf_to_dataframe(filepath: str) -> pd.DataFrame:
-    """Extract transactions from a PDF bank statement and return a DataFrame."""
+    """Extract transactions from a PDF bank statement → DataFrame."""
     try:
         import pdfplumber
     except ImportError:
         raise RuntimeError(
-            "pdfplumber is required for PDF import. "
-            "Run: pip install pdfplumber"
+            "pdfplumber is required for PDF import. Run: pip install pdfplumber"
         )
 
     with pdfplumber.open(filepath) as pdf:
-        # Attempt 1: table extraction
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+        # Attempt 1: proper table extraction
         df = _extract_tables(pdf)
-        if df is not None and len(df) >= 2:
-            log.info("PDF table extraction succeeded: %d rows, %d cols",
-                     len(df), len(df.columns))
+        if df is not None and len(df) >= 2 and _looks_like_transactions(df):
+            log.info("PDF table extraction: %d rows, %d cols", len(df), len(df.columns))
             return df
 
-        # Attempt 2: text-line parsing
-        text = "\n".join(
-            page.extract_text() or "" for page in pdf.pages
-        )
-
-    df = _parse_text_lines(text)
+    # Attempt 2: text-line parsing (handles most bank statement formats)
+    df = _parse_statement_text(full_text)
     log.info("PDF text-line extraction: %d rows", len(df))
     return df
 
@@ -69,122 +48,250 @@ def pdf_to_dataframe(filepath: str) -> pd.DataFrame:
 # ── Table extraction ──────────────────────────────────────────────────────────
 
 def _extract_tables(pdf) -> pd.DataFrame | None:
-    """Collect all tables from every page, merge by column count, pick largest."""
     all_tables: list[list[list[Any]]] = []
     for page in pdf.pages:
         tables = page.extract_tables()
         if tables:
             all_tables.extend(tables)
-
     if not all_tables:
         return None
 
-    # Group tables by column count
     by_ncols: dict[int, list[list[Any]]] = {}
     for tbl in all_tables:
         if not tbl:
             continue
         ncols = max(len(row) for row in tbl)
-        by_ncols.setdefault(ncols, []).extend(tbl)
+        if ncols >= 2:
+            by_ncols.setdefault(ncols, []).extend(tbl)
 
-    # Pick the column count that appears in the most rows (likely the data table)
+    if not by_ncols:
+        return None
+
     best_ncols = max(by_ncols, key=lambda k: len(by_ncols[k]))
     rows = by_ncols[best_ncols]
 
-    if not rows:
-        return None
-
-    # Treat first row as header if it looks non-numeric; otherwise generate names
     header = [str(c).strip() if c is not None else "" for c in rows[0]]
     looks_like_header = sum(
         1 for h in header
         if h and not re.match(r"^[-+$£€\d,.\s]+$", h)
     ) >= 2
 
-    if looks_like_header:
-        data_rows = rows[1:]
-    else:
+    data_rows = rows[1:] if looks_like_header else rows
+    if not looks_like_header:
         header = [f"col_{i}" for i in range(best_ncols)]
-        data_rows = rows
 
-    # Normalise: pad / trim rows to header length, replace None with ""
     norm: list[list[str]] = []
     for row in data_rows:
         cells = [str(c).strip() if c is not None else "" for c in row]
-        # Pad short rows
         while len(cells) < len(header):
             cells.append("")
         norm.append(cells[: len(header)])
 
     df = pd.DataFrame(norm, columns=header)
-    # Drop rows that are entirely empty
     df = df[df.apply(lambda r: any(v.strip() for v in r), axis=1)]
-    # Drop obvious sub-header / totals rows (all caps + few numeric cells)
-    df = _drop_junk_rows(df)
     return df.reset_index(drop=True) if len(df) > 0 else None
 
 
-def _drop_junk_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """Remove rows that look like repeated headers or summary totals."""
-    def is_junk(row: pd.Series) -> bool:
-        vals = [str(v).strip() for v in row if str(v).strip()]
-        if not vals:
+def _looks_like_transactions(df: pd.DataFrame) -> bool:
+    """Sanity-check: does the DataFrame have at least a date-like and amount-like column?"""
+    for col in df.columns:
+        vals = df[col].dropna().astype(str)
+        if vals.str.match(r"\d{1,4}[/\-\.]\d{1,2}").sum() > len(df) * 0.3:
             return True
-        numeric_count = sum(1 for v in vals if re.match(r"^[-+$£€\d,.\s]+$", v))
-        # A row that's all-uppercase with <2 numeric fields is probably a header repeat
-        if all(v == v.upper() for v in vals) and numeric_count < 2:
-            return True
-        return False
-
-    mask = df.apply(is_junk, axis=1)
-    return df[~mask]
+    return False
 
 
-# ── Text-line extraction ──────────────────────────────────────────────────────
+# ── Text-line statement parser ────────────────────────────────────────────────
 
-def _parse_text_lines(text: str) -> pd.DataFrame:
-    """Parse a flat text blob into a Date / Description / Amount DataFrame."""
+# Matches end-of-line amount:  optional sign, optional $£€, digits, optional cents
+_EOL_AMOUNT_RE = re.compile(
+    r"([-−–+]?\s*[$£€¥]?\s?\d{1,3}(?:[,\s]\d{3})*(?:\.\d{1,2})?)\s*$"
+)
+
+# Full-line date patterns (ordered most-specific first)
+_DATE_PATTERNS: list[tuple[re.Pattern, str, bool]] = [
+    # YYYY-MM-DD
+    (re.compile(r"^(\d{4}[-/]\d{2}[-/]\d{2})\b"), "%Y-%m-%d", False),
+    # DD/MM/YYYY or DD-MM-YYYY
+    (re.compile(r"^(\d{1,2}[/\-]\d{1,2}[/\-]\d{4})\b"), None, True),
+    # MM/DD (no year — Chase / Amex US)
+    (re.compile(r"^(\d{2}/\d{2})\b"), "MM/DD", False),
+    # DD Mon YYYY or Mon DD, YYYY
+    (re.compile(r"^(\d{1,2}\s+[A-Za-z]{3}\w*\s+\d{2,4})\b"), None, True),
+    (re.compile(r"^([A-Za-z]{3}\w*\s+\d{1,2}[,\s]+\d{4})\b"), None, False),
+]
+
+# Lines that are definitely NOT transactions
+_SKIP_RE = re.compile(
+    r"^("
+    r"page\s+\d|statement\s+date|account\s+number|opening|closing|"
+    r"minimum\s+payment|credit\s+limit|available|previous\s+balance|"
+    r"new\s+balance|total\s+fees|total\s+interest|year.to.date|"
+    r"annual\s+percentage|balance\s+type|subtotal|total"
+    r")",
+    re.IGNORECASE,
+)
+
+# Section headers that tell us what sign to expect next (Chase / Amex style)
+_CREDIT_SECTION_RE = re.compile(
+    r"^(PAYMENTS?\s+AND\s+OTHER\s+CREDITS?|CREDITS?|RETURNS?|REFUNDS?)\s*$",
+    re.IGNORECASE,
+)
+_DEBIT_SECTION_RE = re.compile(
+    r"^(PURCHASES?|TRANSACTIONS?|DEBITS?|FEES?\s+CHARGED|CASH\s+ADVANCES?|"
+    r"BALANCE\s+TRANSFERS?)\s*$",
+    re.IGNORECASE,
+)
+
+# FX continuation line: "103.13 X 1.3578 (EXCHG RATE)"
+_FX_LINE_RE = re.compile(r"^\d[\d,\.]+\s+X\s+[\d\.]+\s*\(", re.IGNORECASE)
+
+
+def _infer_year(text: str) -> int:
+    """Try to extract a statement year from the PDF text."""
+    # Look for 4-digit years between 2000-2099
+    years = re.findall(r"\b(20\d{2})\b", text)
+    if years:
+        from collections import Counter
+        return int(Counter(years).most_common(1)[0][0])
+    from datetime import datetime
+    return datetime.now().year
+
+
+def _parse_date_mm_dd(raw: str, year: int) -> str | None:
+    """Convert MM/DD string to YYYY-MM-DD using inferred year."""
+    try:
+        m, d = raw.split("/")
+        return f"{year}-{int(m):02d}-{int(d):02d}"
+    except Exception:
+        return None
+
+
+def _normalise_amount(raw: str) -> str:
+    """Normalise an amount string: strip symbols, handle unicode minus."""
+    s = raw.strip()
+    s = s.replace("−", "-").replace("–", "-")  # unicode minus/en-dash
+    s = re.sub(r"[$£€¥\s]", "", s)
+    s = s.replace(",", "")
+    return s
+
+
+def _deduplicate_chars(text: str) -> str:
+    """Fix Chase's doubled-character encoding artifact: 'MMaannaaggee' → 'Manage'."""
+    # Only apply to lines where every char appears exactly twice consecutively
+    result = []
+    for line in text.splitlines():
+        # Check if line looks doubled: even length, each char repeated
+        if len(line) >= 4 and len(line) % 2 == 0:
+            halved = "".join(line[i] for i in range(0, len(line), 2))
+            doubled_back = "".join(c * 2 for c in halved)
+            if doubled_back == line:
+                result.append(halved)
+                continue
+        result.append(line)
+    return "\n".join(result)
+
+
+def _parse_statement_text(text: str) -> pd.DataFrame:
+    """Parse bank statement text into a DataFrame of transactions."""
+    text = _deduplicate_chars(text)
+    year = _infer_year(text)
     rows: list[dict] = []
 
-    for line in text.splitlines():
-        line = line.strip()
+    # Track section context to handle sign-less amounts (Chase/Amex style)
+    in_credit_section = False
+
+    prev_date: str | None = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
         if not line:
             continue
 
-        date_match = _DATE_RE.search(line)
-        if not date_match:
+        # Skip clearly non-transaction lines
+        if _SKIP_RE.match(line):
             continue
 
-        date_str = next(g for g in date_match.groups() if g)
-
-        # Find all amounts on this line
-        amounts = _AMOUNT_RE.findall(line)
-        if not amounts:
+        # FX continuation lines — attach exchange rate info to last transaction
+        if _FX_LINE_RE.match(line) and rows:
+            rows[-1]["Notes"] = line
             continue
 
-        # Remove the date from the line to isolate the description
-        desc = _DATE_RE.sub("", line).strip()
-        # Remove amount tokens from description
-        for amt in amounts:
-            desc = desc.replace(amt, "").strip()
-        desc = re.sub(r"\s{2,}", " ", desc).strip(" |-,")
-        if not desc:
-            desc = "Transaction"
+        # Section header detection
+        if _CREDIT_SECTION_RE.match(line):
+            in_credit_section = True
+            continue
+        if _DEBIT_SECTION_RE.match(line):
+            in_credit_section = False
+            continue
 
-        # Use the last amount as the transaction amount (often after description)
-        # Use second-to-last as balance if two amounts present
-        amount_str = amounts[-1].strip()
-        balance_str = amounts[-2].strip() if len(amounts) >= 2 else None
+        # Try to match a date at the start of the line
+        date_str: str | None = None
+        rest: str = line
 
-        row: dict = {
+        for pat, fmt, _dayfirst in _DATE_PATTERNS:
+            m = pat.match(line)
+            if m:
+                raw_date = m.group(1)
+                rest = line[m.end():].strip()
+
+                if fmt == "MM/DD":
+                    date_str = _parse_date_mm_dd(raw_date, year)
+                elif fmt is not None:
+                    try:
+                        from datetime import datetime as _dt
+                        date_str = _dt.strptime(raw_date, fmt).strftime("%Y-%m-%d")
+                    except ValueError:
+                        pass
+                else:
+                    # Try both day-first and month-first
+                    for _fmt in ("%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y",
+                                 "%d %b %Y", "%d %B %Y", "%b %d, %Y"):
+                        try:
+                            from datetime import datetime as _dt
+                            date_str = _dt.strptime(raw_date, _fmt).strftime("%Y-%m-%d")
+                            break
+                        except ValueError:
+                            continue
+
+                if date_str:
+                    prev_date = date_str
+                    break
+
+        if not date_str:
+            # No date — skip unless we're accumulating a multi-line description
+            continue
+
+        # Strip optional transfer flag "& " (Chase lost/stolen account marker)
+        rest = re.sub(r"^&\s+", "", rest)
+
+        # Extract amount from end of line
+        amt_match = _EOL_AMOUNT_RE.search(rest)
+        if not amt_match:
+            continue
+
+        raw_amt = _normalise_amount(amt_match.group(1))
+        try:
+            amount = float(raw_amt)
+        except ValueError:
+            continue
+
+        # Description is everything before the amount
+        description = rest[: amt_match.start()].strip().strip("-").strip()
+        if not description:
+            description = "Transaction"
+
+        # For sections marked as credits (payments/refunds), ensure amount is negative
+        # (money coming in = negative charge on a credit card)
+        # Only flip if the amount is unsigned / positive
+        if in_credit_section and amount > 0:
+            amount = -amount
+
+        rows.append({
             "Date": date_str,
-            "Description": desc,
-            "Amount": amount_str,
-        }
-        if balance_str:
-            row["Balance"] = balance_str
-
-        rows.append(row)
+            "Description": description,
+            "Amount": str(amount),
+        })
 
     if not rows:
         return pd.DataFrame(columns=["Date", "Description", "Amount"])
