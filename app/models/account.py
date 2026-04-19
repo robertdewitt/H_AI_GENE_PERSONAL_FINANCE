@@ -74,7 +74,7 @@ class Account(Base):
 
     # Real estate / physical asset fields
     property_address: Mapped[str | None] = mapped_column(String(500))
-    purchase_price: Mapped[float | None] = mapped_column(Float)
+    purchase_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     purchase_date: Mapped[datetime | None] = mapped_column(DateTime)
     linked_mortgage_account_id: Mapped[int | None] = mapped_column(Integer)
 

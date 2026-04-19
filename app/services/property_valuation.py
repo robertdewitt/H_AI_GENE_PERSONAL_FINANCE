@@ -206,18 +206,19 @@ _UK_POSTCODE_RE = re.compile(
 
 def _hm_land_registry(address: str) -> PropertyEstimate | None:
     """Look up the most recent transaction price for a UK postcode via
-    the HM Land Registry Linked Data API (free, no key required).
+    the HM Land Registry Price Paid Data API (free, no key required).
     """
     match = _UK_POSTCODE_RE.search(address)
     if not match:
         log.debug("HM Land Registry: no postcode found in %r", address)
         return None
 
-    postcode = match.group(1).upper().replace(" ", "")
+    postcode = match.group(1).upper().strip()
+    # Use + encoding for postcode spaces (required by this endpoint)
+    encoded_postcode = urllib.parse.quote(postcode, safe="")
     url = (
-        "https://landregistry.data.gov.uk/linked-data/ppd"
-        f"?propertyAddress.postcode={urllib.parse.quote(postcode)}"
-        "&_format=json&_page=0&_pageSize=5"
+        "https://landregistry.data.gov.uk/data/ppi/transaction-record.json"
+        f"?propertyAddress.postcode={encoded_postcode}&_pageSize=5"
     )
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
@@ -225,18 +226,26 @@ def _hm_land_registry(address: str) -> PropertyEstimate | None:
             data = _json.loads(resp.read())
             items = data.get("result", {}).get("items", [])
             if not items:
+                log.warning("HM Land Registry: no results for postcode %s", postcode)
                 return None
-            # Items are newest-first; grab the most recent price
-            latest = items[0]
+            # Sort by transactionDate descending to get most recent
+            def _parse_date(item):
+                try:
+                    import email.utils
+                    return email.utils.parsedate(item.get("transactionDate", "")) or (0,)
+                except Exception:
+                    return (0,)
+            items_sorted = sorted(items, key=_parse_date, reverse=True)
+            latest = items_sorted[0]
             price = latest.get("pricePaid")
             if price:
-                date_str = latest.get("transactionDate", "")
+                date_str = latest.get("transactionDate", "unknown date")
                 return PropertyEstimate(
                     value=float(price),
                     source="hm_land_registry",
                     source_label="HM Land Registry (last sold)",
                     is_estimate=False,
-                    notes=f"Last sold: {date_str[:10] if date_str else 'unknown date'}",
+                    notes=f"Last sold: {date_str}",
                 )
     except Exception as e:
         log.warning("HM Land Registry failed for postcode %s: %s", postcode, e)
