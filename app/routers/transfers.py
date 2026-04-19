@@ -7,6 +7,7 @@ from app.templating import templates
 from app.models.transaction import Transaction
 from app.services.transfer_detector import (
     detect_transfers,
+    dismiss_transfer_pair,
     link_transfer,
     list_transfer_links,
     list_unmatched_transfers,
@@ -97,6 +98,17 @@ def bulk_link(
     return RedirectResponse(
         url=f"/transfers?linked_count={linked_count}", status_code=303,
     )
+
+
+@router.post("/dismiss")
+def dismiss_pair(
+    from_transaction_id: int = Form(...),
+    to_transaction_id: int = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Decline a transfer candidate — marks both transactions as not transfers."""
+    dismiss_transfer_pair(db, from_transaction_id, to_transaction_id)
+    return RedirectResponse(url="/transfers", status_code=303)
 
 
 @router.post("/unlink/{link_id}")

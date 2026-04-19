@@ -40,6 +40,38 @@
            placeholder="Initial balance or current appraised value">
     <small>For bank accounts, this is your starting balance. For real estate, vehicles, collectibles — enter the current market value.</small>
 
+    <div id="physical-asset-fields" style="display:none">
+        <label for="purchase_price">Original Purchase Price</label>
+        <input type="number" id="purchase_price" name="purchase_price" step="0.01"
+               value="{{ account.purchase_price if account and account.purchase_price is not none else '' }}"
+               placeholder="e.g., 450000">
+
+        <label for="purchase_date">Purchase Date</label>
+        <input type="date" id="purchase_date" name="purchase_date"
+               value="{{ account.purchase_date.strftime('%Y-%m-%d') if account and account.purchase_date else '' }}">
+        <small>Used to calculate how long you've held the asset and value changes over time.</small>
+    </div>
+
+    <div id="real-estate-fields" style="display:none">
+        <label for="property_address">Property Address</label>
+        <input type="text" id="property_address" name="property_address"
+               value="{{ account.property_address if account and account.property_address else '' }}"
+               placeholder="e.g., 123 Main St, Austin TX 78701">
+        <small>Used to look up current estimated market value.</small>
+
+        <label for="linked_mortgage_account_id">Linked Mortgage Account</label>
+        <select id="linked_mortgage_account_id" name="linked_mortgage_account_id">
+            <option value="">— None —</option>
+            {% for m in mortgage_accounts %}
+            <option value="{{ m.id }}"
+                    {% if account and account.linked_mortgage_account_id == m.id %}selected{% endif %}>
+                {{ m.name }}{% if m.institution %} ({{ m.institution }}){% endif %}
+            </option>
+            {% endfor %}
+        </select>
+        <small>Link a mortgage to see equity (property value minus outstanding balance) on the account page.</small>
+    </div>
+
     <label for="notes">Notes</label>
     <textarea id="notes" name="notes" rows="3"
               placeholder="Optional notes about this account">{{ account.notes if account and account.notes else '' }}</textarea>
@@ -60,4 +92,19 @@
     </form>
 </details>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const _PHYSICAL_ASSET_TYPES = ['real_estate', 'vehicle', 'collectible'];
+function updateAssetFields() {
+    const val = document.getElementById('account_type').value;
+    document.getElementById('physical-asset-fields').style.display =
+        _PHYSICAL_ASSET_TYPES.includes(val) ? 'block' : 'none';
+    document.getElementById('real-estate-fields').style.display =
+        val === 'real_estate' ? 'block' : 'none';
+}
+document.getElementById('account_type').addEventListener('change', updateAssetFields);
+updateAssetFields();
+</script>
 {% endblock %}

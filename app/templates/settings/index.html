@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Settings &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Settings</h1>
+    <p>Display preferences, personal context, and integrations</p>
+</hgroup>
+
+{% if saved %}
+<article style="margin-bottom:1rem;padding:0.75rem 1rem;border-left:4px solid var(--pico-ins-color)">
+    <strong>Settings saved.</strong>
+</article>
+{% endif %}
+
+<form method="post" action="/settings">
+
+    <h2>Display</h2>
+    <div class="grid">
+        <div>
+            <label for="display_currency">Default Display Currency</label>
+            <select id="display_currency" name="display_currency">
+                {% for ccy in currencies %}
+                <option value="{{ ccy }}" {% if profile.display_currency == ccy %}selected{% endif %}>{{ ccy }}</option>
+                {% endfor %}
+            </select>
+            <small>All account totals, net worth, and charts will be shown in this currency.</small>
+        </div>
+    </div>
+
+    <h2>Personal Details</h2>
+    <p style="color:var(--pico-muted-color);font-size:0.9rem">
+        Used by AI assistants for personalised tax planning. Not shared externally.
+    </p>
+    <div class="grid">
+        <div>
+            <label for="country_of_residence">Country of Residence</label>
+            <select id="country_of_residence" name="country_of_residence">
+                <option value="">Not specified</option>
+                {% for country in countries %}
+                <option value="{{ country }}" {% if profile.country_of_residence == country %}selected{% endif %}>{{ country }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label for="nationality">Nationality</label>
+            <select id="nationality" name="nationality">
+                <option value="">Not specified</option>
+                {% for country in countries %}
+                <option value="{{ country }}" {% if profile.nationality == country %}selected{% endif %}>{{ country }}</option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+
+    <h2>Spouse</h2>
+    <div class="grid">
+        <div>
+            <label>
+                <input type="checkbox" id="has_spouse" name="has_spouse" value="true"
+                       {% if profile.has_spouse %}checked{% endif %}
+                       onchange="document.getElementById('spouse-section').style.display=this.checked?'block':'none'">
+                I have a spouse / partner
+            </label>
+        </div>
+    </div>
+    <div id="spouse-section" style="display:{% if profile.has_spouse %}block{% else %}none{% endif %}">
+        <div class="grid">
+            <div>
+                <label for="spouse_nationality">Spouse Nationality</label>
+                <select id="spouse_nationality" name="spouse_nationality">
+                    <option value="">Not specified</option>
+                    {% for country in countries %}
+                    <option value="{{ country }}" {% if profile.spouse_nationality == country %}selected{% endif %}>{{ country }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div></div>
+        </div>
+    </div>
+
+    <h2>Property Valuation APIs</h2>
+    <p style="color:var(--pico-muted-color);font-size:0.9rem">
+        Used to auto-fetch current market values for real estate accounts.
+        Keys are stored locally and never sent anywhere except the respective API.
+    </p>
+
+    {% for region, status in prop_status.items() %}
+    <details {% if status.key_present %}open{% endif %} style="margin-bottom:1rem">
+        <summary>
+            <strong>
+                {% if region == "US" %}🇺🇸 United States — {{ status.provider }}
+                {% elif region == "UK" %}🇬🇧 United Kingdom — {{ status.provider }}
+                {% elif region == "AU" %}🇦🇺 Australia — {{ status.provider }}
+                {% endif %}
+            </strong>
+            {% if status.key_present %}
+            <span style="float:right;color:var(--pico-ins-color);font-size:0.85rem">Active</span>
+            {% elif not status.key_required %}
+            <span style="float:right;color:var(--pico-ins-color);font-size:0.85rem">No key needed</span>
+            {% else %}
+            <span style="float:right;color:var(--pico-muted-color);font-size:0.85rem">Key required</span>
+            {% endif %}
+        </summary>
+        <p style="font-size:0.9rem;margin-top:0.5rem">{{ status.notes }}</p>
+        {% if status.links %}
+        <p style="font-size:0.85rem">
+            {% for label, href in status.links %}
+            <a href="{{ href }}" target="_blank" rel="noopener">{{ label }}</a>{% if not loop.last %} &bull; {% endif %}
+            {% endfor %}
+        </p>
+        {% endif %}
+
+        {% if region == "US" %}
+        <div class="grid">
+            <div>
+                <label for="rentcast_api_key">Rentcast API Key (optional)</label>
+                <input type="password" id="rentcast_api_key" name="rentcast_api_key"
+                       placeholder="{% if profile.rentcast_api_key %}••••••••••••{% else %}Leave blank for anonymous free tier{% endif %}"
+                       autocomplete="off">
+                <small>Leave blank to keep existing key. Free tier works without a key (50 lookups/month).</small>
+            </div>
+            <div></div>
+        </div>
+        {% elif region == "UK" %}
+        <div class="grid">
+            <div>
+                <label for="property_data_api_key">PropertyData API Key (optional)</label>
+                <input type="password" id="property_data_api_key" name="property_data_api_key"
+                       placeholder="{% if profile.property_data_api_key %}••••••••••••{% else %}Add key for live AVM estimates{% endif %}"
+                       autocomplete="off">
+                <small>Without a key, the HM Land Registry last-sold price is used as a baseline.</small>
+            </div>
+            <div></div>
+        </div>
+        {% elif region == "AU" %}
+        <div class="grid">
+            <div>
+                <label for="domain_api_key">Domain.com.au API Key</label>
+                <input type="password" id="domain_api_key" name="domain_api_key"
+                       placeholder="{% if profile.domain_api_key %}••••••••••••{% else %}Required for AU property estimates{% endif %}"
+                       autocomplete="off">
+                <small>Register for a free developer key at developer.domain.com.au.</small>
+            </div>
+            <div></div>
+        </div>
+        {% endif %}
+    </details>
+    {% endfor %}
+
+    <div class="btn-group" style="margin-top:1.5rem">
+        <button type="submit">Save Settings</button>
+    </div>
+</form>
+{% endblock %}

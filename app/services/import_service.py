@@ -372,8 +372,12 @@ def _row_looks_like_header(cells: list[str]) -> bool:
 def read_file(filepath: str) -> pd.DataFrame:
     path = Path(filepath)
     ext = path.suffix.lower()
-    if ext not in (".csv", ".xls", ".xlsx"):
+    if ext not in (".csv", ".xls", ".xlsx", ".pdf"):
         raise ValueError(f"Unsupported file type: {ext}")
+
+    if ext == ".pdf":
+        from app.services.pdf_import import pdf_to_dataframe
+        return pdf_to_dataframe(filepath)
 
     header_row = _find_header_row(filepath, ext)
     if header_row is None:
@@ -419,6 +423,14 @@ def detect_columns(df: pd.DataFrame) -> dict[str, str | None]:
     currency_hints = [
         "currency", "ccy", "cur", "currency code",
     ]
+    debit_hints = ["debit", "withdrawal", "debit amount", "withdrawals", "dr"]
+    credit_hints = ["credit", "deposit", "credit amount", "deposits", "cr"]
+
+    mapping: dict[str, str | None] = {
+        "date": None, "description": None,
+        "amount": None, "balance": None, "currency": None,
+        "debit": None, "credit": None,
+    }
 
     for original, lower in col_lower.items():
         if mapping["date"] is None and lower in date_hints:
@@ -431,6 +443,10 @@ def detect_columns(df: pd.DataFrame) -> dict[str, str | None]:
             mapping["balance"] = original
         if mapping["currency"] is None and lower in currency_hints:
             mapping["currency"] = original
+        if mapping["debit"] is None and lower in debit_hints:
+            mapping["debit"] = original
+        if mapping["credit"] is None and lower in credit_hints:
+            mapping["credit"] = original
 
     # Fallbacks — substring matching
     for original, lower in col_lower.items():
@@ -450,6 +466,10 @@ def detect_columns(df: pd.DataFrame) -> dict[str, str | None]:
             mapping["amount"] = original
             break
 
+    # If we found separate debit/credit but no combined amount column,
+    # leave amount=None so the UI defaults to debit/credit mode.
+    # If there's a combined amount column, debit/credit are still exposed
+    # so the user can override.
     return mapping
 
 
@@ -573,13 +593,29 @@ def import_transactions(
     new_keys: set[tuple] = set()
 
     currency_col = column_mapping.get("currency")
+    amount_col = column_mapping.get("amount")
+    debit_col = column_mapping.get("debit")
+    credit_col = column_mapping.get("credit")
 
     for _, row in df.iterrows():
         date_val = parse_date(
             row.get(date_col_name, ""), dayfirst=dayfirst,
         )
         desc_val = str(row.get(column_mapping.get("description", ""), "")).strip()
-        amount_val = parse_amount(row.get(column_mapping.get("amount", ""), ""))
+
+        if amount_col:
+            amount_val = parse_amount(row.get(amount_col, ""))
+        elif debit_col or credit_col:
+            debit_raw = parse_amount(row.get(debit_col, "")) if debit_col else None
+            credit_raw = parse_amount(row.get(credit_col, "")) if credit_col else None
+            debit_amt = abs(debit_raw) if debit_raw is not None else 0.0
+            credit_amt = abs(credit_raw) if credit_raw is not None else 0.0
+            if debit_amt == 0.0 and credit_amt == 0.0:
+                amount_val = None
+            else:
+                amount_val = credit_amt - debit_amt
+        else:
+            amount_val = None
 
         if date_val is None or amount_val is None or not desc_val:
             skipped += 1

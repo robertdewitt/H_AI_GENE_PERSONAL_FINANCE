@@ -23,6 +23,7 @@ from app.models.snapshots import (
     HouseholdSnapshot,
     LiabilityBalanceSnapshot,
 )
+from app.models.user_profile import UserProfile
 
 __all__ = [
     "Account",
@@ -49,4 +50,5 @@ __all__ = [
     "Instrument",
     "PositionLot",
     "PriceSnapshot",
+    "UserProfile",
 ]

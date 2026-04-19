@@ -54,6 +54,94 @@
 <blockquote>{{ account.notes }}</blockquote>
 {% endif %}
 
+{% if account.account_type.value in ["real_estate", "vehicle", "collectible"] %}
+<div class="summary-grid" style="margin-bottom:1.5rem">
+    {% if account.account_type.value == "real_estate" and account.property_address %}
+    <div class="summary-card">
+        <div class="label">Address</div>
+        <div class="value" style="font-size:0.95rem">{{ account.property_address }}</div>
+    </div>
+    {% endif %}
+    {% if account.purchase_date %}
+    <div class="summary-card">
+        <div class="label">Purchase Date</div>
+        <div class="value" style="font-size:1rem">{{ account.purchase_date.strftime("%b %d, %Y") }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Held</div>
+        {% set days_held = (now - account.purchase_date).days %}
+        {% set years_held = (days_held / 365.25) | int %}
+        {% set months_held = ((days_held % 365.25) / 30.44) | int %}
+        <div class="value" style="font-size:1rem">
+            {% if years_held > 0 %}{{ years_held }}y {% endif %}{{ months_held }}m
+        </div>
+    </div>
+    {% endif %}
+    {% if account.purchase_price is not none %}
+    <div class="summary-card">
+        <div class="label">Purchase Price</div>
+        <div class="value" style="font-size:1.1rem">
+            {{ account.currency_symbol }}{{ "{:,.0f}".format(account.purchase_price) }}
+        </div>
+    </div>
+    {% if balance %}
+    <div class="summary-card">
+        <div class="label">Unrealized Gain / Loss</div>
+        {% set gain = balance - account.purchase_price %}
+        <div class="value {% if gain >= 0 %}positive{% else %}negative{% endif %}">
+            {% if gain >= 0 %}+{% endif %}{{ account.currency_symbol }}{{ "{:,.0f}".format(gain) }}
+            <small>({% if gain >= 0 %}+{% endif %}{{ "{:.1f}".format(gain / account.purchase_price * 100) }}%)</small>
+        </div>
+    </div>
+    {% endif %}
+    {% endif %}
+    {% if mortgage_account and mortgage_balance is not none %}
+    <div class="summary-card">
+        <div class="label">Mortgage (<a href="/accounts/{{ mortgage_account.id }}" style="font-size:0.85rem">{{ mortgage_account.name }}</a>)</div>
+        <div class="value negative" style="font-size:1.1rem">
+            {{ account.currency_symbol }}{{ "{:,.0f}".format(mortgage_balance | abs) }}
+        </div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Equity</div>
+        {% set equity = balance - (mortgage_balance | abs) %}
+        <div class="value {% if equity >= 0 %}positive{% else %}negative{% endif %}" style="font-size:1.1rem">
+            {{ account.currency_symbol }}{{ "{:,.0f}".format(equity) }}
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% if account.property_address %}
+<div style="margin-bottom:1.5rem">
+    <form method="post" action="/accounts/{{ account.id }}/refresh-value" style="display:inline;margin:0">
+        <button type="submit" class="outline" style="margin:0">Refresh Estimated Value</button>
+    </form>
+    {% if request.query_params.get("value_refreshed") %}
+    <small style="color:var(--pico-ins-color);margin-left:0.75rem">Value updated.</small>
+    {% elif request.query_params.get("value_refresh_failed") %}
+    <small style="color:var(--pico-del-color);margin-left:0.75rem">
+        Could not fetch value automatically — check server logs or enter a value manually via
+        <a href="/valuations/{{ account.id }}">Valuations</a>.
+    </small>
+    {% endif %}
+    {% if prop_status %}
+    <small style="display:block;margin-top:0.4rem;color:var(--pico-muted-color)">
+        Provider: <strong>{{ prop_status.provider }}</strong>
+        {% if prop_status.provider == "HM Land Registry (last sold price)" %}
+        &bull; Shows last-sold price, not a live estimate.
+        {% endif %}
+        {% if not prop_status.key_present and prop_status.key_required %}
+        &bull; <a href="/settings">Add an API key</a> for live estimates.
+        {% endif %}
+        {% for label, href in prop_status.links %}
+        &bull; <a href="{{ href }}" target="_blank" rel="noopener">{{ label }}</a>
+        {% endfor %}
+    </small>
+    {% endif %}
+</div>
+{% endif %}
+{% endif %}
+
 {% if category_summary %}
 <h2>Spending by Category</h2>
 <div class="grid">
@@ -118,7 +206,7 @@
             </td>
             <td>
                 {% set split_cats = split_categories.get(txn.id, []) %}
-                {% if split_cats | length > 1 %}
+                {% if split_cats | length >= 1 %}
                     {% for cat in split_cats | unique %}
                     <span class="badge">{{ cat }}</span>
                     {% endfor %}

@@ -6,10 +6,13 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.templating import templates
+from app.models.asset_valuation import AssetValuation
 from app.services.asset_valuation_service import (
     add_valuation,
+    delete_valuation,
     get_valuation_history,
     list_valuatable_accounts,
+    update_valuation,
 )
 
 router = APIRouter(prefix="/valuations", tags=["valuations"])
@@ -71,4 +74,55 @@ def valuation_add(
         source=source,
         notes=notes or None,
     )
+    return RedirectResponse(url=f"/valuations/{account_id}", status_code=303)
+
+
+@router.get("/{account_id}/edit/{valuation_id}", response_class=HTMLResponse)
+def valuation_edit_form(
+    request: Request,
+    account_id: int,
+    valuation_id: int,
+    db: Session = Depends(get_db),
+):
+    from app.services.account_service import get_account
+    account = get_account(db, account_id)
+    val = db.get(AssetValuation, valuation_id)
+    if not account or not val or val.account_id != account_id:
+        return HTMLResponse("Not found", status_code=404)
+    return templates.TemplateResponse(request, "valuations/edit.html", {
+        "account": account,
+        "valuation": val,
+    })
+
+
+@router.post("/{account_id}/edit/{valuation_id}")
+def valuation_edit_save(
+    account_id: int,
+    valuation_id: int,
+    value: float = Form(...),
+    date: str = Form(...),
+    currency: str = Form("USD"),
+    source: str = Form("manual"),
+    notes: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    update_valuation(
+        db,
+        valuation_id=valuation_id,
+        date=datetime.strptime(date, "%Y-%m-%d"),
+        value=value,
+        currency=currency,
+        source=source,
+        notes=notes or None,
+    )
+    return RedirectResponse(url=f"/valuations/{account_id}", status_code=303)
+
+
+@router.post("/{account_id}/delete/{valuation_id}")
+def valuation_delete(
+    account_id: int,
+    valuation_id: int,
+    db: Session = Depends(get_db),
+):
+    delete_valuation(db, valuation_id)
     return RedirectResponse(url=f"/valuations/{account_id}", status_code=303)

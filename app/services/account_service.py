@@ -401,20 +401,37 @@ def get_many_account_balances_rich(
         ).all():
             latest_val[row.account_id] = (row.date, row.value, row.currency)
 
-    # Batch: latest FX rates for all non-base currencies
+    # Batch: latest FX rates for all non-base currencies.
+    # We need the rate that converts account currency → base_ccy, i.e.
+    # base_currency=acct.currency, quote_currency=base_ccy (e.g. EUR→USD).
+    # Fallback: if only the inverse is stored (base_ccy→acct.currency), use 1/rate.
     non_base_ccys = {a.currency for a in accounts if a.currency != base_ccy}
     fx_rates: dict[str, tuple[float, datetime] | None] = {}
     for ccy in non_base_ccys:
+        # Preferred direction: ccy → base_ccy (e.g. EUR→USD)
         row = db.execute(
             select(CurrencyRate.rate, CurrencyRate.date)
             .where(
-                CurrencyRate.base_currency == base_ccy,
-                CurrencyRate.quote_currency == ccy,
+                CurrencyRate.base_currency == ccy,
+                CurrencyRate.quote_currency == base_ccy,
             )
             .order_by(CurrencyRate.date.desc())
             .limit(1)
         ).one_or_none()
-        fx_rates[ccy] = (row.rate, row.date) if row else None
+        if row:
+            fx_rates[ccy] = (row.rate, row.date)
+        else:
+            # Fallback: inverse direction stored (base_ccy → ccy)
+            inv = db.execute(
+                select(CurrencyRate.rate, CurrencyRate.date)
+                .where(
+                    CurrencyRate.base_currency == base_ccy,
+                    CurrencyRate.quote_currency == ccy,
+                )
+                .order_by(CurrencyRate.date.desc())
+                .limit(1)
+            ).one_or_none()
+            fx_rates[ccy] = (1.0 / inv.rate, inv.date) if inv and inv.rate else None
 
     results: dict[int, AccountBalanceResult] = {}
 

@@ -11,6 +11,7 @@ from app.templating import templates
 from app.models.account import Account
 from app.models.category import Category
 from app.models.transaction import Transaction
+from app.models.transaction_split import TransactionSplit
 from app.models.transfer_link import TransferLink
 from app.services.split_service import list_splits, replace_transaction_splits
 from app.services.transaction_truth import apply_truth_after_transaction_update
@@ -32,7 +33,11 @@ def _build_filters(
     if category_id:
         clauses.append(Transaction.category_id == category_id)
     if uncategorized:
+        from sqlalchemy import exists
         clauses.append(Transaction.category_id.is_(None))
+        clauses.append(
+            ~exists().where(TransactionSplit.transaction_id == Transaction.id)
+        )
     if date_from:
         try:
             clauses.append(

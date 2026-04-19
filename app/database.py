@@ -97,6 +97,7 @@ def init_db():
         _col("transactions", "classification_provenance",  "VARCHAR(30)",  "'imported'")
         _col("transactions", "classification_confidence",  "REAL")
         _col("transactions", "financial_document_id",      "INTEGER")
+        _col("transactions", "transfer_dismissed",         "BOOLEAN",      "0")
 
         # ── Truth layer columns on accounts ──────────────────
         _col("accounts", "balance_truth_source",       "VARCHAR(30)",  "'transaction_sum'")
@@ -107,6 +108,17 @@ def init_db():
         _col("accounts", "balance_confidence",         "REAL")
         _col("accounts", "balance_stale_hint",         "BOOLEAN")
         _col("accounts", "liability_balance_stale",    "BOOLEAN")
+
+        # ── Real estate / physical asset fields ──────────────
+        _col("accounts", "property_address",          "VARCHAR(500)")
+        _col("accounts", "purchase_price",             "REAL")
+        _col("accounts", "purchase_date",              "DATETIME")
+        _col("accounts", "linked_mortgage_account_id", "INTEGER")
+
+        # ── User profile API keys ─────────────────────────────
+        _col("user_profile", "rentcast_api_key",      "VARCHAR(200)")
+        _col("user_profile", "property_data_api_key", "VARCHAR(200)")
+        _col("user_profile", "domain_api_key",         "VARCHAR(200)")
 
         # ── v2 recon columns ─────────────────────────────────
         _col("reconciliation_groups", "reconciliation_confidence", "REAL")

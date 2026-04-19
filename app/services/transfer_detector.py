@@ -1,3 +1,4 @@
+import re
 from datetime import timedelta
 
 from sqlalchemy import and_, or_, select
@@ -23,8 +24,35 @@ PAYMENT_KEYWORDS = [
     "ach", "transfer",
 ]
 
+_TOKEN_STOP = {"the", "and", "for", "from", "that", "this", "with", "are", "was"}
 
-def _description_score(desc_from: str, desc_to: str) -> float:
+
+def _extract_tokens(description: str) -> set[str]:
+    """Lowercase significant words from a description (len≥4, not stop words)."""
+    words = re.sub(r"[^a-z0-9\s]", " ", description.lower()).split()
+    return {w for w in words if len(w) >= 4 and w not in _TOKEN_STOP}
+
+
+def _get_learned_tokens(db: Session) -> set[str]:
+    """Return significant tokens from all user-confirmed transfer descriptions."""
+    confirmed = db.execute(
+        select(TransferLink).where(TransferLink.confirmed_by_user.is_(True))
+    ).scalars().all()
+
+    tokens: set[str] = set()
+    for link in confirmed:
+        for txn_id in (link.from_transaction_id, link.to_transaction_id):
+            txn = db.get(Transaction, txn_id)
+            if txn:
+                tokens.update(_extract_tokens(txn.description))
+    return tokens
+
+
+def _description_score(
+    desc_from: str,
+    desc_to: str,
+    learned_tokens: set[str] | None = None,
+) -> float:
     """Score how likely two descriptions represent a transfer."""
     lower_from = desc_from.lower()
     lower_to = desc_to.lower()
@@ -35,6 +63,13 @@ def _description_score(desc_from: str, desc_to: str) -> float:
             score += 0.15
         if kw in lower_to:
             score += 0.15
+
+    # Boost if descriptions match patterns from previously confirmed transfers
+    if learned_tokens:
+        from_tokens = _extract_tokens(desc_from)
+        to_tokens = _extract_tokens(desc_to)
+        if from_tokens & learned_tokens or to_tokens & learned_tokens:
+            score += 0.20
 
     if score > 0.5:
         score = 0.5
@@ -54,10 +89,13 @@ def detect_transfers(
     window = date_window or settings.transfer_date_window_days
     tolerance = amount_tolerance or settings.transfer_amount_tolerance
 
+    learned_tokens = _get_learned_tokens(db)
+
     outflows = db.execute(
         select(Transaction).where(
             Transaction.amount < 0,
             Transaction.transfer_link_id.is_(None),
+            Transaction.transfer_dismissed.is_(False),
         )
     ).scalars().all()
 
@@ -75,6 +113,7 @@ def detect_transfers(
                     Transaction.amount > 0,
                     Transaction.account_id != out_txn.account_id,
                     Transaction.transfer_link_id.is_(None),
+                    Transaction.transfer_dismissed.is_(False),
                     Transaction.date >= date_lo,
                     Transaction.date <= date_hi,
                     Transaction.amount >= out_abs - tolerance,
@@ -96,7 +135,7 @@ def detect_transfers(
             amount_score = 1.0 if amount_diff <= 0.01 else max(0, 1.0 - amount_diff)
 
             desc_score = _description_score(
-                out_txn.description, in_txn.description
+                out_txn.description, in_txn.description, learned_tokens,
             )
 
             # Boost score if either side is already flagged as a transfer
@@ -230,6 +269,24 @@ def scan_and_flag_payments(db: Session) -> int:
     if count:
         db.commit()
     return count
+
+
+def dismiss_transfer_pair(
+    db: Session,
+    from_transaction_id: int,
+    to_transaction_id: int,
+) -> bool:
+    """Mark both transactions as not transfers so they don't appear as candidates again."""
+    from_txn = db.get(Transaction, from_transaction_id)
+    to_txn = db.get(Transaction, to_transaction_id)
+    if not from_txn or not to_txn:
+        return False
+    from_txn.is_transfer = False
+    from_txn.transfer_dismissed = True
+    to_txn.is_transfer = False
+    to_txn.transfer_dismissed = True
+    db.commit()
+    return True
 
 
 def list_unmatched_transfers(db: Session) -> list[dict]:

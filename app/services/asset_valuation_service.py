@@ -103,6 +103,72 @@ def get_valuation_in_base_currency(
     return converted if converted is not None else val.value
 
 
+def update_valuation(
+    db: Session,
+    valuation_id: int,
+    date: datetime,
+    value: float,
+    currency: str,
+    source: str,
+    notes: str | None,
+) -> AssetValuation | None:
+    val = db.get(AssetValuation, valuation_id)
+    if not val:
+        return None
+    val.date = date
+    val.value = value
+    val.currency = currency
+    val.source = source
+    val.notes = notes
+
+    # Keep account.current_value in sync if this is the latest entry
+    account = db.get(Account, val.account_id)
+    if account:
+        from sqlalchemy import select as _sel
+        latest = db.execute(
+            _sel(AssetValuation)
+            .where(AssetValuation.account_id == val.account_id)
+            .order_by(AssetValuation.date.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if latest and latest.id == val.id:
+            account.current_value = value
+            account.value_as_of_date = date
+
+    db.commit()
+    db.refresh(val)
+    return val
+
+
+def delete_valuation(db: Session, valuation_id: int) -> bool:
+    val = db.get(AssetValuation, valuation_id)
+    if not val:
+        return False
+    account_id = val.account_id
+    db.delete(val)
+    db.flush()
+
+    # Re-sync current_value to the next most recent valuation
+    account = db.get(Account, account_id)
+    if account:
+        from sqlalchemy import select as _sel
+        latest = db.execute(
+            _sel(AssetValuation)
+            .where(AssetValuation.account_id == account_id)
+            .order_by(AssetValuation.date.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if latest:
+            account.current_value = latest.value
+            account.value_as_of_date = latest.date
+        else:
+            account.current_value = None
+            account.value_as_of_date = None
+
+    db.commit()
+    return True
+
+
 def list_valuatable_accounts(db: Session) -> list[Account]:
     """Return accounts that support manual valuation."""
     return db.execute(

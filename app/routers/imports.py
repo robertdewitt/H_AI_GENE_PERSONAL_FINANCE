@@ -33,6 +33,13 @@ async def upload_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
+    ext = Path(file.filename).suffix.lower()
+    if ext not in (".csv", ".xls", ".xlsx", ".pdf"):
+        return templates.TemplateResponse(request, "imports/upload.html", {
+            "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+            "error": f"Unsupported file type '{ext}'. Please upload a CSV, XLS, XLSX, or PDF.",
+        })
+
     upload_dir = Path(settings.upload_dir)
     dest = upload_dir / file.filename
     with open(dest, "wb") as f:
@@ -64,17 +71,24 @@ def confirm_import(
     filepath: str = Form(...),
     col_date: str = Form(...),
     col_description: str = Form(...),
-    col_amount: str = Form(...),
+    col_amount: str = Form(""),
+    col_debit: str = Form(""),
+    col_credit: str = Form(""),
     col_balance: str = Form(""),
     col_currency: str = Form(""),
     date_format: str = Form("auto"),
     db: Session = Depends(get_db),
 ):
-    mapping = {
+    mapping: dict[str, str] = {
         "date": col_date,
         "description": col_description,
-        "amount": col_amount,
     }
+    if col_amount.strip():
+        mapping["amount"] = col_amount
+    if col_debit.strip():
+        mapping["debit"] = col_debit
+    if col_credit.strip():
+        mapping["credit"] = col_credit
     if col_balance.strip():
         mapping["balance"] = col_balance
     if col_currency.strip():
