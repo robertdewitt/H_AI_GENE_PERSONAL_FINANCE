@@ -76,17 +76,42 @@ def match_keyword(description: str) -> str | None:
 
 
 def match_learned_rule(db: Session, description: str) -> int | None:
-    """Check stored rules from previous user corrections."""
+    """Check stored rules from previous user corrections.
+
+    Matching uses two strategies in priority order:
+    1. Exact substring match (original behaviour — fast, zero false-positives)
+    2. Token-overlap match: ≥75 % of the rule's meaningful tokens must appear
+       in the incoming description.  This handles descriptions that share a
+       payee name but differ in transaction reference codes, e.g.
+         rule pattern : "electronic payment mohammed khamal udd maya tutor"
+         incoming desc: "electronic payment ipb2603313170069 mohammed khamal udd"
+    """
     desc = _normalize(description)
+    # Pre-extract tokens from the incoming description once
+    desc_tokens = set(_pattern_tokens(desc))
+
     rules = db.execute(
         select(CategoryRule).order_by(CategoryRule.hit_count.desc())
     ).scalars().all()
 
     for rule in rules:
-        if rule.pattern.lower() in desc:
+        pattern_lower = rule.pattern.lower()
+
+        # Strategy 1: fast exact substring
+        if pattern_lower in desc:
             rule.hit_count += 1
             db.commit()
             return rule.category_id
+
+        # Strategy 2: token overlap (≥75 % of rule tokens found in desc tokens)
+        rule_tokens = _pattern_tokens(pattern_lower)
+        if len(rule_tokens) >= 2:
+            overlap = sum(1 for t in rule_tokens if t in desc_tokens)
+            if overlap / len(rule_tokens) >= 0.75:
+                rule.hit_count += 1
+                db.commit()
+                return rule.category_id
+
     return None
 
 
@@ -189,18 +214,32 @@ def _apply_to_matching_transactions(
 def _extract_pattern(description: str) -> str:
     """Extract the most meaningful part of a description for rule matching.
 
-    Strips dates, amounts, reference numbers, and common noise words.
+    Strips dates, amounts, reference numbers (including alphanumeric codes
+    like IPB2603183152823), and common noise tokens so the stable payee
+    name / description core remains.
     """
     desc = _normalize(description)
+    # Dates
     desc = re.sub(r"\d{2,4}[/-]\d{2}[/-]\d{2,4}", "", desc)
-    desc = re.sub(r"#\d+", "", desc)
-    desc = re.sub(r"\b\d{4,}\b", "", desc)
+    # Explicit amounts
     desc = re.sub(r"\$[\d,.]+", "", desc)
+    # Hash-prefixed references
+    desc = re.sub(r"#\d+", "", desc)
+    # Pure numeric sequences of 4+ digits (account numbers, amounts)
+    desc = re.sub(r"\b\d{4,}\b", "", desc)
+    # Alphanumeric tokens that contain 5+ consecutive digits
+    # e.g. IPB2603183152823, REF20240301, TXN00123456
+    desc = re.sub(r"\b[a-z0-9]*\d{5,}[a-z0-9]*\b", "", desc)
     desc = re.sub(r"\s+", " ", desc).strip()
 
-    if len(desc) > 50:
-        desc = desc[:50].rsplit(" ", 1)[0]
+    if len(desc) > 60:
+        desc = desc[:60].rsplit(" ", 1)[0]
     return desc
+
+
+def _pattern_tokens(pattern: str) -> list[str]:
+    """Split a pattern into meaningful words (length ≥ 3)."""
+    return [w for w in pattern.lower().split() if len(w) >= 3]
 
 
 def ask_ollama(
