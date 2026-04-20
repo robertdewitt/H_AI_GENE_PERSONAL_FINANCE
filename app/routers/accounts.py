@@ -3,7 +3,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -150,6 +150,7 @@ def account_create(
 def account_detail(
     request: Request,
     account_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     acct = get_account(db, account_id)
@@ -301,6 +302,19 @@ def account_detail(
                     db, acct.linked_mortgage_account_id, target_currency=acct.currency,
                 )
 
+    # Auto-refresh property value in the background if stale or never fetched
+    value_refreshing = False
+    if (
+        acct.account_type.value == "real_estate"
+        and acct.property_address
+        and (
+            acct.value_as_of_date is None
+            or (datetime.now() - acct.value_as_of_date).days >= _VALUATION_STALE_DAYS
+        )
+    ):
+        background_tasks.add_task(_background_refresh_property_value, account_id)
+        value_refreshing = True
+
     return templates.TemplateResponse(request, "accounts/detail.html", {
         "account": acct,
         "balance": balance,
@@ -314,6 +328,7 @@ def account_detail(
         "mortgage_account": mortgage_account,
         "mortgage_balance": mortgage_balance,
         "now": datetime.now(),
+        "value_refreshing": value_refreshing,
     })
 
 
@@ -437,6 +452,23 @@ def account_refresh_value(account_id: int, db: Session = Depends(get_db)):
 
 
 # ── Property value estimation ──────────────────────────────────────────
+
+
+def _background_refresh_property_value(account_id: int) -> None:
+    """Run a property valuation refresh in a background task (own DB session)."""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        acct = get_account(db, account_id)
+        if acct:
+            _try_fetch_property_value(db, acct)
+    except Exception as e:
+        log.warning("Background property refresh failed for account %s: %s", account_id, e)
+    finally:
+        db.close()
+
+
+_VALUATION_STALE_DAYS = 30   # refresh if value is older than this
 
 
 def _try_fetch_property_value(db: Session, acct) -> None:

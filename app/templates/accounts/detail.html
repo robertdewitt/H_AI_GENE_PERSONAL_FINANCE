@@ -116,7 +116,17 @@
     <form method="post" action="/accounts/{{ account.id }}/refresh-value" style="display:inline;margin:0">
         <button type="submit" class="outline" style="margin:0">Refresh Estimated Value</button>
     </form>
-    {% if request.query_params.get("value_refreshed") %}
+    {% if value_refreshing %}
+    <small id="refreshingNotice" style="color:var(--pico-muted-color);margin-left:0.75rem">
+        Fetching latest valuation&hellip;
+    </small>
+    <script>
+        // Reload once the background task has had time to complete
+        setTimeout(function() {
+            window.location.href = window.location.pathname + "?value_refreshed=1";
+        }, 6000);
+    </script>
+    {% elif request.query_params.get("value_refreshed") %}
     <small style="color:var(--pico-ins-color);margin-left:0.75rem">Value updated.</small>
     {% elif request.query_params.get("value_refresh_failed") %}
     <small style="color:var(--pico-del-color);margin-left:0.75rem">
