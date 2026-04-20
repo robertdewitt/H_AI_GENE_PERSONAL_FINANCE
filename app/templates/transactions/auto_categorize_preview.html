@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Auto-Categorize Preview &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Auto-Categorize Preview</h1>
+    <p>{{ suggestions|length }} suggestion{{ 's' if suggestions|length != 1 else '' }} — review and apply below</p>
+</hgroup>
+
+{% if not suggestions %}
+<p>No uncategorized transactions found that could be matched.</p>
+<a href="/transactions">Back to Transactions</a>
+{% else %}
+
+<p style="margin-bottom:1rem">
+    Check the rows you want to apply. You can change the suggested category in each row before applying.
+    Applying a correction also teaches the rule engine for future imports.
+</p>
+
+<form method="post" action="/transactions/auto-categorize/apply" id="applyForm">
+    <input type="hidden" name="assignments" id="assignmentsInput" value="[]">
+
+    <div style="display:flex;gap:0.5rem;margin-bottom:1rem;align-items:center">
+        <button type="button" onclick="selectAll(true)" class="outline" style="margin:0;padding:0.3rem 0.8rem">Select All</button>
+        <button type="button" onclick="selectAll(false)" class="outline secondary" style="margin:0;padding:0.3rem 0.8rem">Deselect All</button>
+        <span id="selCount" style="color:var(--pico-muted-color)">0 selected</span>
+        <div style="flex:1"></div>
+        <button type="submit" id="applyBtn" onclick="return buildAssignments()" style="margin:0">Apply Selected</button>
+        <a href="/transactions" role="button" class="outline secondary" style="margin:0">Cancel</a>
+    </div>
+
+    <div style="overflow-x:auto">
+    <table>
+        <thead>
+            <tr>
+                <th><input type="checkbox" id="masterCheck" onchange="selectAll(this.checked)"></th>
+                <th>Date</th>
+                <th>Account</th>
+                <th>Description</th>
+                <th style="text-align:right">Amount</th>
+                <th>Suggested Category</th>
+                <th>Method</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for s in suggestions %}
+        <tr>
+            <td><input type="checkbox" class="rowCheck" data-txn="{{ s.transaction.id }}" checked onchange="updateCount()"></td>
+            <td style="white-space:nowrap">{{ s.transaction.date.strftime('%Y-%m-%d') }}</td>
+            <td style="white-space:nowrap">{{ s.transaction.account.name if s.transaction.account else '—' }}</td>
+            <td style="font-size:0.85rem">{{ s.transaction.description }}</td>
+            <td style="text-align:right;white-space:nowrap">
+                {{ s.transaction.account.currency_symbol if s.transaction.account else '' }}{{ "%.2f"|format(s.transaction.amount|float) }}
+            </td>
+            <td>
+                <select class="catSelect" data-txn="{{ s.transaction.id }}"
+                        style="margin:0;padding:0.2rem 0.4rem;font-size:0.85rem;min-width:160px"
+                        onchange="updateCount()">
+                    {% for cat in categories %}
+                    <option value="{{ cat.id }}" {% if cat.id == s.category_id %}selected{% endif %}>{{ cat.name }}</option>
+                    {% endfor %}
+                </select>
+            </td>
+            <td>
+                {% if s.method == 'rule' %}
+                <span style="font-size:0.75rem;color:#2a7;font-weight:600">rule</span>
+                {% elif s.method == 'keyword' %}
+                <span style="font-size:0.75rem;color:#47a;font-weight:600">keyword</span>
+                {% else %}
+                <span style="font-size:0.75rem;color:#a74;font-weight:600">llm</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</form>
+
+<script>
+function updateCount() {
+    const n = document.querySelectorAll('.rowCheck:checked').length;
+    document.getElementById('selCount').textContent = n + ' selected';
+    document.getElementById('masterCheck').indeterminate =
+        n > 0 && n < document.querySelectorAll('.rowCheck').length;
+    document.getElementById('masterCheck').checked =
+        n === document.querySelectorAll('.rowCheck').length;
+}
+
+function selectAll(val) {
+    document.querySelectorAll('.rowCheck').forEach(cb => cb.checked = val);
+    updateCount();
+}
+
+function buildAssignments() {
+    const pairs = [];
+    document.querySelectorAll('.rowCheck:checked').forEach(cb => {
+        const txnId = cb.dataset.txn;
+        const sel = document.querySelector(`.catSelect[data-txn="${txnId}"]`);
+        if (sel && sel.value) pairs.push([parseInt(txnId), parseInt(sel.value)]);
+    });
+    if (pairs.length === 0) { alert('No rows selected.'); return false; }
+    document.getElementById('assignmentsInput').value = JSON.stringify(pairs);
+    return true;
+}
+
+// Init count
+updateCount();
+</script>
+{% endif %}
+{% endblock %}

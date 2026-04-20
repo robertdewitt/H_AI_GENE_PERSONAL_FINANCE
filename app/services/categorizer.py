@@ -324,6 +324,83 @@ def categorize_transaction(
     return None
 
 
+from dataclasses import dataclass
+
+
+@dataclass
+class CategorySuggestion:
+    transaction: "Transaction"
+    category_id: int
+    category_name: str
+    method: str   # "rule", "keyword", or "llm"
+
+
+def suggest_categories(
+    db: Session,
+    limit: int = 200,
+) -> list[CategorySuggestion]:
+    """Dry-run categorization — returns suggestions without saving anything.
+
+    Used by the preview route so the user can validate before applying.
+    """
+    txns = db.execute(
+        select(Transaction)
+        .where(Transaction.category_id.is_(None))
+        .order_by(Transaction.date.desc())
+        .limit(limit)
+    ).scalars().all()
+
+    all_cats = db.execute(select(Category)).scalars().all()
+    cat_by_id: dict[int, Category] = {c.id: c for c in all_cats}
+    cat_list = [c.name for c in all_cats]
+
+    suggestions: list[CategorySuggestion] = []
+
+    for txn in txns:
+        # 1. Learned rules
+        rule_cat_id = match_learned_rule(db, txn.description)
+        if rule_cat_id and rule_cat_id in cat_by_id:
+            suggestions.append(CategorySuggestion(
+                transaction=txn,
+                category_id=rule_cat_id,
+                category_name=cat_by_id[rule_cat_id].name,
+                method="rule",
+            ))
+            continue
+
+        # 2. Keywords
+        kw_match = match_keyword(txn.description)
+        if kw_match:
+            cat = db.execute(
+                select(Category).where(func.lower(Category.name) == kw_match.lower())
+            ).scalar_one_or_none()
+            if cat:
+                suggestions.append(CategorySuggestion(
+                    transaction=txn,
+                    category_id=cat.id,
+                    category_name=cat.name,
+                    method="keyword",
+                ))
+                continue
+
+        # 3. LLM
+        if cat_list:
+            llm_match = ask_ollama(txn.description, cat_list)
+            if llm_match:
+                cat = db.execute(
+                    select(Category).where(func.lower(Category.name) == llm_match.lower())
+                ).scalar_one_or_none()
+                if cat:
+                    suggestions.append(CategorySuggestion(
+                        transaction=txn,
+                        category_id=cat.id,
+                        category_name=cat.name,
+                        method="llm",
+                    ))
+
+    return suggestions
+
+
 def categorize_batch(
     db: Session,
     transaction_ids: list[int] | None = None,

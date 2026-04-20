@@ -19,6 +19,7 @@ from app.services.transaction_truth import apply_truth_after_transaction_update
 from app.services.categorizer import (
     categorize_batch,
     learn_from_correction,
+    suggest_categories,
 )
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -149,6 +150,9 @@ def transactions_list(
 
     total_pages = max(1, (total_count + per_page - 1) // per_page)
 
+    # Flash message after auto-categorize apply
+    auto_cat_applied = request.query_params.get("auto_cat_applied")
+
     # Batch-load split categories for all transactions on this page.
     # One query instead of N — used to display "Wine · Gifts · Shopping" in the list.
     txn_ids = [t.id for t in txns]
@@ -173,6 +177,7 @@ def transactions_list(
         "accounts": accounts,
         "categories": categories,
         "currencies": currencies,
+        "auto_cat_applied": int(auto_cat_applied) if auto_cat_applied and auto_cat_applied.isdigit() else None,
         "filters": {
             "account_id": account_id_val,
             "category_id": category_id_val,
@@ -458,6 +463,46 @@ def bulk_toggle_transfer(
 
 
 # ── Auto-categorize ─────────────────────────────────────────────────
+
+@router.get("/auto-categorize/preview", response_class=HTMLResponse)
+def auto_categorize_preview(
+    request: Request,
+    limit: int = Query(200),
+    db: Session = Depends(get_db),
+):
+    suggestions = suggest_categories(db, limit=limit)
+    categories = db.execute(select(Category).order_by(Category.name)).scalars().all()
+    return templates.TemplateResponse(request, "transactions/auto_categorize_preview.html", {
+        "suggestions": suggestions,
+        "categories": categories,
+        "limit": limit,
+    })
+
+
+@router.post("/auto-categorize/apply")
+def auto_categorize_apply(
+    request: Request,
+    assignments: str = Form(...),   # JSON: [[txn_id, category_id], ...]
+    db: Session = Depends(get_db),
+):
+    try:
+        pairs = json.loads(assignments)
+    except json.JSONDecodeError:
+        return RedirectResponse(url="/transactions", status_code=303)
+
+    applied = 0
+    for txn_id, category_id in pairs:
+        txn = db.get(Transaction, int(txn_id))
+        if txn and category_id:
+            old_cat = txn.category_id
+            txn.category_id = int(category_id)
+            if txn.category_id != old_cat:
+                learn_from_correction(db, txn.description, txn.category_id)
+            applied += 1
+
+    db.commit()
+    return RedirectResponse(url=f"/transactions?auto_cat_applied={applied}", status_code=303)
+
 
 @router.post("/auto-categorize")
 def auto_categorize(
