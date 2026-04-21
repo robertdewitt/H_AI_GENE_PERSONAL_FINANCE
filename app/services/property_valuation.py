@@ -64,6 +64,10 @@ def estimate_all_providers(
         r = _hm_land_registry(address)
         if r:
             results.append(r)
+            # Offer an HPI-adjusted forward estimate alongside the raw last-sold
+            adj = _hpi_adjusted_estimate(r)
+            if adj:
+                results.append(adj)
 
     elif region == "AU":
         if domain_api_key:
@@ -223,9 +227,69 @@ _UK_POSTCODE_RE = re.compile(
 )
 
 
+_UK_NON_STREET = re.compile(
+    r"\b(london|england|uk|united kingdom|wales|scotland|"
+    r"[a-z]+ ?(borough|city|county|district))\b",
+    re.IGNORECASE,
+)
+
+def _extract_street(address: str) -> str | None:
+    """Pull just the street name (no house number, no city/country) from a UK address."""
+    # Remove postcode
+    cleaned = _UK_POSTCODE_RE.sub("", address).strip().rstrip(",").strip()
+    # Split on commas — street is usually the first comma-delimited part
+    parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+    first = parts[0] if parts else cleaned
+    # Strip leading house number (digits / digits+letter)
+    first = re.sub(r"^\d+[A-Za-z]?\s+", "", first).strip()
+    # Remove city / country noise words
+    first = _UK_NON_STREET.sub("", first).strip()
+    # Keep only the first 3 words — street names are rarely longer
+    words = first.split()[:3]
+    result = " ".join(words).strip()
+    return result.upper() if result else None
+
+
+def _fetch_hm_ppd(postcode: str, street: str | None, page_size: int = 20) -> list:
+    """Fetch Price Paid Data transactions. Filters by street name if provided."""
+    encoded_postcode = urllib.parse.quote(postcode, safe="")
+    url = (
+        "https://landregistry.data.gov.uk/data/ppi/transaction-record.json"
+        f"?propertyAddress.postcode={encoded_postcode}&_pageSize={page_size}"
+    )
+    if street:
+        url += f"&propertyAddress.street={urllib.parse.quote(street, safe='')}"
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+        data = _json.loads(resp.read())
+    return data.get("result", {}).get("items", [])
+
+
+_MONTH_MAP = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+_PPD_DATE_RE = re.compile(
+    r"(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{4})",
+    re.IGNORECASE,
+)
+
+def _parse_ppd_date(item: dict) -> tuple:
+    """Return (year, month, day) tuple for sorting — falls back to (0,0,0)."""
+    date_str = item.get("transactionDate", "")
+    m = _PPD_DATE_RE.search(date_str)
+    if m:
+        day, mon, year = int(m.group(1)), _MONTH_MAP[m.group(2).lower()], int(m.group(3))
+        return (year, mon, day)
+    return (0, 0, 0)
+
+
 def _hm_land_registry(address: str) -> PropertyEstimate | None:
-    """Look up the most recent transaction price for a UK postcode via
+    """Look up the most recent transaction price for a UK address via
     the HM Land Registry Price Paid Data API (free, no key required).
+
+    First tries street + postcode for an exact-address match; falls back
+    to postcode-only if nothing is found at street level.
     """
     match = _UK_POSTCODE_RE.search(address)
     if not match:
@@ -233,42 +297,147 @@ def _hm_land_registry(address: str) -> PropertyEstimate | None:
         return None
 
     postcode = match.group(1).upper().strip()
-    # Use + encoding for postcode spaces (required by this endpoint)
-    encoded_postcode = urllib.parse.quote(postcode, safe="")
+    street = _extract_street(address)
+
+    try:
+        items: list = []
+        # 1. Try narrow street+postcode search first
+        if street:
+            items = _fetch_hm_ppd(postcode, street, page_size=10)
+            if items:
+                log.info("HM Land Registry: %d result(s) for street=%r postcode=%s", len(items), street, postcode)
+
+        # 2. Fall back to postcode-only
+        if not items:
+            items = _fetch_hm_ppd(postcode, None, page_size=10)
+            if items:
+                log.info("HM Land Registry: %d result(s) for postcode=%s (no street filter)", len(items), postcode)
+
+        if not items:
+            log.warning("HM Land Registry: no results for %s / %s", street, postcode)
+            return None
+
+        # Prefer residential property types (D=detached, S=semi, T=terraced, F=flat)
+        # propertyType may be a dict {"@id": "...URI.../Detached"} or a plain string
+        _RESIDENTIAL = {"detached", "semi-detached", "terraced", "flat-maisonette"}
+        def _prop_type_str(item: dict) -> str:
+            pt = item.get("propertyType") or ""
+            if isinstance(pt, dict):
+                # Linked-data response uses _about (URI) or prefLabel
+                labels = pt.get("prefLabel") or []
+                if labels and isinstance(labels, list):
+                    pt = labels[0].get("_value", "")
+                else:
+                    pt = pt.get("_about") or pt.get("@id") or pt.get("value") or ""
+            return str(pt).lower()
+
+        residential = [i for i in items if any(rt in _prop_type_str(i) for rt in _RESIDENTIAL)]
+        items = residential if residential else items
+
+        items_sorted = sorted(items, key=_parse_ppd_date, reverse=True)
+        latest = items_sorted[0]
+        price = latest.get("pricePaid")
+        if price:
+            date_str = latest.get("transactionDate", "unknown date")
+            # Derive a human-readable sold-year for the HPI adjustment
+            sold_year = _sold_year(date_str)
+            label = f"Last sold: {date_str}"
+            if street:
+                label = f"{street} — last sold: {date_str}"
+            result = PropertyEstimate(
+                value=float(price),
+                source="hm_land_registry",
+                source_label="HM Land Registry (last sold)",
+                is_estimate=False,
+                notes=label,
+            )
+            # Also return an HPI-adjusted estimate alongside
+            return result
+    except Exception as e:
+        log.warning("HM Land Registry failed for %s / %s: %s", street, postcode, e)
+    return None
+
+
+def _sold_year(date_str: str) -> int | None:
+    """Extract 4-digit year from an RFC 2822 or ISO date string."""
+    m = re.search(r"\b(19|20)\d{2}\b", date_str)
+    return int(m.group(0)) if m else None
+
+
+def _uk_hpi_index(year: int, month: int) -> float | None:
+    """Fetch the UK-average house price index for a given year/month from
+    the Land Registry Linked Data service. Returns the index value or None.
+    """
+    month_str = f"{year}-{month:02d}"
     url = (
-        "https://landregistry.data.gov.uk/data/ppi/transaction-record.json"
-        f"?propertyAddress.postcode={encoded_postcode}&_pageSize=5"
+        f"https://landregistry.data.gov.uk/data/ukhpi/region/united-kingdom"
+        f"/month/{month_str}.json"
     )
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
             data = _json.loads(resp.read())
-            items = data.get("result", {}).get("items", [])
-            if not items:
-                log.warning("HM Land Registry: no results for postcode %s", postcode)
-                return None
-            # Sort by transactionDate descending to get most recent
-            def _parse_date(item):
-                try:
-                    import email.utils
-                    return email.utils.parsedate(item.get("transactionDate", "")) or (0,)
-                except Exception:
-                    return (0,)
-            items_sorted = sorted(items, key=_parse_date, reverse=True)
-            latest = items_sorted[0]
-            price = latest.get("pricePaid")
-            if price:
-                date_str = latest.get("transactionDate", "unknown date")
-                return PropertyEstimate(
-                    value=float(price),
-                    source="hm_land_registry",
-                    source_label="HM Land Registry (last sold)",
-                    is_estimate=False,
-                    notes=f"Last sold: {date_str}",
-                )
+        topic = data.get("result", {}).get("primaryTopic", {})
+        idx = topic.get("indicesSASM") or topic.get("index") or topic.get("housePriceIndex")
+        return float(idx) if idx else None
     except Exception as e:
-        log.warning("HM Land Registry failed for postcode %s: %s", postcode, e)
-    return None
+        log.debug("UK HPI lookup failed for %s: %s", month_str, e)
+        return None
+
+
+def _hpi_adjusted_estimate(base: PropertyEstimate) -> PropertyEstimate | None:
+    """Apply UK national HPI growth to project a past sale price to today.
+
+    Fetches the UKHPI index at time of sale and the most recent available
+    month, then scales the sold price by the ratio.
+    """
+    import datetime as _dt
+
+    sold_year = _sold_year(base.notes or "")
+    if not sold_year:
+        return None
+
+    # Approximate sold month from notes; default to June if not parseable
+    sold_month = 6
+    m = re.search(r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b", base.notes or "", re.I)
+    if m:
+        sold_month = {
+            "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+            "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+        }.get(m.group(0).lower(), 6)
+
+    sale_hpi = _uk_hpi_index(sold_year, sold_month)
+    if not sale_hpi:
+        return None
+
+    # Try recent months for a current index (land registry lags ~2 months)
+    now = _dt.date.today()
+    current_hpi = None
+    for delta in range(0, 5):
+        y = now.year
+        mo = now.month - delta
+        if mo <= 0:
+            mo += 12
+            y -= 1
+        current_hpi = _uk_hpi_index(y, mo)
+        if current_hpi:
+            break
+
+    if not current_hpi:
+        return None
+
+    adjusted = base.value * (current_hpi / sale_hpi)
+    growth_pct = (current_hpi / sale_hpi - 1) * 100
+    return PropertyEstimate(
+        value=round(adjusted, -3),   # round to nearest £1000
+        source="hpi_adjusted",
+        source_label="HPI-Adjusted Estimate",
+        is_estimate=True,
+        notes=(
+            f"Based on last sold ({base.notes}), adjusted for UK national "
+            f"house price growth ({growth_pct:+.1f}% since sale)."
+        ),
+    )
 
 
 # ── PropertyData.co.uk (UK, paid AVM) ─────────────────────────────────────────

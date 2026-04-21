@@ -7,22 +7,31 @@
     <p>{{ account.name }} &bull; {{ account.property_address }}</p>
 </hgroup>
 
+
 {% if estimates %}
-<p>Select the estimate that best reflects the current market value, or enter your own below.</p>
+<p>Select the estimate that best reflects the current market value, or check Zoopla / Rightmove then enter a value manually.</p>
 
 <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;margin-bottom:2rem">
 {% for est in estimates %}
-<article style="margin:0;padding:1.25rem">
+<article style="margin:0;padding:1.25rem;border:1px solid var(--pico-muted-border-color)">
     <hgroup style="margin-bottom:0.5rem">
         <h3 style="margin:0;font-size:1rem">{{ est.source_label }}</h3>
-        <p style="margin:0;font-size:0.8rem;color:var(--pico-muted-color)">
-            {% if est.is_estimate %}Live AVM estimate{% else %}Last sold price{% endif %}
-            {% if est.notes %} &bull; {{ est.notes }}{% endif %}
+        <p style="margin:0;font-size:0.78rem;color:var(--pico-muted-color)">
+            {% if est.source == 'hm_land_registry' %}
+                <strong>Historical price only</strong> — this is the last recorded sale, not the current market value.
+            {% elif est.source == 'hpi_adjusted' %}
+                <strong>Estimate</strong> — last sold price adjusted for UK national HPI growth.
+            {% else %}
+                Live AVM estimate.
+            {% endif %}
         </p>
     </hgroup>
     <p style="font-size:1.8rem;font-weight:700;margin:0.5rem 0">
         {{ account.currency_symbol }}{{ "{:,.0f}".format(est.value) }}
     </p>
+    {% if est.notes %}
+    <p style="font-size:0.78rem;color:var(--pico-muted-color);margin:0 0 0.75rem">{{ est.notes }}</p>
+    {% endif %}
     <form method="post" action="/accounts/{{ account.id }}/apply-valuation" style="margin:0">
         <input type="hidden" name="value" value="{{ est.value }}">
         <input type="hidden" name="source" value="{{ est.source }}">
@@ -34,10 +43,22 @@
 </div>
 
 {% else %}
-<p role="alert" style="color:var(--pico-del-color)">
-    No automated estimates available for this address. Enter a value manually below.
+<p role="alert" style="background:var(--pico-del-background,#fef2f2);padding:0.75rem 1rem;border-radius:6px">
+    No automated estimates found for this address. Check Zoopla or Rightmove below, then enter the value manually.
 </p>
 {% endif %}
+
+<div style="margin-bottom:2rem">
+    <strong>Check current listings &amp; sold prices:</strong>
+    <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.5rem">
+        {% for label, href in external_links %}
+        <a href="{{ href }}" target="_blank" rel="noopener" role="button" class="outline" style="margin:0">{{ label }}</a>
+        {% endfor %}
+    </div>
+    <small style="color:var(--pico-muted-color);display:block;margin-top:0.4rem">
+        These open in a new tab — look up the current value, then enter it in the form below.
+    </small>
+</div>
 
 <article style="margin:0;padding:1.25rem;max-width:400px">
     <h3 style="margin:0 0 0.75rem">Enter manually</h3>

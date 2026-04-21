@@ -467,9 +467,17 @@ def valuation_picker(
         domain_api_key=profile.domain_api_key,
     )
 
+    addr_enc = urllib.parse.quote(acct.property_address, safe="")
+    external_links = [
+        ("Zoopla sold prices", f"https://www.zoopla.co.uk/house-prices/{addr_enc}/"),
+        ("Rightmove sold prices", f"https://www.rightmove.co.uk/house-prices/{addr_enc}.html"),
+        ("Zoopla free valuation", f"https://www.zoopla.co.uk/valuation/{addr_enc}/"),
+    ]
+
     return templates.TemplateResponse(request, "accounts/valuation_picker.html", {
         "account": acct,
         "estimates": estimates,
+        "external_links": external_links,
     })
 
 
