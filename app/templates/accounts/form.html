@@ -124,8 +124,8 @@ async function addressLookup(query) {
     clearTimeout(_addrTimer);
     _addrTimer = setTimeout(async () => {
         try {
-            const url = 'https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=6&q=' + encodeURIComponent(query);
-            const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+            const url = '/accounts/address-search?q=' + encodeURIComponent(query);
+            const res = await fetch(url);
             const data = await res.json();
             list.innerHTML = '';
             if (!data.length) { list.style.display = 'none'; return; }

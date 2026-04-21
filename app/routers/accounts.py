@@ -1,10 +1,12 @@
 import logging
+import urllib.parse
+import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 log = logging.getLogger(__name__)
@@ -27,6 +29,30 @@ from app.services.user_profile_service import get_profile
 from app.services.property_valuation import estimate_property_value, provider_status as prop_provider_status
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
+
+
+@router.get("/address-search")
+def address_search(q: str = Query(..., min_length=3)):
+    """Server-side proxy to Nominatim so the browser isn't blocked by CORS/UA rules."""
+    import json as _json
+    try:
+        url = (
+            "https://nominatim.openstreetmap.org/search"
+            f"?format=json&addressdetails=0&limit=6&q={urllib.parse.quote(q)}"
+        )
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "FinancialHygieneApp/1.0 (personal finance tool)",
+                "Accept-Language": "en",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = _json.loads(resp.read())
+        return JSONResponse([{"display_name": item["display_name"]} for item in data])
+    except Exception as e:
+        log.debug("Address search failed: %s", e)
+        return JSONResponse([])
 
 
 @router.get("", response_class=HTMLResponse)
