@@ -468,7 +468,7 @@ def _background_refresh_property_value(account_id: int) -> None:
         db.close()
 
 
-_VALUATION_STALE_DAYS = 30   # refresh if value is older than this
+_VALUATION_STALE_DAYS = 1    # refresh if value is older than this (daily)
 
 
 def _try_fetch_property_value(db: Session, acct) -> None:

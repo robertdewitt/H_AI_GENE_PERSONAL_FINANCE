@@ -54,10 +54,19 @@
 
     <div id="real-estate-fields" style="display:none">
         <label for="property_address">Property Address</label>
-        <input type="text" id="property_address" name="property_address"
-               value="{{ account.property_address if account and account.property_address else '' }}"
-               placeholder="e.g., 123 Main St, Austin TX 78701">
-        <small>Used to look up current estimated market value.</small>
+        <div style="position:relative">
+            <input type="text" id="property_address" name="property_address"
+                   value="{{ account.property_address if account and account.property_address else '' }}"
+                   placeholder="Start typing an address…"
+                   autocomplete="off"
+                   oninput="addressLookup(this.value)">
+            <ul id="addressSuggestions" style="
+                display:none; position:absolute; left:0; right:0; top:100%; z-index:100;
+                background:var(--pico-background-color); border:1px solid var(--pico-muted-border-color);
+                border-radius:0 0 6px 6px; margin:0; padding:0; list-style:none; max-height:220px; overflow-y:auto;
+            "></ul>
+        </div>
+        <small>Start typing to search for an address. Select a result to auto-fill.</small>
 
         <label for="linked_mortgage_account_id">Linked Mortgage Account</label>
         <select id="linked_mortgage_account_id" name="linked_mortgage_account_id">
@@ -106,5 +115,39 @@ function updateAssetFields() {
 }
 document.getElementById('account_type').addEventListener('change', updateAssetFields);
 updateAssetFields();
+
+// ── Address lookup via Nominatim (OpenStreetMap, no key required) ──
+let _addrTimer = null;
+async function addressLookup(query) {
+    const list = document.getElementById('addressSuggestions');
+    if (query.length < 5) { list.style.display = 'none'; return; }
+    clearTimeout(_addrTimer);
+    _addrTimer = setTimeout(async () => {
+        try {
+            const url = 'https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=6&q=' + encodeURIComponent(query);
+            const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+            const data = await res.json();
+            list.innerHTML = '';
+            if (!data.length) { list.style.display = 'none'; return; }
+            data.forEach(item => {
+                const li = document.createElement('li');
+                li.textContent = item.display_name;
+                li.style.cssText = 'padding:0.5rem 0.75rem;cursor:pointer;border-bottom:1px solid var(--pico-muted-border-color);font-size:0.85rem';
+                li.addEventListener('mouseenter', () => li.style.background = 'var(--pico-primary-background)');
+                li.addEventListener('mouseleave', () => li.style.background = '');
+                li.addEventListener('click', () => {
+                    document.getElementById('property_address').value = item.display_name;
+                    list.style.display = 'none';
+                });
+                list.appendChild(li);
+            });
+            list.style.display = 'block';
+        } catch(e) { list.style.display = 'none'; }
+    }, 400);
+}
+document.addEventListener('click', e => {
+    if (!e.target.closest('#property_address') && !e.target.closest('#addressSuggestions'))
+        document.getElementById('addressSuggestions').style.display = 'none';
+});
 </script>
 {% endblock %}
