@@ -150,7 +150,6 @@ def account_create(
 def account_detail(
     request: Request,
     account_id: int,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     acct = get_account(db, account_id)
@@ -302,19 +301,6 @@ def account_detail(
                     db, acct.linked_mortgage_account_id, target_currency=acct.currency,
                 )
 
-    # Auto-refresh property value in the background if stale or never fetched
-    value_refreshing = False
-    if (
-        acct.account_type.value == "real_estate"
-        and acct.property_address
-        and (
-            acct.value_as_of_date is None
-            or (datetime.now() - acct.value_as_of_date).days >= _VALUATION_STALE_DAYS
-        )
-    ):
-        background_tasks.add_task(_background_refresh_property_value, account_id)
-        value_refreshing = True
-
     return templates.TemplateResponse(request, "accounts/detail.html", {
         "account": acct,
         "balance": balance,
@@ -328,7 +314,6 @@ def account_detail(
         "mortgage_account": mortgage_account,
         "mortgage_balance": mortgage_balance,
         "now": datetime.now(),
-        "value_refreshing": value_refreshing,
     })
 
 
@@ -433,22 +418,65 @@ def account_remove(account_id: int, db: Session = Depends(get_db)):
     return RedirectResponse(url="/accounts", status_code=303)
 
 
-@router.post("/{account_id}/refresh-value")
-def account_refresh_value(account_id: int, db: Session = Depends(get_db)):
-    """Re-fetch estimated property value from free APIs."""
+@router.get("/{account_id}/valuation-picker", response_class=HTMLResponse)
+def valuation_picker(
+    request: Request,
+    account_id: int,
+    db: Session = Depends(get_db),
+):
+    """Fetch all available estimates and let the user choose one."""
+    from app.services.property_valuation import estimate_all_providers
+
     acct = get_account(db, account_id)
     if not acct or not acct.property_address:
         return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)
 
-    from app.models.asset_valuation import AssetValuation as _AV
-    before_count = db.query(_AV).filter(_AV.account_id == account_id).count()
-    _try_fetch_property_value(db, acct)
-    after_count = db.query(_AV).filter(_AV.account_id == account_id).count()
+    profile = get_profile(db)
+    estimates = estimate_all_providers(
+        address=acct.property_address,
+        currency=acct.currency,
+        country_of_residence=profile.country_of_residence,
+        rentcast_api_key=profile.rentcast_api_key,
+        property_data_api_key=profile.property_data_api_key,
+        domain_api_key=profile.domain_api_key,
+    )
 
-    if after_count > before_count:
-        return RedirectResponse(url=f"/accounts/{account_id}?value_refreshed=1", status_code=303)
-    else:
-        return RedirectResponse(url=f"/accounts/{account_id}?value_refresh_failed=1", status_code=303)
+    return templates.TemplateResponse(request, "accounts/valuation_picker.html", {
+        "account": acct,
+        "estimates": estimates,
+    })
+
+
+@router.post("/{account_id}/apply-valuation")
+def apply_valuation(
+    account_id: int,
+    value: Decimal = Form(...),
+    source: str = Form("manual"),
+    notes: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Save a chosen valuation (from picker or manual entry)."""
+    from app.models.asset_valuation import AssetValuation
+
+    acct = get_account(db, account_id)
+    if not acct:
+        return RedirectResponse(url="/accounts", status_code=303)
+
+    val = AssetValuation(
+        account_id=acct.id,
+        date=datetime.now(),
+        value=value,
+        currency=acct.currency,
+        source=source,
+        notes=notes,
+    )
+    db.add(val)
+    acct.current_value = value
+    acct.value_as_of_date = datetime.now()
+    acct.balance_truth_source = "manual_mark"
+    db.commit()
+
+    return RedirectResponse(url=f"/accounts/{account_id}?value_refreshed=1", status_code=303)
 
 
 # ── Property value estimation ──────────────────────────────────────────

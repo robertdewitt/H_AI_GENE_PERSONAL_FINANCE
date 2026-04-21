@@ -35,6 +35,45 @@ class PropertyEstimate:
     notes: str = ""
 
 
+def estimate_all_providers(
+    address: str,
+    currency: str,
+    country_of_residence: str | None = None,
+    rentcast_api_key: str | None = None,
+    property_data_api_key: str | None = None,
+    domain_api_key: str | None = None,
+) -> list[PropertyEstimate]:
+    """Try ALL applicable providers and return every estimate that succeeds.
+
+    Returns a list so the caller can present all options to the user.
+    """
+    region = _detect_region(currency, country_of_residence)
+    log.info("Property lookup (all providers): region=%s address=%r", region, address)
+    results: list[PropertyEstimate] = []
+
+    if region == "US":
+        r = _rentcast(address, rentcast_api_key)
+        if r:
+            results.append(r)
+
+    elif region == "UK":
+        if property_data_api_key:
+            r = _property_data_uk(address, property_data_api_key)
+            if r:
+                results.append(r)
+        r = _hm_land_registry(address)
+        if r:
+            results.append(r)
+
+    elif region == "AU":
+        if domain_api_key:
+            r = _domain_au(address, domain_api_key)
+            if r:
+                results.append(r)
+
+    return results
+
+
 def estimate_property_value(
     address: str,
     currency: str,
@@ -44,31 +83,11 @@ def estimate_property_value(
     domain_api_key: str | None = None,
 ) -> PropertyEstimate | None:
     """Route to the right provider and return an estimate, or None."""
-    region = _detect_region(currency, country_of_residence)
-    log.info("Property lookup: region=%s address=%r", region, address)
-
-    if region == "US":
-        result = _rentcast(address, rentcast_api_key)
-        if result:
-            return result
-
-    elif region == "UK":
-        if property_data_api_key:
-            result = _property_data_uk(address, property_data_api_key)
-            if result:
-                return result
-        # Free fallback: HM Land Registry last-sold price
-        result = _hm_land_registry(address)
-        if result:
-            return result
-
-    elif region == "AU":
-        if domain_api_key:
-            result = _domain_au(address, domain_api_key)
-            if result:
-                return result
-
-    return None
+    results = estimate_all_providers(
+        address, currency, country_of_residence,
+        rentcast_api_key, property_data_api_key, domain_api_key,
+    )
+    return results[0] if results else None
 
 
 def provider_status(

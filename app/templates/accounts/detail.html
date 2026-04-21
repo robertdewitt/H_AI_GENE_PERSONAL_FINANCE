@@ -113,26 +113,9 @@
 </div>
 {% if account.property_address %}
 <div style="margin-bottom:1.5rem">
-    <form method="post" action="/accounts/{{ account.id }}/refresh-value" style="display:inline;margin:0">
-        <button type="submit" class="outline" style="margin:0">Refresh Estimated Value</button>
-    </form>
-    {% if value_refreshing %}
-    <small id="refreshingNotice" style="color:var(--pico-muted-color);margin-left:0.75rem">
-        Fetching latest valuation&hellip;
-    </small>
-    <script>
-        // Reload once the background task has had time to complete
-        setTimeout(function() {
-            window.location.href = window.location.pathname + "?value_refreshed=1";
-        }, 6000);
-    </script>
-    {% elif request.query_params.get("value_refreshed") %}
+    <a href="/accounts/{{ account.id }}/valuation-picker" role="button" class="outline" style="margin:0">Update Estimated Value</a>
+    {% if request.query_params.get("value_refreshed") %}
     <small style="color:var(--pico-ins-color);margin-left:0.75rem">Value updated.</small>
-    {% elif request.query_params.get("value_refresh_failed") %}
-    <small style="color:var(--pico-del-color);margin-left:0.75rem">
-        Could not fetch value automatically — check server logs or enter a value manually via
-        <a href="/valuations/{{ account.id }}">Valuations</a>.
-    </small>
     {% endif %}
     {% if prop_status %}
     <small style="display:block;margin-top:0.4rem;color:var(--pico-muted-color)">
