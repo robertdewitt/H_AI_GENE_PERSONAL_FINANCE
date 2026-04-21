@@ -33,16 +33,183 @@ def pdf_to_dataframe(filepath: str) -> pd.DataFrame:
     with pdfplumber.open(filepath) as pdf:
         full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
 
-        # Attempt 1: proper table extraction
-        df = _extract_tables(pdf)
-        if df is not None and len(df) >= 2 and _looks_like_transactions(df):
-            log.info("PDF table extraction: %d rows, %d cols", len(df), len(df.columns))
-            return df
+        # Attempt 1: mortgage statement — transaction activity table
+        if _is_mortgage_statement(full_text):
+            df = _parse_mortgage_transactions(pdf, full_text)
+            if df is not None and len(df) > 0:
+                log.info("Mortgage statement: %d transactions", len(df))
+                return df
 
-    # Attempt 2: text-line parsing (handles most bank statement formats)
+        # Attempt 2: proper table extraction
+        df = _extract_tables(pdf)
+        if df is not None and len(df) >= 2:
+            # Merge Charges/Payments columns if present (mortgage/loan format)
+            df = _merge_charges_payments(df)
+            if _looks_like_transactions(df):
+                log.info("PDF table extraction: %d rows, %d cols", len(df), len(df.columns))
+                return df
+
+    # Attempt 3: Mission Fed account statement format (Date Amount[-] Balance Desc)
+    df = _parse_mission_fed_account(full_text)
+    if df is not None and len(df) > 0:
+        log.info("Mission Fed account format: %d transactions", len(df))
+        return df
+
+    # Attempt 4: generic text-line parsing (Chase, Amex, Barclays, etc.)
     df = _parse_statement_text(full_text)
     log.info("PDF text-line extraction: %d rows", len(df))
     return df
+
+
+def _is_mortgage_statement(text: str) -> bool:
+    return bool(re.search(r"mortgage\s+statement|loan\s+statement|outstanding\s+principal", text, re.I))
+
+
+def _parse_mortgage_transactions(pdf, full_text: str) -> pd.DataFrame | None:
+    """Extract the TransactionActivity table from a mortgage/loan statement."""
+    year = _infer_year(full_text)
+    rows: list[dict] = []
+
+    for page in pdf.pages:
+        for table in page.extract_tables():
+            if not table or len(table) < 2:
+                continue
+
+            # Find the actual column header row — skip span/title rows
+            header_row_idx = 0
+            for ri, row in enumerate(table[:3]):
+                cells = [str(c or "").strip().lower() for c in row]
+                if any("date" in c for c in cells) and any(
+                    c in ("charges", "payments", "amount", "credit", "debit", "description")
+                    for c in cells
+                ):
+                    header_row_idx = ri
+                    break
+            else:
+                continue   # no usable header found
+
+            header = [str(c or "").strip().lower() for c in table[header_row_idx]]
+            has_date = any("date" in h for h in header)
+            has_amt = any(h in ("charges", "payments", "amount", "credit", "debit") for h in header)
+            if not (has_date and has_amt):
+                continue
+
+            date_i = next(i for i, h in enumerate(header) if "date" in h)
+            desc_i = next((i for i, h in enumerate(header) if "desc" in h), None)
+            charge_i = next((i for i, h in enumerate(header) if h in ("charges", "debit")), None)
+            payment_i = next((i for i, h in enumerate(header) if h in ("payments", "payment", "credit", "amount")), None)
+
+            for row in table[header_row_idx + 1:]:
+                if not row or not row[date_i]:
+                    continue
+                raw_date = str(row[date_i]).strip()
+                if not re.match(r"\d{1,2}/\d{1,2}", raw_date):
+                    continue
+                date_str = _parse_date_mm_dd(raw_date, year)
+                if not date_str:
+                    continue
+
+                desc = str(row[desc_i] or "").strip() if desc_i is not None else ""
+                desc = desc.replace("\n", " ").strip() or "Payment"
+
+                # Charges = money out (+), Payments = money in (-)
+                amount_str = ""
+                if charge_i is not None and row[charge_i]:
+                    amount_str = str(row[charge_i]).strip()
+                elif payment_i is not None and row[payment_i]:
+                    amount_str = str(row[payment_i]).strip()
+                    # Payments on a loan statement are credits (negative = money paid in)
+                    # but for the loan account itself a payment reduces balance (positive)
+
+                if not amount_str:
+                    continue
+
+                # Normalise: strip $, commas, handle suffix/prefix minus
+                norm = _normalise_amount(amount_str.replace("$", "").replace(",", ""))
+                # If it came from payments column, it's a debit on the bank account
+                # but for loan purposes mark as positive (balance reduction)
+                try:
+                    amt = float(norm)
+                except ValueError:
+                    continue
+
+                rows.append({"Date": date_str, "Description": desc, "Amount": str(amt)})
+
+    if not rows:
+        return None
+    return pd.DataFrame(rows)
+
+
+def _merge_charges_payments(df: pd.DataFrame) -> pd.DataFrame:
+    """If df has Charges + Payments columns, merge into a single Amount column."""
+    cols_lower = {c.lower(): c for c in df.columns}
+    charge_col = cols_lower.get("charges") or cols_lower.get("debit")
+    payment_col = cols_lower.get("payments") or cols_lower.get("payment") or cols_lower.get("credit")
+    if not (charge_col and payment_col):
+        return df
+
+    def _pick_amount(row):
+        c = str(row[charge_col]).strip().lstrip("$").replace(",", "") if row[charge_col] else ""
+        p = str(row[payment_col]).strip().lstrip("$").replace(",", "") if row[payment_col] else ""
+        # Non-empty charge → positive debit; payment → negative credit
+        try:
+            if c and float(c) != 0:
+                return c
+        except ValueError:
+            pass
+        try:
+            if p and float(p) != 0:
+                v = float(p)
+                return str(-v) if v > 0 else str(v)
+        except ValueError:
+            pass
+        return ""
+
+    df = df.copy()
+    df["Amount"] = df.apply(_pick_amount, axis=1)
+    return df.drop(columns=[charge_col, payment_col])
+
+
+# ── Mission Fed account statement format ─────────────────────────────────────
+# Format per line: MM/DD  $AMOUNT[-]  $BALANCE  Description
+_MF_LINE_RE = re.compile(
+    r"^(\d{2}/\d{2})\s+\$?([\d,]+\.\d{2})(-?)\s+\$?([\d,]+\.\d{2})\s+(.*)"
+)
+
+
+def _parse_mission_fed_account(text: str) -> pd.DataFrame | None:
+    """Parse Mission Federal Credit Union account statement text.
+
+    Line format:  MM/DD  $AMOUNT[-]  $BALANCE  Description
+    The trailing '-' on the amount indicates a withdrawal/debit.
+    """
+    if "Account Statement" not in text and "MissionFed" not in text:
+        return None
+
+    year = _infer_year(text)
+    rows: list[dict] = []
+
+    for line in text.splitlines():
+        line = line.strip()
+        m = _MF_LINE_RE.match(line)
+        if not m:
+            continue
+        raw_date, amount_digits, minus_flag, _balance, desc = m.groups()
+        date_str = _parse_date_mm_dd(raw_date, year)
+        if not date_str:
+            continue
+
+        amount = float(amount_digits.replace(",", ""))
+        if minus_flag == "-":
+            amount = -amount   # debit
+        # else: positive = credit/deposit
+
+        desc = desc.strip() or "Transaction"
+        rows.append({"Date": date_str, "Description": desc, "Amount": str(amount)})
+
+    if not rows:
+        return None
+    return pd.DataFrame(rows)
 
 
 # ── Table extraction ──────────────────────────────────────────────────────────
