@@ -7,6 +7,10 @@
     <p>Review transfers and payments across your accounts</p>
 </hgroup>
 
+<div style="margin-bottom:1.5rem">
+    <a href="/transfers/flow" role="button" class="outline" style="margin:0">View Transfer Flow Diagram</a>
+</div>
+
 {% if scanned is not none %}
 <article style="margin-bottom:1rem">
     <strong>Payment scan complete:</strong> {{ scanned }} transaction{{ "s" if scanned != 1 }} flagged as transfers.

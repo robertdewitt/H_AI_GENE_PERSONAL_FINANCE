@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Transfer Flow — Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Transfer Flow</h1>
+    <p>Money moving between accounts — {{ total_flows }} account pair{{ 's' if total_flows != 1 else '' }}</p>
+</hgroup>
+
+<form method="get" action="/transfers/flow" style="display:flex;gap:0.75rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:1.5rem">
+    <div>
+        <label for="date_from" style="margin-bottom:0.25rem;display:block;font-size:0.85rem">From</label>
+        <input type="date" id="date_from" name="date_from" value="{{ date_from }}" style="margin:0;width:160px">
+    </div>
+    <div>
+        <label for="date_to" style="margin-bottom:0.25rem;display:block;font-size:0.85rem">To</label>
+        <input type="date" id="date_to" name="date_to" value="{{ date_to }}" style="margin:0;width:160px">
+    </div>
+    <button type="submit" style="margin:0">Apply</button>
+    <a href="/transfers/flow" role="button" class="outline secondary" style="margin:0">Clear</a>
+    <a href="/transfers" role="button" class="outline" style="margin:0;margin-left:auto">← Back to Transfers</a>
+</form>
+
+{% if total_flows == 0 %}
+<p>No confirmed transfers found{% if date_from or date_to %} for this date range{% endif %}.
+   <a href="/transfers">Confirm some transfers</a> first.</p>
+{% else %}
+
+<div style="background:var(--pico-card-background-color,#fff);border:1px solid var(--pico-muted-border-color);border-radius:8px;padding:1rem;margin-bottom:1.5rem">
+    <canvas id="sankeyChart" style="width:100%;min-height:350px"></canvas>
+</div>
+
+<h2 style="font-size:1rem;margin-bottom:0.75rem">Per-Account Summary</h2>
+<div style="overflow-x:auto">
+<table>
+    <thead>
+        <tr>
+            <th>Account</th>
+            <th style="text-align:right">Total Out</th>
+            <th style="text-align:right">Total In</th>
+            <th style="text-align:right">Net</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for row in summary %}
+    <tr>
+        <td>{{ row.account }}</td>
+        <td style="text-align:right;color:var(--pico-del-color)">
+            {% if row.out > 0 %}−${{ "{:,.2f}".format(row.out) }}{% else %}—{% endif %}
+        </td>
+        <td style="text-align:right;color:var(--pico-ins-color)">
+            {% if row.in > 0 %}+${{ "{:,.2f}".format(row["in"]) }}{% else %}—{% endif %}
+        </td>
+        <td style="text-align:right;font-weight:600;color:{{ 'var(--pico-ins-color)' if row.net > 0 else 'var(--pico-del-color)' if row.net < 0 else 'inherit' }}">
+            {{ '+' if row.net > 0 else '' }}${{ "{:,.2f}".format(row.net) }}
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-chart-sankey@0.12.0/dist/chartjs-chart-sankey.min.js"></script>
+<script>
+const rawData = {{ sankey_data | safe }};
+
+// Assign a consistent colour per node
+const nodeNames = [...new Set(rawData.flatMap(d => [d.from, d.to]))];
+const palette = [
+  '#2563eb','#16a34a','#f59e0b','#8b5cf6','#ec4899',
+  '#06b6d4','#f97316','#ef4444','#14b8a6','#d946ef',
+];
+const colorMap = Object.fromEntries(nodeNames.map((n, i) => [n, palette[i % palette.length]]));
+
+const ctx = document.getElementById('sankeyChart').getContext('2d');
+new Chart(ctx, {
+    type: 'sankey',
+    data: {
+        datasets: [{
+            label: 'Transfer Flow',
+            data: rawData.map(d => ({ from: d.from, to: d.to, flow: d.flow })),
+            colorFrom: d => colorMap[d.dataset.data[d.dataIndex].from] || '#888',
+            colorTo: d => colorMap[d.dataset.data[d.dataIndex].to] || '#888',
+            colorMode: 'gradient',
+            borderWidth: 0,
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { display: false },
+            tooltip: {
+                callbacks: {
+                    label: ctx => {
+                        const d = ctx.dataset.data[ctx.dataIndex];
+                        const item = rawData[ctx.dataIndex];
+                        return `${d.from} → ${d.to}: $${d.flow.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})} (${item.count} transfer${item.count !== 1 ? 's' : ''})`;
+                    }
+                }
+            }
+        }
+    }
+});
+</script>
+{% endif %}
+{% endblock %}
