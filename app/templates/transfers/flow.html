@@ -7,17 +7,28 @@
     <p>Money moving between accounts — {{ total_flows }} account pair{{ 's' if total_flows != 1 else '' }}</p>
 </hgroup>
 
+<div style="margin-bottom:1rem;display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center">
+    {% for p, label in [('1y','1 Year'),('ytd','YTD'),('2y','2 Years'),('mtd','MTD'),('5y','5 Years'),('all','All')] %}
+    <a href="/transfers/flow?preset={{ p }}"
+       role="button"
+       style="margin:0;padding:0.3rem 0.8rem;font-size:0.85rem;{% if preset == p %}font-weight:700;{% else %}font-weight:400;{% endif %}"
+       class="{% if preset == p %}{% else %}outline{% endif %}">{{ label }}</a>
+    {% endfor %}
+</div>
+
 <form method="get" action="/transfers/flow" style="display:flex;gap:0.75rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:1.5rem">
     <div>
-        <label for="date_from" style="margin-bottom:0.25rem;display:block;font-size:0.85rem">From</label>
-        <input type="date" id="date_from" name="date_from" value="{{ date_from }}" style="margin:0;width:160px">
+        <label for="date_from" style="margin-bottom:0.25rem;display:block;font-size:0.85rem">Custom from</label>
+        <input type="date" id="date_from" name="date_from" value="{{ date_from }}" style="margin:0;width:160px"
+               onchange="document.getElementById('presetInput').value=''">
     </div>
     <div>
-        <label for="date_to" style="margin-bottom:0.25rem;display:block;font-size:0.85rem">To</label>
-        <input type="date" id="date_to" name="date_to" value="{{ date_to }}" style="margin:0;width:160px">
+        <label for="date_to" style="margin-bottom:0.25rem;display:block;font-size:0.85rem">to</label>
+        <input type="date" id="date_to" name="date_to" value="{{ date_to }}" style="margin:0;width:160px"
+               onchange="document.getElementById('presetInput').value=''">
     </div>
+    <input type="hidden" id="presetInput" name="preset" value="">
     <button type="submit" style="margin:0">Apply</button>
-    <a href="/transfers/flow" role="button" class="outline secondary" style="margin:0">Clear</a>
     <a href="/transfers" role="button" class="outline" style="margin:0;margin-left:auto">← Back to Transfers</a>
 </form>
 

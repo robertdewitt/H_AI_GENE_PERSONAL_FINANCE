@@ -129,9 +129,38 @@ def transfer_flow(
     request: Request,
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
+    preset: str | None = Query(None),   # 1y, ytd, 2y, mtd, 5y, all
     db: Session = Depends(get_db),
 ):
     """Sankey diagram of confirmed transfer flows between accounts."""
+    from datetime import date, timedelta
+    today = date.today()
+
+    # Resolve preset → date_from/date_to (preset takes priority over manual input)
+    if preset == "ytd":
+        date_from = date(today.year, 1, 1).isoformat()
+        date_to = today.isoformat()
+    elif preset == "mtd":
+        date_from = date(today.year, today.month, 1).isoformat()
+        date_to = today.isoformat()
+    elif preset == "1y":
+        date_from = (today - timedelta(days=365)).isoformat()
+        date_to = today.isoformat()
+    elif preset == "2y":
+        date_from = (today - timedelta(days=730)).isoformat()
+        date_to = today.isoformat()
+    elif preset == "5y":
+        date_from = (today - timedelta(days=1825)).isoformat()
+        date_to = today.isoformat()
+    elif preset == "all":
+        date_from = None
+        date_to = None
+    elif not date_from and not date_to:
+        # Default: 1 year
+        preset = "1y"
+        date_from = (today - timedelta(days=365)).isoformat()
+        date_to = today.isoformat()
+
     FromTxn = Transaction.__table__.alias("from_txn")
     ToTxn = Transaction.__table__.alias("to_txn")
     FromAcct = Account.__table__.alias("from_acct")
@@ -203,5 +232,6 @@ def transfer_flow(
         "summary": summary,
         "date_from": df_from or "",
         "date_to": df_to or "",
+        "preset": preset or "",
         "total_flows": len(sankey_data),
     })
