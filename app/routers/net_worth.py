@@ -1,6 +1,8 @@
+from datetime import date
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
-from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -12,15 +14,43 @@ from app.templating import templates
 
 router = APIRouter(prefix="/net-worth", tags=["net_worth"])
 
+_PRESETS = [
+    ("1y",  "1 Year"),
+    ("ytd", "YTD"),
+    ("2y",  "2 Years"),
+    ("mtd", "MTD"),
+    ("all", "All"),
+]
+
+
+def _preset_to_months(preset: str | None) -> int:
+    today = date.today()
+    if preset == "ytd":
+        # months elapsed since Jan 1
+        return max(1, (today.month - 1) + (1 if today.day > 1 else 0) + 1)
+    if preset == "mtd":
+        return 1
+    if preset == "2y":
+        return 24
+    if preset == "all":
+        return 120   # 10 years — effectively all data
+    return 12        # default: 1 year
+
 
 @router.get("", response_class=HTMLResponse)
 def net_worth_page(
     request: Request,
-    months: int = Query(12, ge=1, le=120),
+    preset: str | None = Query(None),
+    months: int | None = Query(None, ge=1, le=120),
     db: Session = Depends(get_db),
 ):
+    # Preset takes priority; if neither set, default to 1y
+    if preset is None and months is None:
+        preset = "1y"
+    resolved_months = months if months is not None else _preset_to_months(preset)
+
     current = compute_net_worth(db)
-    series = compute_net_worth_series(db, months=months)
+    series = compute_net_worth_series(db, months=resolved_months)
 
     groups: dict[str, Decimal] = {}
     for item in current.breakdown:
@@ -61,7 +91,9 @@ def net_worth_page(
         "current": current,
         "series": series,
         "groups": groups,
-        "months": months,
+        "months": resolved_months,
+        "preset": preset or "",
+        "presets": _PRESETS,
         "category_summary": category_summary,
     })
 

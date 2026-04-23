@@ -24,6 +24,15 @@
     </div>
 </div>
 
+<div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.75rem;align-items:center">
+    {% for p, label in presets %}
+    <a href="/net-worth?preset={{ p }}"
+       role="button"
+       style="margin:0;padding:0.3rem 0.8rem;font-size:0.85rem"
+       class="{{ '' if preset == p else 'outline' }}">{{ label }}</a>
+    {% endfor %}
+</div>
+
 {% if series.snapshots %}
 <div class="chart-container" style="height:350px">
     <canvas id="netWorthChart"></canvas>
