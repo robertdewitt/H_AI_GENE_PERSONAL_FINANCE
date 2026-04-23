@@ -24,40 +24,123 @@ OLLAMA_URL = "http://localhost:11434"
 OLLAMA_MODEL = "llama3.2"
 
 KEYWORD_MAP = {
-    "groceries": ["grocery", "whole foods", "trader joe", "kroger", "safeway",
-                   "aldi", "costco", "walmart supercenter", "publix", "heb"],
-    "dining out": ["restaurant", "mcdonald", "starbucks", "chipotle", "subway",
-                   "doordash", "grubhub", "uber eats", "pizza", "cafe", "diner",
-                   "burger", "taco", "sushi", "thai", "panda express"],
-    "gas / fuel": ["shell", "exxon", "chevron", "bp ", "gas station", "fuel",
-                   "mobil", "speedway", "wawa gas", "circle k"],
-    "transportation": ["uber", "lyft", "taxi", "transit", "metro", "parking",
-                       "toll", "ez pass"],
-    "utilities": ["electric", "water bill", "gas bill", "utility", "power",
-                  "sewage", "garbage", "waste management", "xcel", "pge",
-                  "comcast", "at&t", "verizon", "t-mobile", "internet"],
-    "subscriptions": ["netflix", "spotify", "hulu", "disney+", "hbo",
-                      "apple music", "youtube premium", "amazon prime",
-                      "adobe", "microsoft 365", "icloud"],
-    "insurance": ["insurance", "geico", "state farm", "allstate", "progressive",
-                  "liberty mutual", "usaa"],
-    "healthcare": ["pharmacy", "cvs", "walgreens", "doctor", "hospital",
-                   "medical", "dental", "optometrist", "urgent care",
-                   "labcorp", "quest diag"],
-    "shopping": ["amazon", "target", "best buy", "home depot", "lowes",
-                 "ikea", "ebay", "etsy", "nordstrom", "macys"],
-    "rent / mortgage": ["rent", "mortgage", "hoa ", "lease"],
-    "entertainment": ["cinema", "movie", "theater", "concert", "ticket",
-                      "amc ", "regal", "event"],
-    "travel": ["airline", "hotel", "airbnb", "booking.com", "expedia",
-               "delta", "united", "american air", "southwest", "marriott",
-               "hilton"],
-    "salary": ["payroll", "direct deposit", "salary", "wage"],
-    "interest": ["interest earned", "interest payment", "apy"],
-    "account transfer": ["transfer", "xfer", "ach", "wire", "zelle",
-                         "venmo", "paypal", "payment thank you",
-                         "online payment", "automatic payment",
-                         "autopay", "payment received", "payment from"],
+    "groceries": [
+        "grocery", "whole foods", "trader joe", "kroger", "safeway",
+        "aldi", "costco", "walmart supercenter", "publix", "heb",
+        # UK
+        "tesco", "sainsbury", "asda", "waitrose", "morrisons", "ocado",
+        "marks & spencer food", "m&s food", "lidl", "co-op food",
+        "iceland food", "budgens", "spar ",
+    ],
+    "dining out": [
+        "restaurant", "mcdonald", "starbucks", "chipotle", "subway",
+        "doordash", "grubhub", "uber eats", "pizza", "cafe", "diner",
+        "burger", "taco", "sushi", "thai", "panda express",
+        # UK
+        "deliveroo", "just eat", "wingstop", "nandos", "nando's",
+        "wagamama", "itsu", "wasabi", "pret a manger", "pret ",
+        "greggs", "costa coffee", "caffe nero", "leon ", "dishoom",
+        "cko*", "dojo*", "square*",  # UK payment processor prefixes
+    ],
+    "gas / fuel": [
+        "shell", "exxon", "chevron", "bp ", "gas station", "fuel",
+        "mobil", "speedway", "wawa gas", "circle k",
+        # UK
+        "texaco", "esso", "totalenergies", "jet petrol",
+    ],
+    "transportation": [
+        "uber", "lyft", "taxi", "transit", "metro", "parking",
+        "toll", "ez pass",
+        # UK
+        "freenow", "free now", "bolt ride", "addison lee",
+        "tfl ", "transport for london", "trainline", "avanti",
+        "great western", "southeastern", "thameslink", "greater anglia",
+        "c2c train", "national rail", "oyster", "contactless tfl",
+        "national express", "megabus", "flixbus",
+        "apcoa", "q-park", "ncp parking", "justpark",
+    ],
+    "utilities": [
+        "electric", "water bill", "gas bill", "utility", "power",
+        "sewage", "garbage", "waste management", "xcel", "pge",
+        "comcast", "at&t", "verizon", "t-mobile", "internet",
+        # UK
+        "british gas", "octopus energy", "eon ", "e.on", "edf energy",
+        "bulb energy", "ovo energy", "scottish power", "npower",
+        "thames water", "anglian water", "severn trent",
+        "bt internet", "bt group", "sky broadband", "virgin media",
+        "talktalk", "ee broadband", "vodafone home",
+        "council tax", "water rates",
+    ],
+    "subscriptions": [
+        "netflix", "spotify", "hulu", "disney+", "hbo",
+        "apple music", "youtube premium", "amazon prime",
+        "adobe", "microsoft 365", "icloud",
+        # UK / global
+        "apple.com/bill", "google one", "dropbox", "github",
+        "notion ", "chatgpt", "openai", "anthropic",
+        "times subscription", "guardian", "financial times",
+    ],
+    "insurance": [
+        "insurance", "geico", "state farm", "allstate", "progressive",
+        "liberty mutual", "usaa",
+        # UK
+        "aviva", "axa", "zurich", "lloyds insurance", "admiral ",
+        "direct line", "churchill", "hastings direct", "comparethemarket",
+        "legal & general", "prudential", "standard life",
+    ],
+    "healthcare": [
+        "pharmacy", "cvs", "walgreens", "doctor", "hospital",
+        "medical", "dental", "optometrist", "urgent care",
+        "labcorp", "quest diag",
+        # UK
+        "boots pharmacy", "lloyds pharmacy", "superdrug",
+        "nhs ", "bupa", "vitality health", "axa health",
+        "vision express", "specsavers", "optical",
+    ],
+    "shopping": [
+        "amazon", "target", "best buy", "home depot", "lowes",
+        "ikea", "ebay", "etsy", "nordstrom", "macys",
+        # UK
+        "john lewis", "argos", "currys", "next ", "primark",
+        "h&m ", "zara ", "topshop", "asos", "very.co",
+        "b&q", "screwfix", "toolstation", "halfords",
+        "marks & spencer", "m&s ",
+    ],
+    "rent / mortgage": ["rent", "mortgage", "hoa ", "lease", "ground rent", "service charge"],
+    "entertainment": [
+        "cinema", "movie", "theater", "concert", "ticket",
+        "amc ", "regal", "event",
+        # UK
+        "odeon", "vue cinema", "cineworld", "picturehouse",
+        "ticketmaster", "seetickets", "eventbrite",
+        "sky sports", "now tv", "dazn",
+    ],
+    "travel": [
+        "airline", "hotel", "airbnb", "booking.com", "expedia",
+        "delta", "united", "american air", "southwest", "marriott",
+        "hilton",
+        # UK / global
+        "british airways", "easyjet", "ryanair", "jet2", "tui ",
+        "virgin atlantic", "emirates", "qatar airways",
+        "premier inn", "travelodge", "ibis hotel",
+        "hotels.com", "trivago", "kayak", "skyscanner",
+    ],
+    "salary": ["payroll", "direct deposit", "salary", "wage", "faster payment", "bacs credit"],
+    "interest": ["interest earned", "interest payment", "apy", "dividend"],
+    "account transfer": [
+        "transfer", "xfer", "ach", "wire", "zelle",
+        "venmo", "paypal", "payment thank you",
+        "online payment", "automatic payment",
+        "autopay", "payment received", "payment from",
+        # UK
+        "monzo", "revolut", "wise transfer", "starling",
+        "faster payments", "standing order", "direct debit",
+    ],
+    "fees & charges": [
+        "late payment fee", "late fee", "overdraft fee", "annual fee",
+        "foreign transaction", "atm fee", "service fee", "charge ",
+        "penalty", "nsf fee", "returned item",
+    ],
 }
 
 
@@ -330,17 +413,19 @@ from dataclasses import dataclass
 @dataclass
 class CategorySuggestion:
     transaction: "Transaction"
-    category_id: int
-    category_name: str
-    method: str   # "rule", "keyword", or "llm"
+    category_id: int | None   # None = no suggestion, user must pick
+    category_name: str | None
+    method: str   # "rule", "keyword", "llm", or "none"
 
 
 def suggest_categories(
     db: Session,
     limit: int = 200,
 ) -> list[CategorySuggestion]:
-    """Dry-run categorization — returns suggestions without saving anything.
+    """Dry-run categorization — returns ALL uncategorized transactions.
 
+    Transactions where a match is found have category_id/name pre-filled.
+    Transactions with no match have category_id=None so the user can pick.
     Used by the preview route so the user can validate before applying.
     """
     txns = db.execute(
@@ -397,6 +482,15 @@ def suggest_categories(
                         category_name=cat.name,
                         method="llm",
                     ))
+                    continue
+
+        # No match — include anyway so the user can manually assign
+        suggestions.append(CategorySuggestion(
+            transaction=txn,
+            category_id=None,
+            category_name=None,
+            method="none",
+        ))
 
     return suggestions
 

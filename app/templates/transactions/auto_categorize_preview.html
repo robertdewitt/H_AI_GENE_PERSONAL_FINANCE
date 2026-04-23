@@ -2,27 +2,31 @@
 {% block title %}Auto-Categorize Preview &mdash; Financial Hygiene{% endblock %}
 
 {% block content %}
+{% set matched = suggestions | selectattr('method', '!=', 'none') | list %}
+{% set unmatched = suggestions | selectattr('method', '==', 'none') | list %}
 <hgroup>
     <h1>Auto-Categorize Preview</h1>
-    <p>{{ suggestions|length }} suggestion{{ 's' if suggestions|length != 1 else '' }} — review and apply below</p>
+    <p>{{ suggestions|length }} uncategorized transaction{{ 's' if suggestions|length != 1 else '' }}
+       &mdash; {{ matched|length }} auto-matched, {{ unmatched|length }} need manual assignment</p>
 </hgroup>
 
 {% if not suggestions %}
-<p>No uncategorized transactions found that could be matched.</p>
+<p>All transactions are already categorized.</p>
 <a href="/transactions">Back to Transactions</a>
 {% else %}
 
 <p style="margin-bottom:1rem">
-    Check the rows you want to apply. You can change the suggested category in each row before applying.
+    Auto-matched rows are pre-checked. Rows without a suggestion are unchecked — select them and choose a category to batch-assign.
     Applying a correction also teaches the rule engine for future imports.
 </p>
 
 <form method="post" action="/transactions/auto-categorize/apply" id="applyForm">
     <input type="hidden" name="assignments" id="assignmentsInput" value="[]">
 
-    <div style="display:flex;gap:0.5rem;margin-bottom:1rem;align-items:center">
+    <div style="display:flex;gap:0.5rem;margin-bottom:1rem;align-items:center;flex-wrap:wrap">
         <button type="button" onclick="selectAll(true)" class="outline" style="margin:0;padding:0.3rem 0.8rem">Select All</button>
         <button type="button" onclick="selectAll(false)" class="outline secondary" style="margin:0;padding:0.3rem 0.8rem">Deselect All</button>
+        <button type="button" onclick="selectMatched()" class="outline" style="margin:0;padding:0.3rem 0.8rem">Select Matched Only</button>
         <span id="selCount" style="color:var(--pico-muted-color)">0 selected</span>
         <div style="flex:1"></div>
         <button type="submit" id="applyBtn" onclick="return buildAssignments()" style="margin:0">Apply Selected</button>
@@ -38,16 +42,18 @@
                 <th>Account</th>
                 <th>Description</th>
                 <th style="text-align:right">Amount</th>
-                <th>Suggested Category</th>
+                <th>Category</th>
                 <th>Method</th>
             </tr>
         </thead>
         <tbody>
         {% for s in suggestions %}
-        <tr>
-            <td><input type="checkbox" class="rowCheck" data-txn="{{ s.transaction.id }}" checked onchange="updateCount()"></td>
+        <tr{% if s.method == 'none' %} style="opacity:0.75"{% endif %}>
+            <td><input type="checkbox" class="rowCheck" data-txn="{{ s.transaction.id }}"
+                       {% if s.method != 'none' %}checked{% endif %}
+                       onchange="updateCount()"></td>
             <td style="white-space:nowrap">{{ s.transaction.date.strftime('%Y-%m-%d') }}</td>
-            <td style="white-space:nowrap">{{ s.transaction.account.name if s.transaction.account else '—' }}</td>
+            <td style="white-space:nowrap;font-size:0.85rem">{{ s.transaction.account.name if s.transaction.account else '—' }}</td>
             <td style="font-size:0.85rem">{{ s.transaction.description }}</td>
             <td style="text-align:right;white-space:nowrap">
                 {{ s.transaction.account.currency_symbol if s.transaction.account else '' }}{{ "%.2f"|format(s.transaction.amount|float) }}
@@ -55,9 +61,10 @@
             <td>
                 <select class="catSelect" data-txn="{{ s.transaction.id }}"
                         style="margin:0;padding:0.2rem 0.4rem;font-size:0.85rem;min-width:160px"
-                        onchange="updateCount()">
+                        onchange="onCatChange(this)">
+                    <option value="">-- pick category --</option>
                     {% for cat in categories %}
-                    <option value="{{ cat.id }}" {% if cat.id == s.category_id %}selected{% endif %}>{{ cat.name }}</option>
+                    <option value="{{ cat.id }}" {% if s.category_id and cat.id == s.category_id %}selected{% endif %}>{{ cat.name }}</option>
                     {% endfor %}
                 </select>
             </td>
@@ -66,8 +73,10 @@
                 <span style="font-size:0.75rem;color:#2a7;font-weight:600">rule</span>
                 {% elif s.method == 'keyword' %}
                 <span style="font-size:0.75rem;color:#47a;font-weight:600">keyword</span>
-                {% else %}
+                {% elif s.method == 'llm' %}
                 <span style="font-size:0.75rem;color:#a74;font-weight:600">llm</span>
+                {% else %}
+                <span style="font-size:0.75rem;color:var(--pico-muted-color)">manual</span>
                 {% endif %}
             </td>
         </tr>
@@ -80,15 +89,31 @@
 <script>
 function updateCount() {
     const n = document.querySelectorAll('.rowCheck:checked').length;
+    const total = document.querySelectorAll('.rowCheck').length;
     document.getElementById('selCount').textContent = n + ' selected';
-    document.getElementById('masterCheck').indeterminate =
-        n > 0 && n < document.querySelectorAll('.rowCheck').length;
-    document.getElementById('masterCheck').checked =
-        n === document.querySelectorAll('.rowCheck').length;
+    document.getElementById('masterCheck').indeterminate = n > 0 && n < total;
+    document.getElementById('masterCheck').checked = n === total;
 }
 
 function selectAll(val) {
     document.querySelectorAll('.rowCheck').forEach(cb => cb.checked = val);
+    updateCount();
+}
+
+function selectMatched() {
+    document.querySelectorAll('.rowCheck').forEach(cb => {
+        const row = cb.closest('tr');
+        const methodCell = row.querySelector('span');
+        const method = methodCell ? methodCell.textContent.trim() : 'manual';
+        cb.checked = (method === 'rule' || method === 'keyword' || method === 'llm');
+    });
+    updateCount();
+}
+
+// Auto-check a row when user picks a category for an unmatched row
+function onCatChange(sel) {
+    const cb = document.querySelector(`.rowCheck[data-txn="${sel.dataset.txn}"]`);
+    if (cb && sel.value) cb.checked = true;
     updateCount();
 }
 
@@ -99,7 +124,7 @@ function buildAssignments() {
         const sel = document.querySelector(`.catSelect[data-txn="${txnId}"]`);
         if (sel && sel.value) pairs.push([parseInt(txnId), parseInt(sel.value)]);
     });
-    if (pairs.length === 0) { alert('No rows selected.'); return false; }
+    if (pairs.length === 0) { alert('No rows selected with a category assigned.'); return false; }
     document.getElementById('assignmentsInput').value = JSON.stringify(pairs);
     return true;
 }
