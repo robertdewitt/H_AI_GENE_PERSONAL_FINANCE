@@ -101,7 +101,7 @@ def confirm_import(
         dayfirst = False
     # "auto" leaves dayfirst=None → import_transactions will auto-detect
 
-    from app.models.account import LIABILITY_TYPES
+    from app.models.account import LIABILITY_TYPES, AccountType
     account = db.get(Account, account_id)
     acct_currency = account.currency if account else "USD"
     is_liability = account.account_type in LIABILITY_TYPES if account else False
@@ -115,6 +115,26 @@ def confirm_import(
 
     # Auto-categorize the newly imported transactions
     cat_stats = categorize_batch(db, limit=batch.row_count + 100)
+
+    # For mortgage PDFs, also extract and save loan metadata (balance, rate, payment)
+    if account and account.account_type == AccountType.MORTGAGE and filepath.lower().endswith(".pdf"):
+        try:
+            from app.services.pdf_import import extract_mortgage_metadata
+            meta = extract_mortgage_metadata(filepath)
+            if meta:
+                if "outstanding_balance" in meta:
+                    account.statement_balance = meta["outstanding_balance"]
+                    from datetime import datetime as _dt
+                    account.statement_balance_as_of = _dt.now()
+                if "interest_rate" in meta:
+                    account.interest_rate = meta["interest_rate"]
+                if "monthly_payment" in meta:
+                    account.monthly_payment = meta["monthly_payment"]
+                if "original_balance" in meta and not account.original_principal_balance:
+                    account.original_principal_balance = meta["original_balance"]
+                db.commit()
+        except Exception:
+            pass  # metadata extraction is best-effort
 
     dupes = getattr(batch, "_duplicates_skipped", 0)
     return RedirectResponse(

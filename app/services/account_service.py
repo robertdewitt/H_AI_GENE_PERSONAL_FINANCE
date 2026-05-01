@@ -143,7 +143,12 @@ def get_account_balance_rich(
     elif truth_source == BalanceTruthSource.LIABILITY_BALANCE.value:
         result = _balance_from_liability(account, as_of_date, now)
     elif truth_source == BalanceTruthSource.MANUAL_MARK.value:
-        result = _balance_from_manual(account, now)
+        if as_of_date is not None:
+            # For historical queries (time series), prefer a dated valuation so the
+            # chart reflects actual changes in asset value over time.
+            result = _balance_from_valuation(db, account, as_of_date, base_ccy, now)
+        else:
+            result = _balance_from_manual(account, now)
     elif truth_source == BalanceTruthSource.HYBRID.value:
         result = _balance_hybrid(db, account, account_id, as_of_date, now)
     else:

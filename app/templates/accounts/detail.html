@@ -135,6 +135,41 @@
 {% endif %}
 {% endif %}
 
+{% if mortgage_payoff %}
+<h2>Payoff Projection</h2>
+<div class="summary-grid" style="margin-bottom:1.5rem">
+    <div class="summary-card">
+        <div class="label">Outstanding Balance</div>
+        <div class="value negative">{{ account.currency_symbol }}{{ "{:,.2f}".format(mortgage_payoff.current_balance) }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Interest Rate</div>
+        <div class="value" style="font-size:1.2rem">{{ "{:.4g}".format(mortgage_payoff.interest_rate_pct) }}%</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Monthly Payment</div>
+        <div class="value">{{ account.currency_symbol }}{{ "{:,.2f}".format(mortgage_payoff.monthly_payment) }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Projected Payoff</div>
+        <div class="value positive" style="font-size:1rem">{{ mortgage_payoff.payoff_date }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Total Interest Remaining</div>
+        <div class="value negative">{{ account.currency_symbol }}{{ "{:,.2f}".format(mortgage_payoff.total_interest_remaining) }}</div>
+    </div>
+</div>
+<div class="chart-container" style="height:320px;margin-bottom:1.5rem">
+    <canvas id="payoffChart"></canvas>
+</div>
+{% elif account.account_type.value == "mortgage" %}
+<div style="margin-bottom:1.5rem;padding:0.75rem 1rem;border-left:4px solid var(--pico-muted-border-color)">
+    <strong>Payoff projection unavailable.</strong>
+    Import a mortgage statement PDF to automatically extract the interest rate and monthly payment,
+    or <a href="/accounts/{{ account.id }}/edit">edit the account</a> to enter them manually.
+</div>
+{% endif %}
+
 {% if category_summary %}
 <h2>Spending by Category</h2>
 <div class="grid">
@@ -240,6 +275,87 @@
 {% endblock %}
 
 {% block scripts %}
+{% if mortgage_payoff %}
+<script>
+(function() {
+    const sym = {{ account.currency_symbol | tojson }};
+    const schedule = {{ mortgage_payoff.schedule | tojson }};
+    const labels = schedule.map(s => s.label);
+    const balances = schedule.map(s => s.balance);
+    const interests = schedule.map(s => s.interest);
+    const principals = schedule.map(s => s.principal);
+
+    const ctx = document.getElementById('payoffChart');
+    if (!ctx) return;
+    new Chart(ctx.getContext('2d'), {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                {
+                    label: 'Outstanding Balance',
+                    data: balances,
+                    borderColor: '#dc2626',
+                    backgroundColor: 'rgba(220,38,38,0.08)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 0,
+                    yAxisID: 'yBalance',
+                },
+                {
+                    label: 'Interest Portion',
+                    data: interests,
+                    borderColor: '#f59e0b',
+                    backgroundColor: 'transparent',
+                    tension: 0.3,
+                    pointRadius: 0,
+                    yAxisID: 'yPayment',
+                },
+                {
+                    label: 'Principal Portion',
+                    data: principals,
+                    borderColor: '#16a34a',
+                    backgroundColor: 'transparent',
+                    tension: 0.3,
+                    pointRadius: 0,
+                    yAxisID: 'yPayment',
+                },
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { position: 'top' },
+                tooltip: {
+                    callbacks: {
+                        label: ctx => ctx.dataset.label + ': ' + sym +
+                            ctx.parsed.y.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})
+                    }
+                }
+            },
+            scales: {
+                yBalance: {
+                    type: 'linear',
+                    position: 'left',
+                    title: { display: true, text: 'Balance' },
+                    ticks: { callback: v => sym + v.toLocaleString() }
+                },
+                yPayment: {
+                    type: 'linear',
+                    position: 'right',
+                    grid: { drawOnChartArea: false },
+                    title: { display: true, text: 'Monthly split' },
+                    ticks: { callback: v => sym + v.toLocaleString() }
+                }
+            }
+        }
+    });
+})();
+</script>
+{% endif %}
+
 {% if category_summary %}
 <script>
 const catColors = ['#2563eb','#16a34a','#f59e0b','#8b5cf6','#ec4899','#06b6d4','#84cc16','#f97316','#ef4444','#6366f1','#14b8a6','#d946ef','#fb923c','#a3e635','#38bdf8','#818cf8'];

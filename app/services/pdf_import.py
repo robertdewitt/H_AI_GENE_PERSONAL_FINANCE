@@ -61,6 +61,144 @@ def pdf_to_dataframe(filepath: str) -> pd.DataFrame:
     return df
 
 
+def extract_mortgage_metadata(filepath: str) -> dict | None:
+    """Extract key loan facts from a mortgage statement PDF.
+
+    Returns a dict with any of the following keys found:
+      outstanding_balance  – current principal balance (float)
+      interest_rate        – annual rate as a decimal, e.g. 0.0425 (float)
+      monthly_payment      – regular payment amount (float)
+      original_balance     – original loan amount (float)
+      remaining_term_months– months left on the loan (int)
+
+    Returns None if the file is not a mortgage statement or nothing is found.
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        return None
+
+    try:
+        with pdfplumber.open(filepath) as pdf:
+            full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    except Exception:
+        return None
+
+    if not _is_mortgage_statement(full_text):
+        return None
+
+    result: dict = {}
+    lines = full_text.splitlines()
+
+    # ── Patterns ──────────────────────────────────────────────────────
+    # Balance patterns: match a label line followed by or containing an amount
+    _BALANCE_LABELS = re.compile(
+        r"(?:outstanding\s+principal|principal\s+balance|current\s+balance"
+        r"|remaining\s+balance|loan\s+balance|unpaid\s+balance"
+        r"|current\s+principal\s+balance)[^\d$£€]*([£$€]?[\d,]+\.?\d*)",
+        re.IGNORECASE,
+    )
+    _RATE_LABELS = re.compile(
+        r"(?:interest\s+rate|annual\s+percentage\s+rate|apr|note\s+rate"
+        r"|current\s+rate|your\s+rate)[^\d]*(\d+\.?\d*)\s*%",
+        re.IGNORECASE,
+    )
+    _PAYMENT_LABELS = re.compile(
+        r"(?:regular\s+payment|monthly\s+payment|scheduled\s+payment"
+        r"|payment\s+amount|total\s+payment\s+due|next\s+payment\s+amount"
+        r"|instalment\s+amount|installment\s+amount"
+        r"|monthly\s+installment)[^\d$£€]*([£$€]?[\d,]+\.?\d*)",
+        re.IGNORECASE,
+    )
+    _ORIGINAL_LABELS = re.compile(
+        r"(?:original\s+(?:loan\s+)?(?:amount|principal|balance)"
+        r"|loan\s+amount)[^\d$£€]*([£$€]?[\d,]+\.?\d*)",
+        re.IGNORECASE,
+    )
+    _TERM_LABELS = re.compile(
+        r"(?:remaining\s+term|months\s+remaining|term\s+remaining)[^\d]*(\d+)\s*(?:months?)?",
+        re.IGNORECASE,
+    )
+
+    # Scan full text with multi-line patterns
+    m = _BALANCE_LABELS.search(full_text)
+    if m:
+        try:
+            result["outstanding_balance"] = float(
+                m.group(1).replace("£", "").replace("$", "").replace("€", "").replace(",", "")
+            )
+        except ValueError:
+            pass
+
+    m = _RATE_LABELS.search(full_text)
+    if m:
+        try:
+            result["interest_rate"] = float(m.group(1)) / 100.0
+        except ValueError:
+            pass
+
+    m = _PAYMENT_LABELS.search(full_text)
+    if m:
+        try:
+            result["monthly_payment"] = float(
+                m.group(1).replace("£", "").replace("$", "").replace("€", "").replace(",", "")
+            )
+        except ValueError:
+            pass
+
+    m = _ORIGINAL_LABELS.search(full_text)
+    if m:
+        try:
+            result["original_balance"] = float(
+                m.group(1).replace("£", "").replace("$", "").replace("€", "").replace(",", "")
+            )
+        except ValueError:
+            pass
+
+    m = _TERM_LABELS.search(full_text)
+    if m:
+        try:
+            result["remaining_term_months"] = int(m.group(1))
+        except ValueError:
+            pass
+
+    # Fallback: look for key–value pairs on adjacent lines
+    # e.g.  "Interest Rate"  (line N)   "4.250%"  (line N+1)
+    if "interest_rate" not in result or "monthly_payment" not in result:
+        for i, line in enumerate(lines):
+            line_l = line.strip().lower()
+            next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
+
+            if "interest_rate" not in result and re.search(
+                r"interest\s+rate|note\s+rate|current\s+rate", line_l
+            ):
+                rate_m = re.search(r"(\d+\.?\d*)\s*%", next_line)
+                if not rate_m:
+                    rate_m = re.search(r"(\d+\.?\d*)\s*%", line)
+                if rate_m:
+                    try:
+                        result["interest_rate"] = float(rate_m.group(1)) / 100.0
+                    except ValueError:
+                        pass
+
+            if "monthly_payment" not in result and re.search(
+                r"(?:regular|monthly|scheduled|instalment|installment)\s+payment"
+                r"|payment\s+amount", line_l
+            ):
+                amt_m = re.search(
+                    r"[£$€]?\s*([\d,]+\.?\d*)", next_line
+                )
+                if not amt_m:
+                    amt_m = re.search(r"[£$€]\s*([\d,]+\.?\d*)", line)
+                if amt_m:
+                    try:
+                        result["monthly_payment"] = float(amt_m.group(1).replace(",", ""))
+                    except ValueError:
+                        pass
+
+    return result if result else None
+
+
 def _is_mortgage_statement(text: str) -> bool:
     return bool(re.search(r"mortgage\s+statement|loan\s+statement|outstanding\s+principal", text, re.I))
 

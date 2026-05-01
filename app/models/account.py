@@ -88,6 +88,8 @@ class Account(Base):
     statement_balance: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     statement_balance_as_of: Mapped[datetime | None] = mapped_column(DateTime)
     original_principal_balance: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    interest_rate: Mapped[float | None] = mapped_column(Float)        # annual rate, e.g. 0.0425 = 4.25%
+    monthly_payment: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     balance_confidence: Mapped[float | None] = mapped_column(Float)
     balance_stale_hint: Mapped[bool | None] = mapped_column(Boolean)
     liability_balance_stale: Mapped[bool | None] = mapped_column(Boolean)

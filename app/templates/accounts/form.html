@@ -52,6 +52,19 @@
         <small>Used to calculate how long you've held the asset and value changes over time.</small>
     </div>
 
+    <div id="mortgage-fields" style="display:none">
+        <label for="interest_rate">Annual Interest Rate (%)</label>
+        <input type="number" id="interest_rate" name="interest_rate" step="0.0001" min="0" max="100"
+               value="{{ (account.interest_rate * 100) | round(4) if account and account.interest_rate else '' }}"
+               placeholder="e.g., 4.25">
+        <small>Imported automatically from PDF statements. Used for payoff projection.</small>
+
+        <label for="monthly_payment">Monthly Payment</label>
+        <input type="number" id="monthly_payment" name="monthly_payment" step="0.01"
+               value="{{ account.monthly_payment if account and account.monthly_payment is not none else '' }}"
+               placeholder="e.g., 1850.00">
+    </div>
+
     <div id="real-estate-fields" style="display:none">
         <label for="property_address">Property Address</label>
         <div style="position:relative">
@@ -112,6 +125,8 @@ function updateAssetFields() {
         _PHYSICAL_ASSET_TYPES.includes(val) ? 'block' : 'none';
     document.getElementById('real-estate-fields').style.display =
         val === 'real_estate' ? 'block' : 'none';
+    document.getElementById('mortgage-fields').style.display =
+        val === 'mortgage' ? 'block' : 'none';
 }
 document.getElementById('account_type').addEventListener('change', updateAssetFields);
 updateAssetFields();

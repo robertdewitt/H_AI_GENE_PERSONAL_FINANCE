@@ -109,6 +109,8 @@ def account_create(
     purchase_price: str = Form(""),
     purchase_date: str = Form(""),
     linked_mortgage_account_id: str = Form(""),
+    interest_rate: str = Form(""),
+    monthly_payment: str = Form(""),
     db: Session = Depends(get_db),
 ):
     acct_type = AccountType(account_type)
@@ -167,6 +169,19 @@ def account_create(
         elif acct.purchase_price and not acct.current_value:
             acct.current_value = acct.purchase_price
             acct.value_as_of_date = datetime.now()
+        db.commit()
+
+    if acct_type == AccountType.MORTGAGE:
+        if interest_rate.strip():
+            try:
+                acct.interest_rate = float(interest_rate) / 100.0
+            except ValueError:
+                pass
+        if monthly_payment.strip():
+            try:
+                acct.monthly_payment = Decimal(monthly_payment)
+            except Exception:
+                pass
         db.commit()
 
     return RedirectResponse(url="/accounts", status_code=303)
@@ -327,6 +342,58 @@ def account_detail(
                     db, acct.linked_mortgage_account_id, target_currency=acct.currency,
                 )
 
+    # Mortgage payoff projection data
+    mortgage_payoff = None
+    if acct.account_type.value == "mortgage":
+        current_balance = abs(float(balance)) if balance else 0.0
+        # Use statement_balance if available and more accurate
+        if acct.statement_balance and float(acct.statement_balance) > 0:
+            current_balance = float(acct.statement_balance)
+        rate = float(acct.interest_rate) if acct.interest_rate else None
+        payment = float(acct.monthly_payment) if acct.monthly_payment else None
+        if current_balance > 0 and rate and payment and payment > 0:
+            monthly_rate = rate / 12.0
+            if monthly_rate > 0 and payment > current_balance * monthly_rate:
+                # Build amortization schedule (cap at 480 months = 40 years)
+                schedule = []
+                bal = current_balance
+                total_interest = 0.0
+                from datetime import date
+                month_dt = date.today().replace(day=1)
+                import calendar
+                for _ in range(480):
+                    interest = bal * monthly_rate
+                    principal = payment - interest
+                    if principal <= 0:
+                        break
+                    bal -= principal
+                    total_interest += interest
+                    if bal < 0:
+                        bal = 0.0
+                    # advance one month
+                    yr, mo = month_dt.year, month_dt.month
+                    if mo == 12:
+                        month_dt = month_dt.replace(year=yr + 1, month=1)
+                    else:
+                        month_dt = month_dt.replace(month=mo + 1)
+                    schedule.append({
+                        "label": month_dt.strftime("%b %Y"),
+                        "balance": round(bal, 2),
+                        "interest": round(interest, 2),
+                        "principal": round(principal, 2),
+                    })
+                    if bal <= 0:
+                        break
+                payoff_date = schedule[-1]["label"] if schedule else None
+                mortgage_payoff = {
+                    "current_balance": current_balance,
+                    "interest_rate_pct": round(rate * 100, 4),
+                    "monthly_payment": payment,
+                    "payoff_date": payoff_date,
+                    "total_interest_remaining": round(total_interest, 2),
+                    "schedule": schedule,
+                }
+
     return templates.TemplateResponse(request, "accounts/detail.html", {
         "account": acct,
         "balance": balance,
@@ -339,6 +406,7 @@ def account_detail(
         "prop_status": prop_status,
         "mortgage_account": mortgage_account,
         "mortgage_balance": mortgage_balance,
+        "mortgage_payoff": mortgage_payoff,
         "now": datetime.now(),
     })
 
@@ -378,6 +446,8 @@ def account_update(
     purchase_price: str = Form(""),
     purchase_date: str = Form(""),
     linked_mortgage_account_id: str = Form(""),
+    interest_rate: str = Form(""),
+    monthly_payment: str = Form(""),
     db: Session = Depends(get_db),
 ):
     acct_type = AccountType(account_type)
@@ -433,6 +503,23 @@ def account_update(
         elif acct.purchase_price and not acct.current_value:
             acct.current_value = acct.purchase_price
             acct.value_as_of_date = datetime.now()
+        db.commit()
+
+    if acct_type == AccountType.MORTGAGE:
+        if interest_rate.strip():
+            try:
+                acct.interest_rate = float(interest_rate) / 100.0
+            except ValueError:
+                pass
+        elif not interest_rate.strip():
+            acct.interest_rate = None
+        if monthly_payment.strip():
+            try:
+                acct.monthly_payment = Decimal(monthly_payment)
+            except Exception:
+                pass
+        elif not monthly_payment.strip():
+            acct.monthly_payment = None
         db.commit()
 
     return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)

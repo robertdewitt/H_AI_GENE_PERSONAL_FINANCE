@@ -105,6 +105,8 @@ def init_db():
         _col("accounts", "statement_balance",          "REAL")
         _col("accounts", "statement_balance_as_of",    "DATETIME")
         _col("accounts", "original_principal_balance", "REAL")
+        _col("accounts", "interest_rate",              "REAL")
+        _col("accounts", "monthly_payment",            "REAL")
         _col("accounts", "balance_confidence",         "REAL")
         _col("accounts", "balance_stale_hint",         "BOOLEAN")
         _col("accounts", "liability_balance_stale",    "BOOLEAN")
