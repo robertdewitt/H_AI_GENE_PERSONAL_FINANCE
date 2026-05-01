@@ -55,8 +55,42 @@ def address_search(q: str = Query(..., min_length=3)):
         return JSONResponse([])
 
 
+_SPEND_PRESETS = [
+    ("1y",  "1 Year"),
+    ("ytd", "YTD"),
+    ("2y",  "2 Years"),
+    ("mtd", "MTD"),
+    ("all", "All"),
+]
+
+def _preset_to_since(preset: str | None) -> datetime:
+    from datetime import date
+    today = datetime.now()
+    if preset == "ytd":
+        return datetime(today.year, 1, 1)
+    if preset == "mtd":
+        return datetime(today.year, today.month, 1)
+    if preset == "2y":
+        return today - timedelta(days=730)
+    if preset == "all":
+        return datetime(2000, 1, 1)
+    return today - timedelta(days=365)   # default: 1y
+
+
 @router.get("", response_class=HTMLResponse)
-def accounts_list(request: Request, db: Session = Depends(get_db)):
+def accounts_list(
+    request: Request,
+    preset: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    from sqlalchemy import func as sa_func, select as sa_select
+    from app.models.transaction import Transaction
+    from app.models.category import Category
+    from app.config import settings as _settings
+
+    if preset is None:
+        preset = "1y"
+
     profile = get_profile(db)
     display_ccy = profile.display_currency or "USD"
 
@@ -73,12 +107,72 @@ def accounts_list(request: Request, db: Session = Depends(get_db)):
         for item in items
         if not item["account"].is_asset
     )
+
+    since = _preset_to_since(preset)
+
+    if _settings.db_backend == "postgresql":
+        _ym = sa_func.to_char(Transaction.date, "YYYY-MM")
+    else:
+        _ym = sa_func.strftime("%Y-%m", Transaction.date)
+
+    monthly_rows = db.execute(
+        sa_select(
+            _ym.label("month"),
+            Category.name.label("category"),
+            sa_func.sum(Transaction.amount).label("total"),
+        )
+        .join(Category, Transaction.category_id == Category.id)
+        .where(
+            Transaction.amount < 0,
+            Transaction.date >= since,
+        )
+        .group_by("month", Category.name)
+        .order_by("month", Category.name)
+    ).all()
+
+    months_ordered = sorted({r.month for r in monthly_rows})
+    cat_totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0.00"))
+    spend_map: dict[str, dict[str, Decimal]] = defaultdict(
+        lambda: defaultdict(lambda: Decimal("0.00"))
+    )
+    for r in monthly_rows:
+        amt = abs(r.total or Decimal("0.00"))
+        spend_map[r.month][r.category] = amt
+        cat_totals[r.category] += amt
+
+    sorted_cats = sorted(cat_totals, key=lambda c: cat_totals[c], reverse=True)
+
+    _COLORS = [
+        "#2563eb", "#16a34a", "#f59e0b", "#8b5cf6", "#ec4899",
+        "#06b6d4", "#84cc16", "#f97316", "#ef4444", "#6366f1",
+        "#14b8a6", "#d946ef", "#fb923c", "#a3e635", "#38bdf8", "#818cf8",
+    ]
+    spend_labels = []
+    for m in months_ordered:
+        try:
+            spend_labels.append(datetime.strptime(m, "%Y-%m").strftime("%b %Y"))
+        except ValueError:
+            spend_labels.append(m)
+
+    spend_datasets = [
+        {
+            "label": cat,
+            "data": [round(float(spend_map[m].get(cat, Decimal("0.00"))), 2) for m in months_ordered],
+            "backgroundColor": _COLORS[i % len(_COLORS)],
+        }
+        for i, cat in enumerate(sorted_cats)
+    ]
+
     return templates.TemplateResponse(request, "accounts/list.html", {
         "groups": groups,
         "total_assets": total_assets,
         "total_liabilities": total_liabilities,
         "net_worth": total_assets - total_liabilities,
         "display_currency": display_ccy,
+        "preset": preset,
+        "presets": _SPEND_PRESETS,
+        "spend_labels": spend_labels,
+        "spend_datasets": spend_datasets,
     })
 
 

@@ -28,6 +28,21 @@
 
 <p><a href="/accounts/new" role="button">+ Add Account</a></p>
 
+{% if spend_datasets %}
+<h2 style="margin-bottom:0.5rem">Expenses by Category</h2>
+<div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.75rem;align-items:center">
+    {% for p, label in presets %}
+    <a href="/accounts?preset={{ p }}"
+       role="button"
+       style="margin:0;padding:0.3rem 0.8rem;font-size:0.85rem"
+       class="{{ '' if preset == p else 'outline' }}">{{ label }}</a>
+    {% endfor %}
+</div>
+<div class="chart-container" style="height:340px;margin-bottom:2rem">
+    <canvas id="spendChart"></canvas>
+</div>
+{% endif %}
+
 {% if groups %}
     {% for group_name, items in groups.items() %}
     <div class="account-group">
@@ -55,5 +70,52 @@
     <h3>No accounts yet</h3>
     <p>Add your first account to start tracking your finances.</p>
 </div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if spend_datasets %}
+<script>
+(function() {
+    const symMap = {"USD":"$","GBP":"£","EUR":"€","JPY":"¥","AUD":"A$","CAD":"C$","CHF":"Fr","HKD":"HK$","SGD":"S$","NZD":"NZ$"};
+    const sym = symMap[{{ display_currency | tojson }}] || {{ display_currency | tojson }} + ' ';
+    const labels   = {{ spend_labels | tojson }};
+    const datasets = {{ spend_datasets | tojson }};
+    const ctx = document.getElementById('spendChart');
+    if (!ctx) return;
+    new Chart(ctx.getContext('2d'), {
+        type: 'bar',
+        data: { labels, datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index' },
+            scales: {
+                x: { stacked: true },
+                y: {
+                    stacked: true,
+                    beginAtZero: true,
+                    ticks: { callback: v => sym + v.toLocaleString(undefined, {minimumFractionDigits: 0}) }
+                }
+            },
+            plugins: {
+                legend: { position: 'bottom', labels: { boxWidth: 12 } },
+                tooltip: {
+                    callbacks: {
+                        label: ctx => {
+                            if (ctx.parsed.y === 0) return null;
+                            return ctx.dataset.label + ': ' + sym + ctx.parsed.y.toLocaleString(undefined, {minimumFractionDigits: 2});
+                        },
+                        footer: items => {
+                            const total = items.reduce((s, i) => s + i.parsed.y, 0);
+                            return 'Total: ' + sym + total.toLocaleString(undefined, {minimumFractionDigits: 2});
+                        }
+                    }
+                }
+            }
+        }
+    });
+})();
+</script>
 {% endif %}
 {% endblock %}

@@ -2,13 +2,11 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.account import Account
-from app.models.asset_valuation import AssetValuation
-from app.models.transaction import Transaction
 from app.schemas.net_worth import AccountBalance, NetWorthSnapshot, NetWorthTimeSeries
 from app.services.account_service import get_account_balance
 
@@ -74,22 +72,7 @@ def compute_net_worth_series(
     base_ccy = target_currency or settings.base_currency
     snapshots: list[NetWorthSnapshot] = []
 
-    earliest_txn = db.execute(
-        select(func.min(Transaction.date))
-    ).scalar()
-
-    earliest_valuation = db.execute(
-        select(func.min(AssetValuation.date))
-    ).scalar()
-
-    start_candidates = [now - timedelta(days=months * 30)]
-    if earliest_txn:
-        start_candidates.append(earliest_txn)
-    if earliest_valuation:
-        start_candidates.append(earliest_valuation)
-
-    start = max(start_candidates)
-
+    start = now - timedelta(days=months * 30)
     current = datetime(start.year, start.month, 1)
     while current <= now:
         last_day = (
