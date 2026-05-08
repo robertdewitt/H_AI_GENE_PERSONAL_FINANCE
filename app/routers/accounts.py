@@ -309,7 +309,7 @@ def account_detail(
         .limit(50)
     ).scalars().all()
 
-    # Category spending summary for this account
+    # Category spending summary for this account (transfers excluded)
     cat_rows = db.execute(
         sa_select(
             Category.name,
@@ -317,7 +317,10 @@ def account_detail(
             sa_func.sum(Transaction.amount).label("total"),
         )
         .join(Category, Transaction.category_id == Category.id)
-        .where(Transaction.account_id == account_id)
+        .where(
+            Transaction.account_id == account_id,
+            Transaction.is_transfer.is_(False),
+        )
         .group_by(Category.name)
         .order_by(sa_func.sum(Transaction.amount))
     ).all()
@@ -334,6 +337,7 @@ def account_detail(
         .where(
             Transaction.account_id == account_id,
             Transaction.category_id.is_(None),
+            Transaction.is_transfer.is_(False),
         )
     ).one()
     if uncategorized[0]:
