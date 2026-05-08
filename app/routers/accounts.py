@@ -124,6 +124,7 @@ def accounts_list(
         .join(Category, Transaction.category_id == Category.id)
         .where(
             Transaction.amount < 0,
+            Transaction.is_transfer.is_(False),
             Transaction.date >= since,
         )
         .group_by("month", Category.name)
@@ -361,6 +362,7 @@ def account_detail(
         .where(
             Transaction.account_id == account_id,
             Transaction.amount < 0,
+            Transaction.is_transfer.is_(False),
             Transaction.date >= since_12m,
         )
         .group_by("month", Category.name)
