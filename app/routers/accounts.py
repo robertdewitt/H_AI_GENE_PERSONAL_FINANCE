@@ -441,11 +441,12 @@ def account_detail(
                 )
 
     # Liability balance history (one row per statement uploaded)
+    from sqlalchemy import select as _select
     from app.models.snapshots import LiabilityBalanceSnapshot
     liability_balance_history = []
     if not acct.is_asset:
         snaps = db.execute(
-            select(LiabilityBalanceSnapshot)
+            _select(LiabilityBalanceSnapshot)
             .where(LiabilityBalanceSnapshot.account_id == acct.id)
             .order_by(LiabilityBalanceSnapshot.as_of_date)
         ).scalars().all()

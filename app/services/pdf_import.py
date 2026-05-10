@@ -92,35 +92,38 @@ def extract_mortgage_metadata(filepath: str) -> dict | None:
 
     # ── Patterns ──────────────────────────────────────────────────────
     # Balance patterns: match a label line followed by or containing an amount
+    # NOTE: pdfplumber often strips spaces between words in structured boxes,
+    # producing e.g. "OutstandingPrincipal:" instead of "Outstanding Principal:".
+    # All word-boundary \s+ are written as \s* so they match with or without spaces.
     _BALANCE_LABELS = re.compile(
-        r"(?:outstanding\s+principal|principal\s+balance|current\s+balance"
-        r"|remaining\s+balance|loan\s+balance|unpaid\s+balance"
-        r"|current\s+principal\s+balance)[^\d$£€]*([£$€]?[\d,]+\.?\d*)",
+        r"(?:outstanding\s*principal|principal\s*balance|current\s*balance"
+        r"|remaining\s*balance|loan\s*balance|unpaid\s*balance"
+        r"|current\s*principal\s*balance)[^\d$£€]*([£$€]?[\d,]+\.?\d*)",
         re.IGNORECASE,
     )
     _RATE_LABELS = re.compile(
-        r"(?:interest\s+rate|annual\s+percentage\s+rate|apr|note\s+rate"
-        r"|current\s+rate|your\s+rate)[^\d]*(\d+\.?\d*)\s*%",
+        r"(?:interest\s*rate|annual\s*percentage\s*rate|apr|note\s*rate"
+        r"|current\s*rate|your\s*rate)[^\d]*(\d+\.?\d*)\s*%",
         re.IGNORECASE,
     )
     _PAYMENT_LABELS = re.compile(
-        r"(?:regular\s+payment|monthly\s+payment|scheduled\s+payment"
-        r"|payment\s+amount|total\s+payment\s+due|next\s+payment\s+amount"
-        r"|instalment\s+amount|installment\s+amount"
-        r"|monthly\s+installment)[^\d$£€]*([£$€]?[\d,]+\.?\d*)",
+        r"(?:regular\s*(?:monthly\s*)?payment|monthly\s*payment|scheduled\s*payment"
+        r"|payment\s*amount|total\s*payment\s*due|next\s*payment\s*amount"
+        r"|instalment\s*amount|installment\s*amount"
+        r"|monthly\s*installment)[^\d$£€]*([£$€]?[\d,]+\.?\d*)",
         re.IGNORECASE,
     )
     _ORIGINAL_LABELS = re.compile(
-        r"(?:original\s+(?:loan\s+)?(?:amount|principal|balance)"
-        r"|loan\s+amount)[^\d$£€]*([£$€]?[\d,]+\.?\d*)",
+        r"(?:original\s*(?:loan\s*)?(?:amount|principal|balance)"
+        r"|loan\s*amount)[^\d$£€]*([£$€]?[\d,]+\.?\d*)",
         re.IGNORECASE,
     )
     _TERM_LABELS = re.compile(
-        r"(?:remaining\s+term|months\s+remaining|term\s+remaining)[^\d]*(\d+)\s*(?:months?)?",
+        r"(?:remaining\s*term|months\s*remaining|term\s*remaining)[^\d]*(\d+)\s*(?:months?)?",
         re.IGNORECASE,
     )
     _STATEMENT_DATE_LABELS = re.compile(
-        r"(?:statement\s+date|as\s+of\s+date|closing\s+date|period\s+end(?:ing)?)"
+        r"(?:statement\s*date|as\s*of\s*date|closing\s*date|period\s*end(?:ing)?)"
         r"[:\s]+(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}|\w+\s+\d{1,2},?\s+\d{4})",
         re.IGNORECASE,
     )
@@ -194,8 +197,8 @@ def extract_mortgage_metadata(filepath: str) -> dict | None:
             combined = line.strip() + " " + next_line
 
             if needs_balance and re.search(
-                r"outstanding\s+principal|principal\s+balance|current\s+balance"
-                r"|remaining\s+balance|loan\s+balance|unpaid\s+balance",
+                r"outstanding\s*principal|principal\s*balance|current\s*balance"
+                r"|remaining\s*balance|loan\s*balance|unpaid\s*balance",
                 line_l,
             ):
                 amt_m = re.search(r"[£$€]\s*([\d,]+\.?\d*)", combined)
@@ -211,7 +214,7 @@ def extract_mortgage_metadata(filepath: str) -> dict | None:
                         pass
 
             if needs_rate and re.search(
-                r"interest\s+rate|note\s+rate|current\s+rate", line_l
+                r"interest\s*rate|note\s*rate|current\s*rate", line_l
             ):
                 rate_m = re.search(r"(\d+\.?\d*)\s*%", combined)
                 if rate_m:
@@ -222,8 +225,8 @@ def extract_mortgage_metadata(filepath: str) -> dict | None:
                         pass
 
             if needs_payment and re.search(
-                r"(?:regular|monthly|scheduled|instalment|installment)\s+payment"
-                r"|payment\s+amount",
+                r"(?:regular|monthly|scheduled|instalment|installment)\s*(?:monthly\s*)?payment"
+                r"|payment\s*amount",
                 line_l,
             ):
                 amt_m = re.search(r"[£$€]\s*([\d,]+\.?\d*)", combined)
