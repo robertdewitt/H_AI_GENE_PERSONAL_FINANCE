@@ -11,6 +11,8 @@ from app.models.reconciliation import ReconciliationGroup, ReconciliationMember
 from app.models.payment_decomposition import PaymentDecomposition
 from app.models.transaction_split import TransactionSplit
 from app.models.instrument import Instrument, PositionLot, PriceSnapshot
+from app.models.stock_trade import StockTrade
+from app.models.stock_dividend import StockDividend
 from app.models.rental_property import RentalProperty
 from app.models.financial_document import (
     FinancialDocument,
@@ -50,5 +52,7 @@ __all__ = [
     "Instrument",
     "PositionLot",
     "PriceSnapshot",
+    "StockTrade",
+    "StockDividend",
     "UserProfile",
 ]

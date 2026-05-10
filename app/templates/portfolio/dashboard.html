@@ -1,0 +1,264 @@
+{% extends "base.html" %}
+{% block title %}Portfolio &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Portfolio</h1>
+    <p>Investment positions, performance, and trade history</p>
+</hgroup>
+
+{# ── Summary cards ──────────────────────────────────────────────────── #}
+<div class="summary-grid">
+    <div class="summary-card">
+        <div class="label">Portfolio Value</div>
+        <div class="value positive">{{ currency_symbol }}{{ "{:,.2f}".format(total_current_value) }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Unrealized P&amp;L</div>
+        <div class="value {% if total_unrealized_pnl >= 0 %}positive{% else %}negative{% endif %}">
+            {% if total_unrealized_pnl >= 0 %}+{% endif %}{{ currency_symbol }}{{ "{:,.2f}".format(total_unrealized_pnl) }}
+        </div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Realized P&amp;L</div>
+        <div class="value {% if total_realized_pnl >= 0 %}positive{% else %}negative{% endif %}">
+            {% if total_realized_pnl >= 0 %}+{% endif %}{{ currency_symbol }}{{ "{:,.2f}".format(total_realized_pnl) }}
+        </div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Dividends Received</div>
+        <div class="value positive">{{ currency_symbol }}{{ "{:,.2f}".format(total_dividends) }}</div>
+    </div>
+</div>
+
+<div style="text-align:right;margin-bottom:1rem">
+    <a href="/portfolio/refresh-prices" role="button" class="outline" style="padding:0.3rem 0.9rem;font-size:0.85rem">
+        &#8635; Refresh Prices
+    </a>
+</div>
+
+{# ── Portfolio value over time ──────────────────────────────────────── #}
+{% if portfolio_history %}
+<h2>Portfolio Value Over Time</h2>
+<div class="chart-container" style="height:320px">
+    <canvas id="portfolioChart"></canvas>
+</div>
+{% endif %}
+
+{# ── Current Positions ─────────────────────────────────────────────── #}
+<h2>Current Positions</h2>
+{% if positions %}
+<div style="overflow-x:auto">
+<table>
+    <thead>
+        <tr>
+            <th>Symbol</th>
+            <th>Name</th>
+            <th style="text-align:right">Qty</th>
+            <th style="text-align:right">Avg Cost</th>
+            <th style="text-align:right">Current Price</th>
+            <th style="text-align:right">Value</th>
+            <th style="text-align:right">Unrealized P&amp;L</th>
+            <th style="text-align:right">%</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for pos in positions %}
+        <tr>
+            <td><strong>{{ pos.symbol }}</strong></td>
+            <td>{{ pos.name }}</td>
+            <td style="text-align:right">{{ "{:,.4g}".format(pos.qty) }}</td>
+            <td style="text-align:right">
+                {% if pos.cost_price_avg %}
+                    {{ currency_symbol }}{{ "{:,.2f}".format(pos.cost_price_avg) }}
+                {% else %}
+                    &mdash;
+                {% endif %}
+            </td>
+            <td style="text-align:right">
+                {% if pos.current_price %}
+                    {{ currency_symbol }}{{ "{:,.2f}".format(pos.current_price) }}
+                {% else %}
+                    &mdash;
+                {% endif %}
+            </td>
+            <td style="text-align:right">
+                {{ currency_symbol }}{{ "{:,.2f}".format(pos.current_value) }}
+            </td>
+            <td style="text-align:right" class="txn-amount {% if pos.unrealized_pnl >= 0 %}positive{% else %}negative{% endif %}">
+                {% if pos.unrealized_pnl >= 0 %}+{% endif %}{{ currency_symbol }}{{ "{:,.2f}".format(pos.unrealized_pnl) }}
+            </td>
+            <td style="text-align:right" class="txn-amount {% if pos.unrealized_pnl_pct >= 0 %}positive{% else %}negative{% endif %}">
+                {% if pos.unrealized_pnl_pct >= 0 %}+{% endif %}{{ "{:,.2f}".format(pos.unrealized_pnl_pct) }}%
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% else %}
+<p><em>No positions found. Import an IBKR statement to get started.</em></p>
+{% endif %}
+
+{# ── Recent Trades ─────────────────────────────────────────────────── #}
+<h2>Recent Trades</h2>
+{% if trades %}
+<div style="overflow-x:auto">
+<table>
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Symbol</th>
+            <th>Action</th>
+            <th style="text-align:right">Qty</th>
+            <th style="text-align:right">Price</th>
+            <th style="text-align:right">Proceeds</th>
+            <th style="text-align:right">Realized P&amp;L</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for t in trades %}
+        <tr>
+            <td>{{ t.date.strftime("%Y-%m-%d") }}</td>
+            <td><strong>{{ t.symbol }}</strong></td>
+            <td>
+                {% if t.quantity > 0 %}
+                    <span style="color:var(--pico-color-green-500,#16a34a)">Buy</span>
+                {% else %}
+                    <span style="color:var(--pico-color-red-500,#dc2626)">Sell</span>
+                {% endif %}
+            </td>
+            <td style="text-align:right">{{ "{:,.4g}".format(t.quantity | abs) }}</td>
+            <td style="text-align:right">
+                {% if t.price %}{{ currency_symbol }}{{ "{:,.4f}".format(t.price) }}{% else %}&mdash;{% endif %}
+            </td>
+            <td style="text-align:right">
+                {% if t.proceeds %}{{ currency_symbol }}{{ "{:,.2f}".format(t.proceeds | abs) }}{% else %}&mdash;{% endif %}
+            </td>
+            <td style="text-align:right">
+                {% if t.quantity < 0 and t.realized_pnl is not none %}
+                    <span class="txn-amount {% if t.realized_pnl >= 0 %}positive{% else %}negative{% endif %}">
+                        {% if t.realized_pnl >= 0 %}+{% endif %}{{ currency_symbol }}{{ "{:,.2f}".format(t.realized_pnl) }}
+                    </span>
+                {% else %}
+                    &mdash;
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% else %}
+<p><em>No trades recorded yet.</em></p>
+{% endif %}
+
+{# ── Dividends ─────────────────────────────────────────────────────── #}
+{% if dividends %}
+<h2>Dividends</h2>
+<div style="overflow-x:auto">
+<table>
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Symbol</th>
+            <th>Description</th>
+            <th style="text-align:right">Amount</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for d in dividends %}
+        <tr>
+            <td>{{ d.date.strftime("%Y-%m-%d") }}</td>
+            <td><strong>{{ d.symbol }}</strong></td>
+            <td>{{ d.description or "&mdash;" }}</td>
+            <td style="text-align:right" class="txn-amount positive">
+                {{ currency_symbol }}{{ "{:,.4f}".format(d.amount) }}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+{% if portfolio_history %}
+(function () {
+    const rawDates  = {{ portfolio_history | map(attribute="date")  | list | tojson }};
+    const rawValues = {{ portfolio_history | map(attribute="value") | list | tojson }};
+    const sym       = {{ currency_symbol | tojson }};
+
+    // Show a label every ~30 data points to avoid crowding
+    const step = Math.max(1, Math.floor(rawDates.length / 30));
+    const labels = rawDates.map(function(d, i) {
+        return (i % step === 0) ? d : '';
+    });
+
+    const ctx = document.getElementById('portfolioChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Portfolio Value',
+                data: rawValues,
+                borderColor: '#2563eb',
+                backgroundColor: 'rgba(37, 99, 235, 0.10)',
+                fill: true,
+                tension: 0.3,
+                pointRadius: 0,
+                pointHoverRadius: 4,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+                mode: 'index',
+                intersect: false,
+            },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        title: function(items) {
+                            // Show the real date from rawDates (not the possibly-empty label)
+                            return rawDates[items[0].dataIndex] || '';
+                        },
+                        label: function(item) {
+                            var v = item.parsed.y;
+                            return sym + v.toLocaleString('en-US', {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                            });
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    ticks: {
+                        maxRotation: 45,
+                        autoSkip: false,
+                    }
+                },
+                y: {
+                    ticks: {
+                        callback: function(value) {
+                            return sym + value.toLocaleString('en-US', {
+                                minimumFractionDigits: 0,
+                                maximumFractionDigits: 0,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    });
+}());
+{% endif %}
+</script>
+{% endblock %}

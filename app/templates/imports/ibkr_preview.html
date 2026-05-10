@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}IBKR Statement Preview &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>IBKR Statement Preview</h1>
+    <p>Review the data extracted from your Interactive Brokers activity statement before importing</p>
+</hgroup>
+
+<article style="margin-bottom:1.5rem;padding:0.75rem 1rem;border-left:4px solid var(--pico-primary)">
+    <strong>Account:</strong> {{ account_name }}
+    {% if parsed.account_ibkr %}&nbsp;&bull;&nbsp;<strong>IBKR Account:</strong> {{ parsed.account_ibkr }}{% endif %}
+    {% if parsed.period_start %}&nbsp;&bull;&nbsp;<strong>Period:</strong>
+        {{ parsed.period_start.strftime("%Y-%m-%d") }} &ndash; {{ parsed.period_end.strftime("%Y-%m-%d") }}
+    {% endif %}
+    {% if parsed.base_currency %}&nbsp;&bull;&nbsp;<strong>Base Currency:</strong> {{ parsed.base_currency }}{% endif %}
+    {% if parsed.nav_total %}&nbsp;&bull;&nbsp;<strong>NAV:</strong> {{ "{:,.2f}".format(parsed.nav_total) }} {{ parsed.base_currency }}{% endif %}
+</article>
+
+<div style="display:flex;gap:2rem;flex-wrap:wrap;margin-bottom:1.5rem">
+    <div class="summary-card">
+        <div class="label">Positions</div>
+        <div class="value">{{ parsed.positions | length }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Trades</div>
+        <div class="value">{{ parsed.trades | length }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Dividends</div>
+        <div class="value">{{ parsed.dividends | length }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Instruments</div>
+        <div class="value">{{ parsed.instruments | length }}</div>
+    </div>
+</div>
+
+{% if parsed.positions %}
+<h2>Open Positions</h2>
+<div style="overflow-x:auto;margin-bottom:1.5rem">
+<table>
+    <thead>
+        <tr>
+            <th>Symbol</th>
+            <th style="text-align:right">Qty</th>
+            <th style="text-align:right">Cost Price</th>
+            <th style="text-align:right">Close Price</th>
+            <th style="text-align:right">Value</th>
+            <th style="text-align:right">Unrealized P&amp;L</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for pos in parsed.positions %}
+        <tr>
+            <td><strong>{{ pos.symbol }}</strong></td>
+            <td style="text-align:right">{{ "{:,.4f}".format(pos.quantity) }}</td>
+            <td style="text-align:right">{{ "{:,.4f}".format(pos.cost_price) }}</td>
+            <td style="text-align:right">{{ "{:,.4f}".format(pos.close_price) }}</td>
+            <td style="text-align:right">{{ "{:,.2f}".format(pos.value) }}</td>
+            <td style="text-align:right;color:{% if pos.unrealized_pnl >= 0 %}var(--pico-ins-color){% else %}var(--pico-del-color){% endif %}">
+                {{ "{:+,.2f}".format(pos.unrealized_pnl) }}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}
+
+{% if parsed.trades %}
+<h2>Trades ({{ parsed.trades | length }})</h2>
+<div style="overflow-x:auto;margin-bottom:1.5rem">
+<table>
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Symbol</th>
+            <th style="text-align:right">Qty</th>
+            <th style="text-align:right">Price</th>
+            <th style="text-align:right">Proceeds</th>
+            <th style="text-align:right">Commission</th>
+            <th style="text-align:right">Realized P&amp;L</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for t in parsed.trades[:50] %}
+        <tr>
+            <td>{{ t.trade_date.strftime("%Y-%m-%d") }}</td>
+            <td><strong>{{ t.symbol }}</strong></td>
+            <td style="text-align:right">{{ "{:,.4f}".format(t.quantity) }}</td>
+            <td style="text-align:right">{{ "{:,.4f}".format(t.price) }}</td>
+            <td style="text-align:right">{{ "{:,.2f}".format(t.proceeds) }}</td>
+            <td style="text-align:right">{{ "{:,.2f}".format(t.commission) }}</td>
+            <td style="text-align:right;color:{% if t.realized_pnl >= 0 %}var(--pico-ins-color){% else %}var(--pico-del-color){% endif %}">
+                {{ "{:+,.2f}".format(t.realized_pnl) }}
+            </td>
+        </tr>
+        {% endfor %}
+        {% if parsed.trades | length > 50 %}
+        <tr><td colspan="7" style="text-align:center;font-style:italic">
+            ... and {{ (parsed.trades | length) - 50 }} more trades
+        </td></tr>
+        {% endif %}
+    </tbody>
+</table>
+</div>
+{% endif %}
+
+{% if parsed.dividends %}
+<h2>Dividends ({{ parsed.dividends | length }})</h2>
+<div style="overflow-x:auto;margin-bottom:1.5rem">
+<table>
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Symbol</th>
+            <th style="text-align:right">Amount</th>
+            <th>Currency</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for d in parsed.dividends %}
+        <tr>
+            <td>{{ d.pay_date.strftime("%Y-%m-%d") }}</td>
+            <td><strong>{{ d.symbol }}</strong></td>
+            <td style="text-align:right">{{ "{:,.2f}".format(d.amount) }}</td>
+            <td>{{ d.currency }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}
+
+<form method="post" action="/import/ibkr-confirm">
+    <input type="hidden" name="account_id" value="{{ account_id }}">
+    <input type="hidden" name="filepath" value="{{ filepath }}">
+    <div style="display:flex;gap:1rem;margin-top:1rem">
+        <button type="submit">Import Statement</button>
+        <a href="/import" role="button" class="outline">Cancel</a>
+    </div>
+</form>
+{% endblock %}

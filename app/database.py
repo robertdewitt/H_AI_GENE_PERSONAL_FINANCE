@@ -156,6 +156,11 @@ def init_db():
             ("ix_instrument_symbol",  "instruments (symbol)"),
             ("ix_position_acct_inst", "position_lots (account_id, instrument_id, as_of_date)"),
             ("ix_price_inst_date",    "price_snapshots (instrument_id, as_of_date)"),
+            ("ix_stock_trade_acct",   "stock_trades (account_id, trade_date)"),
+            ("ix_stock_trade_inst",   "stock_trades (instrument_id)"),
+            ("ix_stock_trade_dedup",  "stock_trades (ibkr_dedup_key)"),
+            ("ix_stock_div_acct",     "stock_dividends (account_id, pay_date)"),
+            ("ix_stock_div_inst",     "stock_dividends (instrument_id)"),
         ]
         for name, spec in _indexes:
             conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {spec}"))

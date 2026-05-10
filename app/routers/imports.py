@@ -12,6 +12,7 @@ from app.templating import templates
 from app.models.account import Account
 from app.services.categorizer import categorize_batch
 from app.services.import_service import import_transactions, preview_file
+from app.services.ibkr_import import is_ibkr_file, parse_ibkr_csv, apply_ibkr_statement
 
 router = APIRouter(prefix="/import", tags=["import"])
 
@@ -44,6 +45,23 @@ async def upload_file(
     dest = upload_dir / file.filename
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
+
+    # Detect IBKR activity statement CSV — route to dedicated preview
+    if ext == ".csv" and is_ibkr_file(str(dest)):
+        try:
+            parsed = parse_ibkr_csv(str(dest))
+        except Exception as exc:
+            return templates.TemplateResponse(request, "imports/upload.html", {
+                "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+                "error": f"Failed to parse IBKR statement: {exc}",
+            })
+        account = db.get(Account, account_id)
+        return templates.TemplateResponse(request, "imports/ibkr_preview.html", {
+            "account_id": account_id,
+            "account_name": account.name if account else f"Account {account_id}",
+            "filepath": str(dest),
+            "parsed": parsed,
+        })
 
     preview = preview_file(str(dest))
     accounts = db.execute(
@@ -141,5 +159,31 @@ def confirm_import(
         url=f"/accounts/{account_id}?imported={batch.row_count}"
             f"&duplicates={dupes}"
             f"&categorized={cat_stats['rules'] + cat_stats['keywords'] + cat_stats['llm']}",
+        status_code=303,
+    )
+
+
+@router.post("/ibkr-confirm")
+def ibkr_confirm(
+    request: Request,
+    account_id: int = Form(...),
+    filepath: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    try:
+        parsed = parse_ibkr_csv(filepath)
+        stats = apply_ibkr_statement(db, account_id, parsed)
+    except Exception as exc:
+        accounts = db.execute(select(Account).order_by(Account.name)).scalars().all()
+        return templates.TemplateResponse(request, "imports/upload.html", {
+            "accounts": accounts,
+            "error": f"IBKR import failed: {exc}",
+        })
+
+    positions = stats["positions_updated"]
+    trades = stats["trades_added"]
+    dividends = stats["dividends_added"]
+    return RedirectResponse(
+        url=f"/portfolio?ibkr_imported=1&positions={positions}&trades={trades}&dividends={dividends}",
         status_code=303,
     )
