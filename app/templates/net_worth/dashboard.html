@@ -88,7 +88,15 @@
             <tbody>
                 {% for cs in category_summary %}
                 <tr>
-                    <td>{{ cs.name }}</td>
+                    <td>
+                        {% if cs.name | lower == "account transfer" %}
+                            <a href="/transfers">{{ cs.name }}</a>
+                        {% elif cs.id %}
+                            <a href="/transactions?category_id={{ cs.id }}">{{ cs.name }}</a>
+                        {% else %}
+                            <a href="/transactions?uncategorized=true">{{ cs.name }}</a>
+                        {% endif %}
+                    </td>
                     <td style="text-align:right">{{ "{:,}".format(cs.count) }}</td>
                     <td style="text-align:right" class="txn-amount {% if cs.total >= 0 %}positive{% else %}negative{% endif %}">
                         {{ "${:,.2f}".format(cs.total) }}

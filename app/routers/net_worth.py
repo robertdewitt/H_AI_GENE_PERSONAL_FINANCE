@@ -60,16 +60,17 @@ def net_worth_page(
     # Spending by category across ALL accounts (all transactions, including transfers)
     cat_rows = db.execute(
         select(
+            Category.id,
             Category.name,
             func.count(Transaction.id).label("txn_count"),
             func.sum(Transaction.amount).label("total"),
         )
         .join(Category, Transaction.category_id == Category.id)
-        .group_by(Category.name)
+        .group_by(Category.id, Category.name)
         .order_by(func.sum(Transaction.amount))
     ).all()
     category_summary = [
-        {"name": r.name, "count": r.txn_count, "total": r.total}
+        {"id": r.id, "name": r.name, "count": r.txn_count, "total": r.total}
         for r in cat_rows
     ]
 
@@ -82,6 +83,7 @@ def net_worth_page(
     ).one()
     if uncategorized[0]:
         category_summary.append({
+            "id": None,
             "name": "Uncategorized",
             "count": uncategorized[0],
             "total": uncategorized[1] or 0,
