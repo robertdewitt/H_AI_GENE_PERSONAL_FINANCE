@@ -11,12 +11,13 @@ import logging
 import re
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
 from app.models.category import Category
 from app.models.category_rule import CategoryRule
 from app.models.transaction import Transaction
+from app.models.transaction_split import TransactionSplit
 
 log = logging.getLogger(__name__)
 
@@ -428,9 +429,10 @@ def suggest_categories(
     Transactions with no match have category_id=None so the user can pick.
     Used by the preview route so the user can validate before applying.
     """
+    _has_splits = exists().where(TransactionSplit.transaction_id == Transaction.id)
     txns = db.execute(
         select(Transaction)
-        .where(Transaction.category_id.is_(None))
+        .where(Transaction.category_id.is_(None), ~_has_splits)
         .order_by(Transaction.date.desc())
         .limit(limit)
     ).scalars().all()
@@ -504,7 +506,8 @@ def categorize_batch(
 
     Returns stats: {rules: N, keywords: N, llm: N, failed: N}.
     """
-    query = select(Transaction).where(Transaction.category_id.is_(None))
+    _has_splits = exists().where(TransactionSplit.transaction_id == Transaction.id)
+    query = select(Transaction).where(Transaction.category_id.is_(None), ~_has_splits)
     if transaction_ids:
         query = query.where(Transaction.id.in_(transaction_ids))
     query = query.limit(limit)
