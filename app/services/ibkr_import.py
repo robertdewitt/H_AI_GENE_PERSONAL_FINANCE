@@ -329,6 +329,7 @@ def apply_ibkr_statement(db: Session, account_id: int, parsed: dict) -> dict[str
     """
     from sqlalchemy import select
 
+    from app.models.account import Account
     from app.models.asset_valuation import AssetValuation
     from app.models.instrument import Instrument, PositionLot, PriceSnapshot
     from app.models.stock_dividend import StockDividend
@@ -535,6 +536,13 @@ def apply_ibkr_statement(db: Session, account_id: int, parsed: dict) -> dict[str
         )
         db.add(av)
         stats["nav_saved"] = 1
+
+        # Switch the account to use valuation-based balance so the NAV
+        # shows up on the accounts and net worth pages instead of summing
+        # transactions (which would be 0 for a pure brokerage account).
+        account = db.get(Account, account_id)
+        if account is not None:
+            account.balance_truth_source = "latest_valuation"
 
     db.commit()
     return stats
