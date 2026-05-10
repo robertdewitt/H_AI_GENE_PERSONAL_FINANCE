@@ -507,6 +507,58 @@ def account_detail(
                     "schedule": schedule,
                 }
 
+    # ── Payment breakdown for mortgage accounts ───────────────────────────────
+    payment_breakdown: dict = {}
+    interest_ytd: Decimal = Decimal("0")
+    if acct.account_type.value == "mortgage":
+        from sqlalchemy import select as _select2, func as _func2
+        from app.models.payment_decomposition import PaymentDecomposition
+        from app.models.enums import PaymentComponent
+
+        decomp_rows = db.execute(
+            _select2(
+                Transaction.id.label("txn_id"),
+                Transaction.date,
+                Transaction.description,
+                Transaction.amount,
+                PaymentDecomposition.component,
+                PaymentDecomposition.amount.label("comp_amount"),
+            )
+            .join(PaymentDecomposition, PaymentDecomposition.transaction_id == Transaction.id)
+            .where(Transaction.account_id == acct.id)
+            .order_by(Transaction.date.desc())
+            .limit(72)  # up to 24 payments × 3 components
+        ).all()
+
+        for row in decomp_rows:
+            txn_id = row.txn_id
+            if txn_id not in payment_breakdown:
+                payment_breakdown[txn_id] = {
+                    "date": row.date.strftime("%Y-%m-%d"),
+                    "description": row.description,
+                    "amount": float(row.amount),
+                    "principal": 0.0,
+                    "interest": 0.0,
+                    "escrow": 0.0,
+                }
+            if row.component == PaymentComponent.PRINCIPAL.value:
+                payment_breakdown[txn_id]["principal"] = float(row.comp_amount)
+            elif row.component == PaymentComponent.INTEREST.value:
+                payment_breakdown[txn_id]["interest"] = float(row.comp_amount)
+            elif row.component == PaymentComponent.ESCROW.value:
+                payment_breakdown[txn_id]["escrow"] = float(row.comp_amount)
+
+        ytd_start = datetime(datetime.now().year, 1, 1)
+        interest_ytd = db.execute(
+            _select2(_func2.sum(PaymentDecomposition.amount))
+            .join(Transaction, PaymentDecomposition.transaction_id == Transaction.id)
+            .where(
+                Transaction.account_id == acct.id,
+                PaymentDecomposition.component == PaymentComponent.INTEREST.value,
+                Transaction.date >= ytd_start,
+            )
+        ).scalar() or Decimal("0")
+
     return templates.TemplateResponse(request, "accounts/detail.html", {
         "account": acct,
         "balance": balance,
@@ -521,6 +573,8 @@ def account_detail(
         "mortgage_balance": mortgage_balance,
         "mortgage_payoff": mortgage_payoff,
         "liability_balance_history": liability_balance_history,
+        "payment_breakdown": payment_breakdown,
+        "interest_ytd": interest_ytd,
         "now": datetime.now(),
     })
 

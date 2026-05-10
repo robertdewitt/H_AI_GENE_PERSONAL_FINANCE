@@ -181,6 +181,152 @@ def confirm_import(
                 if "original_balance" in meta and not account.original_principal_balance:
                     account.original_principal_balance = meta["original_balance"]
                 db.commit()
+
+                # ── PaymentDecomposition for Regular Payment transactions ──
+                payment_principal = meta.get("payment_principal")
+                payment_interest  = meta.get("payment_interest")
+                payment_escrow    = meta.get("payment_escrow", 0.0) or 0.0
+                decomp_confidence = meta.get("_decomp_confidence", 0.80)
+
+                if payment_principal is not None and payment_interest is not None:
+                    from app.models.payment_decomposition import PaymentDecomposition
+                    from app.models.enums import PaymentComponent
+                    from app.models.transaction import Transaction as _Txn
+
+                    # Find recently imported Regular Payment transactions for this account
+                    reg_payments = db.execute(
+                        select(_Txn)
+                        .where(
+                            _Txn.account_id == account.id,
+                            _Txn.import_batch_id == batch.import_batch_id,
+                        )
+                        .filter(_Txn.description.ilike("%regular payment%"))
+                        .order_by(_Txn.date.desc())
+                    ).scalars().all()
+
+                    acct_currency = account.currency or "USD"
+
+                    for txn in reg_payments:
+                        # Dedup: skip if decomposition already exists for this txn
+                        existing = db.execute(
+                            select(PaymentDecomposition)
+                            .where(PaymentDecomposition.transaction_id == txn.id)
+                            .limit(1)
+                        ).scalar_one_or_none()
+                        if existing is not None:
+                            continue
+
+                        db.add(PaymentDecomposition(
+                            transaction_id=txn.id,
+                            component=PaymentComponent.PRINCIPAL.value,
+                            amount=_Dec(str(payment_principal)),
+                            currency=acct_currency,
+                            provenance="imported",
+                            confidence=decomp_confidence,
+                        ))
+                        db.add(PaymentDecomposition(
+                            transaction_id=txn.id,
+                            component=PaymentComponent.INTEREST.value,
+                            amount=_Dec(str(payment_interest)),
+                            currency=acct_currency,
+                            provenance="imported",
+                            confidence=decomp_confidence,
+                        ))
+                        if payment_escrow and payment_escrow > 0:
+                            db.add(PaymentDecomposition(
+                                transaction_id=txn.id,
+                                component=PaymentComponent.ESCROW.value,
+                                amount=_Dec(str(payment_escrow)),
+                                currency=acct_currency,
+                                provenance="imported",
+                                confidence=decomp_confidence,
+                            ))
+
+                    db.commit()
+
+                    # ── Transfer reconciliation: match bank outflow ────────
+                    from app.models.reconciliation import ReconciliationGroup, ReconciliationMember
+                    from app.models.transaction import Transaction as _Txn2
+                    from app.models.account import Account as _Account
+                    from sqlalchemy import and_, not_, exists, func as _func
+                    import datetime as _datetime_mod
+
+                    # Use recently imported mortgage transactions (current batch)
+                    mortgage_txns = db.execute(
+                        select(_Txn2)
+                        .where(
+                            _Txn2.account_id == account.id,
+                            _Txn2.import_batch_id == batch.import_batch_id,
+                        )
+                        .order_by(_Txn2.date.desc())
+                        .limit(10)
+                    ).scalars().all()
+
+                    if mortgage_txns:
+                        mortgage_total = sum(float(t.amount) for t in mortgage_txns)
+                        earliest = min(t.date for t in mortgage_txns)
+                        latest   = max(t.date for t in mortgage_txns)
+                        date_lo  = earliest - _datetime_mod.timedelta(days=5)
+                        date_hi  = latest   + _datetime_mod.timedelta(days=5)
+
+                        # Find bank-side outflow NOT already in a reconciliation group
+                        bank_txn = db.execute(
+                            select(_Txn2)
+                            .where(
+                                _Txn2.account_id != account.id,
+                                _Txn2.date >= date_lo,
+                                _Txn2.date <= date_hi,
+                                _Txn2.amount.between(
+                                    _Dec(str(-mortgage_total - 1.0)),
+                                    _Dec(str(-mortgage_total + 1.0)),
+                                ),
+                                not_(
+                                    exists(
+                                        select(ReconciliationMember.id)
+                                        .where(ReconciliationMember.transaction_id == _Txn2.id)
+                                    )
+                                ),
+                            )
+                            .limit(1)
+                        ).scalar_one_or_none()
+
+                        if bank_txn:
+                            grp = ReconciliationGroup(
+                                group_type="mortgage_payment",
+                                description=(
+                                    f"Mortgage payment reconciliation — "
+                                    f"{account.name} / {bank_txn.date.strftime('%Y-%m-%d')}"
+                                ),
+                                tolerance_base=_Dec("1.00"),
+                                base_currency=acct_currency,
+                                reconciliation_confidence=0.80,
+                            )
+                            db.add(grp)
+                            db.flush()  # get grp.id
+
+                            # Mortgage-side members (positive = inflow to loan balance)
+                            for mt in mortgage_txns:
+                                db.add(ReconciliationMember(
+                                    group_id=grp.id,
+                                    transaction_id=mt.id,
+                                    allocated_amount_native=mt.amount,
+                                    allocated_currency=acct_currency,
+                                    allocated_amount_base=mt.amount,
+                                    role="mortgage_inflow",
+                                ))
+
+                            # Bank-side member (negative = outflow from bank)
+                            db.add(ReconciliationMember(
+                                group_id=grp.id,
+                                transaction_id=bank_txn.id,
+                                allocated_amount_native=bank_txn.amount,
+                                allocated_currency=bank_txn.original_currency or acct_currency,
+                                allocated_amount_base=bank_txn.amount,
+                                role="bank_outflow",
+                            ))
+
+                            db.commit()
+
         except Exception:
             pass  # metadata extraction is best-effort
 

@@ -161,6 +161,33 @@
 </details>
 {% endif %}
 
+{% if payment_breakdown %}
+<h2>Payment Breakdown</h2>
+<p style="color:var(--pico-muted-color);font-size:0.9rem">Interest paid YTD: <strong>{{ account.currency_symbol }}{{ "{:,.2f}".format(interest_ytd) }}</strong></p>
+<table>
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Description</th>
+            <th style="text-align:right">Total</th>
+            <th style="text-align:right">Principal</th>
+            <th style="text-align:right">Interest</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in payment_breakdown.values() %}
+        <tr>
+            <td>{{ row.date }}</td>
+            <td>{{ row.description }}</td>
+            <td style="text-align:right">{{ account.currency_symbol }}{{ "{:,.2f}".format(row.amount | abs) }}</td>
+            <td style="text-align:right" class="positive">{{ account.currency_symbol }}{{ "{:,.2f}".format(row.principal) }}</td>
+            <td style="text-align:right" class="negative">{{ account.currency_symbol }}{{ "{:,.2f}".format(row.interest) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
 {% if mortgage_payoff %}
 <h2>Payoff Projection</h2>
 <div class="summary-grid" style="margin-bottom:1.5rem">

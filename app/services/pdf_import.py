@@ -241,6 +241,73 @@ def extract_mortgage_metadata(filepath: str) -> dict | None:
                     except ValueError:
                         pass
 
+    # ── Explanation of Amount Due — current payment breakdown ─────────────────
+    # pdfplumber collapses spaces so "Explanation of Amount Due" →
+    # "ExplanationofAmountDue".  Match both forms.
+    _EXPL_SECTION_RE = re.compile(
+        r"ExplanationofAmountDue|Explanation\s*of\s*Amount\s*Due",
+        re.IGNORECASE,
+    )
+    _COMP_AMT_RE = re.compile(r"[£$€]?([\d,]+\.\d{2})")
+
+    expl_match = _EXPL_SECTION_RE.search(full_text)
+    if expl_match:
+        # Slice text after the marker so we only look at the current-payment column
+        after = full_text[expl_match.end():]
+
+        # Principal
+        p_m = re.search(
+            r"Principal\s*:\s*[£$€]?([\d,]+\.\d{2})", after, re.IGNORECASE
+        )
+        if p_m:
+            try:
+                result["payment_principal"] = float(p_m.group(1).replace(",", ""))
+                result["_decomp_confidence"] = 0.95
+            except ValueError:
+                pass
+
+        # Interest
+        i_m = re.search(
+            r"Interest\s*:\s*[£$€]?([\d,]+\.\d{2})", after, re.IGNORECASE
+        )
+        if i_m:
+            try:
+                result["payment_interest"] = float(i_m.group(1).replace(",", ""))
+            except ValueError:
+                pass
+
+        # Escrow (optional)
+        e_m = re.search(
+            r"Escrow\s*(?:\([^)]*\))?\s*:\s*[£$€]?([\d,]+\.\d{2})", after, re.IGNORECASE
+        )
+        if e_m:
+            try:
+                result["payment_escrow"] = float(e_m.group(1).replace(",", ""))
+            except ValueError:
+                pass
+
+    # ── Fallback: derive principal/interest from loan parameters ─────────────
+    if (
+        "payment_principal" not in result
+        and "outstanding_balance" in result
+        and "interest_rate" in result
+        and "monthly_payment" in result
+    ):
+        try:
+            monthly_rate = result["interest_rate"] / 12
+            interest = round(result["outstanding_balance"] * monthly_rate, 2)
+            principal = round(result["monthly_payment"] - interest, 2)
+            result["payment_interest"] = interest
+            result["payment_principal"] = principal
+            result["payment_escrow"] = 0.0
+            result["_decomp_confidence"] = 0.80
+        except Exception:
+            pass
+
+    # Ensure payment_escrow has a default if principal/interest were found
+    if "payment_principal" in result and "payment_escrow" not in result:
+        result["payment_escrow"] = 0.0
+
     return result if result else None
 
 
