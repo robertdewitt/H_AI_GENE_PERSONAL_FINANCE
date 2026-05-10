@@ -140,13 +140,40 @@ def confirm_import(
             from app.services.pdf_import import extract_mortgage_metadata
             meta = extract_mortgage_metadata(filepath)
             if meta:
+                from datetime import datetime as _dt
+                from decimal import Decimal as _Dec
+                from app.models.snapshots import LiabilityBalanceSnapshot
+
+                stmt_date = meta.get("statement_date") or _dt.now()
+
                 if "outstanding_balance" in meta:
-                    account.statement_balance = meta["outstanding_balance"]
-                    from datetime import datetime as _dt
-                    account.statement_balance_as_of = _dt.now()
-                    # Switch balance source so accounts/net-worth pages
-                    # show the extracted principal rather than summing transactions.
+                    bal = meta["outstanding_balance"]
+                    account.statement_balance = bal
+                    account.statement_balance_as_of = stmt_date
                     account.balance_truth_source = "latest_statement"
+
+                    # Write a dated snapshot so each statement upload is preserved.
+                    # Deduplicate by (account_id, as_of_date) — same statement
+                    # re-uploaded should overwrite rather than duplicate.
+                    existing_snap = db.execute(
+                        select(LiabilityBalanceSnapshot).where(
+                            LiabilityBalanceSnapshot.account_id == account.id,
+                            LiabilityBalanceSnapshot.as_of_date == stmt_date,
+                        ).limit(1)
+                    ).scalar_one_or_none()
+                    if existing_snap is not None:
+                        existing_snap.value_native = _Dec(str(bal))
+                        existing_snap.source = "mortgage_statement_pdf"
+                    else:
+                        db.add(LiabilityBalanceSnapshot(
+                            account_id=account.id,
+                            as_of_date=stmt_date,
+                            value_native=_Dec(str(bal)),
+                            currency=account.currency or "USD",
+                            source="mortgage_statement_pdf",
+                            confidence=0.95,
+                        ))
+
                 if "interest_rate" in meta:
                     account.interest_rate = meta["interest_rate"]
                 if "monthly_payment" in meta:

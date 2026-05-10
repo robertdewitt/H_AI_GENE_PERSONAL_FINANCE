@@ -440,6 +440,20 @@ def account_detail(
                     db, acct.linked_mortgage_account_id, target_currency=acct.currency,
                 )
 
+    # Liability balance history (one row per statement uploaded)
+    from app.models.snapshots import LiabilityBalanceSnapshot
+    liability_balance_history = []
+    if not acct.is_asset:
+        snaps = db.execute(
+            select(LiabilityBalanceSnapshot)
+            .where(LiabilityBalanceSnapshot.account_id == acct.id)
+            .order_by(LiabilityBalanceSnapshot.as_of_date)
+        ).scalars().all()
+        liability_balance_history = [
+            {"date": s.as_of_date.strftime("%Y-%m-%d"), "balance": float(s.value_native)}
+            for s in snaps
+        ]
+
     # Mortgage payoff projection data
     mortgage_payoff = None
     if acct.account_type.value == "mortgage":
@@ -505,6 +519,7 @@ def account_detail(
         "mortgage_account": mortgage_account,
         "mortgage_balance": mortgage_balance,
         "mortgage_payoff": mortgage_payoff,
+        "liability_balance_history": liability_balance_history,
         "now": datetime.now(),
     })
 

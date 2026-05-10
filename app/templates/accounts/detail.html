@@ -135,6 +135,32 @@
 {% endif %}
 {% endif %}
 
+{% if liability_balance_history %}
+<h2>Outstanding Balance History</h2>
+<div class="chart-container" style="height:260px;margin-bottom:1rem">
+    <canvas id="liabilityHistoryChart"></canvas>
+</div>
+<details style="margin-bottom:1.5rem">
+    <summary style="cursor:pointer;font-size:0.9rem">Statement records ({{ liability_balance_history | length }})</summary>
+    <table style="margin-top:0.5rem">
+        <thead>
+            <tr>
+                <th>Statement Date</th>
+                <th style="text-align:right">Outstanding Principal</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in liability_balance_history | reverse %}
+            <tr>
+                <td>{{ row.date }}</td>
+                <td style="text-align:right">{{ account.currency_symbol }}{{ "{:,.2f}".format(row.balance) }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</details>
+{% endif %}
+
 {% if mortgage_payoff %}
 <h2>Payoff Projection</h2>
 <div class="summary-grid" style="margin-bottom:1.5rem">
@@ -275,6 +301,43 @@
 {% endblock %}
 
 {% block scripts %}
+{% if liability_balance_history %}
+<script>
+(function() {
+    const sym = {{ account.currency_symbol | tojson }};
+    const history = {{ liability_balance_history | tojson }};
+    const labels = history.map(r => r.date.substring(0, 10));
+    const balances = history.map(r => r.balance);
+    const ctx = document.getElementById('liabilityHistoryChart');
+    if (!ctx) return;
+    new Chart(ctx.getContext('2d'), {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [{
+                label: 'Outstanding Principal',
+                data: balances,
+                borderColor: '#dc2626',
+                backgroundColor: 'rgba(220,38,38,0.08)',
+                fill: true,
+                tension: 0.3,
+                pointRadius: balances.length > 24 ? 2 : 4,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: {
+                    ticks: { callback: v => sym + v.toLocaleString(undefined, {minimumFractionDigits: 0}) }
+                }
+            }
+        }
+    });
+})();
+</script>
+{% endif %}
 {% if mortgage_payoff %}
 <script>
 (function() {

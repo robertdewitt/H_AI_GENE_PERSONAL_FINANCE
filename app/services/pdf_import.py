@@ -119,6 +119,11 @@ def extract_mortgage_metadata(filepath: str) -> dict | None:
         r"(?:remaining\s+term|months\s+remaining|term\s+remaining)[^\d]*(\d+)\s*(?:months?)?",
         re.IGNORECASE,
     )
+    _STATEMENT_DATE_LABELS = re.compile(
+        r"(?:statement\s+date|as\s+of\s+date|closing\s+date|period\s+end(?:ing)?)"
+        r"[:\s]+(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}|\w+\s+\d{1,2},?\s+\d{4})",
+        re.IGNORECASE,
+    )
 
     # Scan full text with multi-line patterns
     m = _BALANCE_LABELS.search(full_text)
@@ -161,6 +166,18 @@ def extract_mortgage_metadata(filepath: str) -> dict | None:
             result["remaining_term_months"] = int(m.group(1))
         except ValueError:
             pass
+
+    m = _STATEMENT_DATE_LABELS.search(full_text)
+    if m:
+        from datetime import datetime as _dt
+        raw_d = m.group(1).strip()
+        for _fmt in ("%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y", "%B %d, %Y", "%B %d %Y",
+                     "%b %d, %Y", "%b %d %Y", "%m/%d/%y"):
+            try:
+                result["statement_date"] = _dt.strptime(raw_d, _fmt)
+                break
+            except ValueError:
+                pass
 
     # Fallback: look for key–value pairs on adjacent lines
     # e.g.  "Outstanding Principal:"  (line N)   "$200,225.14"  (line N+1)
