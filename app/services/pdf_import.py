@@ -163,36 +163,61 @@ def extract_mortgage_metadata(filepath: str) -> dict | None:
             pass
 
     # Fallback: look for key–value pairs on adjacent lines
-    # e.g.  "Interest Rate"  (line N)   "4.250%"  (line N+1)
-    if "interest_rate" not in result or "monthly_payment" not in result:
+    # e.g.  "Outstanding Principal:"  (line N)   "$200,225.14"  (line N+1)
+    # This handles structured-box PDFs where pdfplumber splits label and value.
+    needs_balance  = "outstanding_balance" not in result
+    needs_rate     = "interest_rate" not in result
+    needs_payment  = "monthly_payment" not in result
+
+    if needs_balance or needs_rate or needs_payment:
         for i, line in enumerate(lines):
             line_l = line.strip().lower()
             next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            # combine current + next line so inline and split-line formats both match
+            combined = line.strip() + " " + next_line
 
-            if "interest_rate" not in result and re.search(
-                r"interest\s+rate|note\s+rate|current\s+rate", line_l
+            if needs_balance and re.search(
+                r"outstanding\s+principal|principal\s+balance|current\s+balance"
+                r"|remaining\s+balance|loan\s+balance|unpaid\s+balance",
+                line_l,
             ):
-                rate_m = re.search(r"(\d+\.?\d*)\s*%", next_line)
-                if not rate_m:
-                    rate_m = re.search(r"(\d+\.?\d*)\s*%", line)
-                if rate_m:
+                amt_m = re.search(r"[£$€]\s*([\d,]+\.?\d*)", combined)
+                if not amt_m:
+                    amt_m = re.search(r"\b([\d,]{4,}\.?\d*)\b", combined)
+                if amt_m:
                     try:
-                        result["interest_rate"] = float(rate_m.group(1)) / 100.0
+                        result["outstanding_balance"] = float(
+                            amt_m.group(1).replace(",", "")
+                        )
+                        needs_balance = False
                     except ValueError:
                         pass
 
-            if "monthly_payment" not in result and re.search(
-                r"(?:regular|monthly|scheduled|instalment|installment)\s+payment"
-                r"|payment\s+amount", line_l
+            if needs_rate and re.search(
+                r"interest\s+rate|note\s+rate|current\s+rate", line_l
             ):
-                amt_m = re.search(
-                    r"[£$€]?\s*([\d,]+\.?\d*)", next_line
-                )
+                rate_m = re.search(r"(\d+\.?\d*)\s*%", combined)
+                if rate_m:
+                    try:
+                        result["interest_rate"] = float(rate_m.group(1)) / 100.0
+                        needs_rate = False
+                    except ValueError:
+                        pass
+
+            if needs_payment and re.search(
+                r"(?:regular|monthly|scheduled|instalment|installment)\s+payment"
+                r"|payment\s+amount",
+                line_l,
+            ):
+                amt_m = re.search(r"[£$€]\s*([\d,]+\.?\d*)", combined)
                 if not amt_m:
-                    amt_m = re.search(r"[£$€]\s*([\d,]+\.?\d*)", line)
+                    amt_m = re.search(r"\b([\d,]+\.\d{2})\b", combined)
                 if amt_m:
                     try:
-                        result["monthly_payment"] = float(amt_m.group(1).replace(",", ""))
+                        result["monthly_payment"] = float(
+                            amt_m.group(1).replace(",", "")
+                        )
+                        needs_payment = False
                     except ValueError:
                         pass
 

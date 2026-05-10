@@ -144,6 +144,9 @@ def confirm_import(
                     account.statement_balance = meta["outstanding_balance"]
                     from datetime import datetime as _dt
                     account.statement_balance_as_of = _dt.now()
+                    # Switch balance source so accounts/net-worth pages
+                    # show the extracted principal rather than summing transactions.
+                    account.balance_truth_source = "latest_statement"
                 if "interest_rate" in meta:
                     account.interest_rate = meta["interest_rate"]
                 if "monthly_payment" in meta:
