@@ -15,24 +15,65 @@
 
 {% if accounts %}
 <form method="post" action="/import/upload" enctype="multipart/form-data">
-    <label for="account_id">Select Account *</label>
-    <select id="account_id" name="account_id" required>
-        <option value="">Choose an account...</option>
-        {% for acct in accounts %}
-        <option value="{{ acct.id }}">{{ acct.name }} ({{ acct.display_type }})</option>
-        {% endfor %}
-    </select>
-
     <label for="file">Transaction File *</label>
-    <input type="file" id="file" name="file" accept=".csv,.xls,.xlsx,.pdf" required>
+    <input type="file" id="file" name="file" accept=".csv,.xls,.xlsx,.pdf" required
+           onchange="detectAccount(this)">
     <small>
         Supported formats: CSV, XLS, XLSX, PDF
         &bull; PDF imports extract tables or text from bank statement PDFs.
         Review the column mapping carefully after upload.
     </small>
 
+    <label for="account_id">Account *</label>
+    <select id="account_id" name="account_id" required>
+        <option value="">Choose an account...</option>
+        {% for acct in accounts %}
+        <option value="{{ acct.id }}">{{ acct.name }} ({{ acct.display_type }})</option>
+        {% endfor %}
+    </select>
+    <div id="detectHint" style="display:none;margin-top:-0.5rem;margin-bottom:0.75rem;font-size:0.85rem;padding:0.4rem 0.75rem;border-radius:6px;border-left:3px solid #f59e0b;background:#fffbeb;color:#92400e"></div>
+
     <button type="submit">Upload &amp; Preview</button>
 </form>
+
+<script>
+async function detectAccount(input) {
+    const hint = document.getElementById('detectHint');
+    const sel = document.getElementById('account_id');
+    if (!input.files.length) return;
+
+    hint.style.display = 'block';
+    hint.style.borderLeftColor = '#9ca3af';
+    hint.style.background = '#f9fafb';
+    hint.style.color = '#6b7280';
+    hint.textContent = 'Detecting account from file…';
+
+    const fd = new FormData();
+    fd.append('file', input.files[0]);
+
+    try {
+        const r = await fetch('/import/detect-account', { method: 'POST', body: fd });
+        const d = await r.json();
+
+        if (d.account_id) {
+            sel.value = d.account_id;
+            const name = sel.options[sel.selectedIndex]?.text || '';
+            const pct = Math.round(d.confidence * 100);
+            hint.style.borderLeftColor = '#f59e0b';
+            hint.style.background = '#fffbeb';
+            hint.style.color = '#92400e';
+            hint.innerHTML = `&#128270; Detected <strong>${name}</strong> (${pct}% confidence) — change if wrong`;
+        } else {
+            hint.style.borderLeftColor = '#9ca3af';
+            hint.style.background = '#f9fafb';
+            hint.style.color = '#6b7280';
+            hint.textContent = 'Could not detect account — please select manually.';
+        }
+    } catch (_) {
+        hint.style.display = 'none';
+    }
+}
+</script>
 
 <hr>
 <details>

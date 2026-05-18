@@ -26,6 +26,8 @@ from app.models.snapshots import (
     LiabilityBalanceSnapshot,
 )
 from app.models.user_profile import UserProfile
+from app.models.deleted_transaction import DeletedTransaction
+from app.models.dismissed_duplicate import DismissedDuplicate
 
 __all__ = [
     "Account",
@@ -55,4 +57,6 @@ __all__ = [
     "StockTrade",
     "StockDividend",
     "UserProfile",
+    "DeletedTransaction",
+    "DismissedDuplicate",
 ]

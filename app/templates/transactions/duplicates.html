@@ -1,0 +1,417 @@
+{% extends "base.html" %}
+{% block title %}Duplicate Transactions — Financial Hygiene{% endblock %}
+
+{% block content %}
+<style>
+.ai-tag {
+    display: inline-block;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    color: #7c3aed;
+    background: #ede9fe;
+    border: 1px solid #c4b5fd;
+    border-radius: 3px;
+    padding: 0 3px;
+    vertical-align: middle;
+    margin-left: 3px;
+    line-height: 1.4;
+}
+.ai-selected-row {
+    background: rgba(124, 58, 237, 0.04);
+}
+</style>
+<hgroup>
+    <h1>Duplicate Transactions</h1>
+    <p>
+        {{ total_groups }} group{{ 's' if total_groups != 1 else '' }}
+        ({{ cross_batch_count }} cross-file, {{ total_groups - cross_batch_count }} same-file)
+        &mdash; {{ total_txns }} transactions
+    </p>
+</hgroup>
+
+{# ── Sticky bulk-action bar ─────────────────────────────────────────── #}
+<div id="bulkBar" style="display:none;position:sticky;top:0;z-index:100;
+     background:var(--pico-card-background-color);border-bottom:1px solid var(--pico-muted-border-color);
+     padding:0.6rem 0;margin-bottom:1rem">
+    <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">
+        <strong id="selCount" style="white-space:nowrap">0 selected</strong>
+        <span id="aiCount" style="display:none;font-size:0.8rem;color:#7c3aed;white-space:nowrap;background:#ede9fe;border:1px solid #c4b5fd;border-radius:4px;padding:0.15rem 0.5rem"></span>
+
+        {# Delete selected → POST to existing bulk/delete #}
+        <form id="bulkDeleteForm" method="post" action="/transactions/bulk/delete" style="margin:0">
+            <input type="hidden" name="txn_ids" id="bulkDeleteIds">
+            <input type="hidden" name="return_url" value="/transactions/duplicates">
+            <button type="button" onclick="submitBulkDelete()"
+                    style="padding:0.3rem 0.9rem;font-size:0.85rem;margin:0;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer">
+                Delete selected
+            </button>
+        </form>
+
+        {# Dismiss groups of selected #}
+        <form id="bulkDismissForm" method="post" action="/transactions/duplicates/bulk-dismiss" style="margin:0">
+            <input type="hidden" name="txn_ids" id="bulkDismissIds">
+            <button type="button" onclick="submitBulkDismiss()"
+                    style="padding:0.3rem 0.9rem;font-size:0.85rem;margin:0;background:#f59e0b;color:#fff;border:none;border-radius:4px;cursor:pointer">
+                Dismiss groups
+            </button>
+        </form>
+
+        <button type="button" onclick="clearAll()"
+                style="padding:0.3rem 0.7rem;font-size:0.85rem;margin:0;background:none;border:1px solid var(--pico-muted-border-color);border-radius:4px;cursor:pointer;color:var(--pico-muted-color)">
+            Clear
+        </button>
+    </div>
+</div>
+
+{% if total_groups == 0 and not dismissed %}
+<article>
+    <p style="text-align:center;padding:2rem;color:var(--pico-muted-color)">
+        No duplicate transactions found.
+    </p>
+</article>
+{% endif %}
+
+{# ── Macro: renders one group's transaction table with checkboxes ── #}
+{% macro group_table(group, border_color, badges_html) %}
+{% set gkey = group.account_id ~ '|' ~ group.date ~ '|' ~ group.amount %}
+<article style="margin-bottom:1rem;border-left:4px solid {{ border_color }}"
+         data-gkey="{{ gkey }}"
+         data-account="{{ group.account_id }}"
+         data-date="{{ group.date }}"
+         data-amount="{{ group.amount }}">
+    <header style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;padding-bottom:0.5rem;border-bottom:1px solid var(--pico-muted-border-color)">
+        <label style="display:flex;align-items:center;gap:0.6rem;cursor:pointer;font-weight:600">
+            <input type="checkbox" class="group-master"
+                   data-gkey="{{ gkey }}"
+                   onchange="toggleGroup(this)"
+                   {% if group.ollama_suggested %}checked data-ai-selected="1"{% endif %}
+                   style="margin:0">
+            <span>
+                {{ group.account_name }}
+                &nbsp;&middot;&nbsp;{{ group.date }}
+                &nbsp;&middot;&nbsp;
+                {% if group.amount < 0 %}
+                    <span style="color:#dc2626">&minus;${{ "%.2f"|format((group.amount|float)|abs) }}</span>
+                {% else %}
+                    <span style="color:#16a34a">+${{ "%.2f"|format(group.amount|float) }}</span>
+                {% endif %}
+            </span>
+        </label>
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+            {{ badges_html | safe }}
+            {# Ollama badge — updated by JS if LLM unavailable at page load #}
+            {% if group.ollama_score is not none %}
+                {% if group.ollama_suggested %}
+                    <span class="ollama-badge" style="background:#7c3aed;color:#fff;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem"
+                          title="AI thinks this is a duplicate">
+                        AI {{ (group.ollama_score * 100)|int }}% dup
+                    </span>
+                {% else %}
+                    <span class="ollama-badge" style="background:#e5e7eb;color:#374151;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem"
+                          title="AI thinks this is NOT a duplicate">
+                        AI {{ (group.ollama_score * 100)|int }}% dup
+                    </span>
+                {% endif %}
+            {% else %}
+                <span class="ollama-badge ollama-pending"
+                      style="background:#e5e7eb;color:#9ca3af;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem">
+                    AI …
+                </span>
+            {% endif %}
+            <form method="post" action="/transactions/duplicates/dismiss" style="margin:0">
+                <input type="hidden" name="account_id" value="{{ group.account_id }}">
+                <input type="hidden" name="txn_date" value="{{ group.date }}">
+                <input type="hidden" name="amount" value="{{ group.amount }}">
+                <button type="submit" class="outline secondary"
+                        style="padding:0.15rem 0.6rem;font-size:0.78rem;margin:0;white-space:nowrap">
+                    Not a duplicate
+                </button>
+            </form>
+        </div>
+    </header>
+    <div style="overflow-x:auto;margin-top:0.5rem">
+        <table style="margin:0">
+            <thead>
+                <tr>
+                    <th style="width:2.2rem"></th>
+                    <th style="width:3rem">#</th>
+                    <th style="white-space:nowrap">Date</th>
+                    <th>Description</th>
+                    <th style="text-align:right;white-space:nowrap">Amount</th>
+                    <th style="white-space:nowrap">Import Batch</th>
+                    <th style="white-space:nowrap">Imported</th>
+                    <th style="width:1%"></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for txn in group.transactions %}
+            <tr{% if group.ollama_suggested %} class="ai-selected-row"{% endif %}>
+                <td style="white-space:nowrap">
+                    <input type="checkbox" class="txn-check"
+                           value="{{ txn.id }}"
+                           data-gkey="{{ gkey }}"
+                           onchange="onRowCheck(this)"
+                           {% if group.ollama_suggested %}checked data-ai-selected="1"{% endif %}
+                           style="margin:0">
+                    {% if group.ollama_suggested %}
+                    <span class="ai-tag" title="AI selected">AI</span>
+                    {% else %}
+                    <span class="ai-tag" style="visibility:hidden">AI</span>
+                    {% endif %}
+                </td>
+                <td style="color:var(--pico-muted-color);font-size:0.85rem">{{ txn.id }}</td>
+                <td style="font-size:0.85rem;white-space:nowrap">{{ txn.date.strftime("%Y-%m-%d") if txn.date else "—" }}</td>
+                <td style="font-size:0.9rem">{{ txn.description or "—" }}</td>
+                <td style="text-align:right;font-size:0.9rem;white-space:nowrap">
+                    {% if txn.amount < 0 %}
+                        <span style="color:#dc2626">&minus;{{ "%.2f"|format(txn.amount|float|abs) }}</span>
+                    {% else %}
+                        <span style="color:#16a34a">+{{ "%.2f"|format(txn.amount|float) }}</span>
+                    {% endif %}
+                </td>
+                <td style="font-size:0.85rem;color:var(--pico-muted-color);white-space:nowrap">
+                    {% if txn.import_batch_id %}#{{ txn.import_batch_id }}{% else %}—{% endif %}
+                </td>
+                <td style="font-size:0.85rem;color:var(--pico-muted-color);white-space:nowrap">
+                    {% if txn.created_at %}{{ txn.created_at.strftime("%Y-%m-%d %H:%M") }}{% else %}—{% endif %}
+                </td>
+                <td>
+                    <form method="post" action="/transactions/{{ txn.id }}/delete"
+                          onsubmit="return confirm('Delete #{{ txn.id }}?')">
+                        <input type="hidden" name="return_url" value="/transactions/duplicates">
+                        <button type="submit" class="outline"
+                                style="padding:0.2rem 0.6rem;font-size:0.78rem;margin:0;color:#dc2626;border-color:#dc2626;white-space:nowrap">
+                            Delete
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</article>
+{% endmacro %}
+
+{# ── Cross-file section ────────────────────────────────────────────── #}
+{% if cross_batch_count > 0 %}
+<details open style="margin-bottom:1.5rem">
+    <summary style="font-weight:600;cursor:pointer">
+        Cross-file duplicates
+        <span style="background:#dc2626;color:#fff;padding:0.15rem 0.5rem;border-radius:999px;font-size:0.8rem;margin-left:0.5rem">{{ cross_batch_count }}</span>
+    </summary>
+    <p style="font-size:0.9rem;color:var(--pico-muted-color);margin:0.5rem 0 1rem">
+        Same transaction imported from two different files. Keep the most descriptive, delete the rest.
+    </p>
+    {% for group in groups if group.cross_batch %}
+    {% set conf_pct = (group.confidence * 100) | int %}
+    {{ group_table(group, '#dc2626',
+        '<span style="background:#dc2626;color:#fff;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem">Different files</span>
+         <span style="background:#6b7280;color:#fff;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem">' ~ conf_pct ~ '% match</span>'
+    ) }}
+    {% else %}
+    <p style="color:var(--pico-muted-color)">None.</p>
+    {% endfor %}
+</details>
+{% endif %}
+
+{# ── Same-file section ─────────────────────────────────────────────── #}
+{% if total_groups - cross_batch_count > 0 %}
+<details style="margin-bottom:1.5rem">
+    <summary style="font-weight:600;cursor:pointer">
+        Same-file matches
+        <span style="background:#6b7280;color:#fff;padding:0.15rem 0.5rem;border-radius:999px;font-size:0.8rem;margin-left:0.5rem">{{ total_groups - cross_batch_count }}</span>
+    </summary>
+    <p style="font-size:0.9rem;color:var(--pico-muted-color);margin:0.5rem 0 1rem">
+        Same date &amp; amount within one import batch — may be legitimate or a file that listed the same transaction twice.
+    </p>
+    {% for group in groups if not group.cross_batch %}
+    {% set conf_pct = (group.confidence * 100) | int %}
+    {% if group.confidence >= 0.8 %}{% set bc = "#f59e0b" %}{% else %}{% set bc = "#9ca3af" %}{% endif %}
+    {{ group_table(group, bc,
+        '<span style="background:' ~ bc ~ ';color:#fff;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem">' ~ conf_pct ~ '% match</span>'
+    ) }}
+    {% else %}
+    <p style="color:var(--pico-muted-color)">None.</p>
+    {% endfor %}
+</details>
+{% endif %}
+
+{# ── Dismissed section ─────────────────────────────────────────────── #}
+{% if dismissed %}
+<details style="margin-bottom:1.5rem;opacity:0.75">
+    <summary style="font-weight:600;cursor:pointer;color:var(--pico-muted-color)">
+        Dismissed
+        <span style="background:#9ca3af;color:#fff;padding:0.15rem 0.5rem;border-radius:999px;font-size:0.8rem;margin-left:0.5rem">{{ dismissed | length }}</span>
+    </summary>
+    <p style="font-size:0.9rem;color:var(--pico-muted-color);margin:0.5rem 0 1rem">
+        Marked as not a duplicate. Click <strong>Undo</strong> to return to the active list.
+    </p>
+    {% for group in dismissed %}
+    <article style="margin-bottom:0.5rem;border-left:4px solid #d1d5db">
+        <header style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem">
+            <span style="color:var(--pico-muted-color);font-size:0.9rem">
+                <strong>{{ group.account_name }}</strong>
+                &nbsp;&middot;&nbsp;{{ group.date }}
+                &nbsp;&middot;&nbsp;
+                {% if group.amount < 0 %}&minus;${{ "%.2f"|format((group.amount|float)|abs) }}
+                {% else %}+${{ "%.2f"|format(group.amount|float) }}{% endif %}
+                &nbsp;&middot;&nbsp;{{ group.transactions | length }} txns
+            </span>
+            <form method="post" action="/transactions/duplicates/undismiss" style="margin:0">
+                <input type="hidden" name="account_id" value="{{ group.account_id }}">
+                <input type="hidden" name="txn_date" value="{{ group.date }}">
+                <input type="hidden" name="amount" value="{{ group.amount }}">
+                <button type="submit" class="outline"
+                        style="padding:0.15rem 0.7rem;font-size:0.8rem;margin:0">Undo</button>
+            </form>
+        </header>
+    </article>
+    {% endfor %}
+</details>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function selectedIds() {
+    return [...document.querySelectorAll('.txn-check:checked')].map(c => c.value);
+}
+
+function onRowCheck(changedEl) {
+    // If user manually changes a checkbox, clear its AI-selected marker
+    if (changedEl && changedEl.dataset.aiSelected) {
+        delete changedEl.dataset.aiSelected;
+        const tag = changedEl.parentElement.querySelector('.ai-tag');
+        if (tag) tag.style.visibility = 'hidden';
+    }
+
+    const ids = selectedIds();
+    const bar = document.getElementById('bulkBar');
+    const countEl = document.getElementById('selCount');
+    const aiCountEl = document.getElementById('aiCount');
+    bar.style.display = ids.length ? 'block' : 'none';
+    countEl.textContent = ids.length + ' selected';
+
+    // AI count badge
+    const aiSelected = [...document.querySelectorAll('.txn-check:checked[data-ai-selected]')];
+    if (aiSelected.length && ids.length) {
+        aiCountEl.textContent = `${aiSelected.length} AI-selected`;
+        aiCountEl.style.display = 'inline';
+    } else {
+        aiCountEl.style.display = 'none';
+    }
+
+    // Sync group master checkboxes
+    document.querySelectorAll('.group-master').forEach(master => {
+        const gkey = master.dataset.gkey;
+        const rows = document.querySelectorAll(`.txn-check[data-gkey="${gkey}"]`);
+        const checkedCount = [...rows].filter(r => r.checked).length;
+        master.checked = checkedCount === rows.length;
+        master.indeterminate = checkedCount > 0 && checkedCount < rows.length;
+    });
+}
+
+function toggleGroup(master) {
+    const gkey = master.dataset.gkey;
+    // If user is manually toggling, clear AI markers on this group
+    delete master.dataset.aiSelected;
+    document.querySelectorAll(`.txn-check[data-gkey="${gkey}"]`).forEach(c => {
+        c.checked = master.checked;
+        delete c.dataset.aiSelected;
+        const tag = c.parentElement.querySelector('.ai-tag');
+        if (tag) tag.style.visibility = 'hidden';
+    });
+    onRowCheck();
+}
+
+function clearAll() {
+    document.querySelectorAll('.txn-check, .group-master').forEach(c => {
+        c.checked = false;
+        c.indeterminate = false;
+    });
+    onRowCheck();
+}
+
+function submitBulkDelete() {
+    const ids = selectedIds();
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} transaction${ids.length === 1 ? '' : 's'}? This cannot be undone (check Recover Deleted if needed).`)) return;
+    document.getElementById('bulkDeleteIds').value = ids.join(',');
+    document.getElementById('bulkDeleteForm').submit();
+}
+
+function submitBulkDismiss() {
+    const ids = selectedIds();
+    if (!ids.length) return;
+    const groups = new Set([...document.querySelectorAll('.txn-check:checked')].map(c => c.dataset.gkey));
+    if (!confirm(`Dismiss ${groups.size} group${groups.size === 1 ? '' : 's'} as not duplicates?`)) return;
+    document.getElementById('bulkDismissIds').value = ids.join(',');
+    document.getElementById('bulkDismissForm').submit();
+}
+
+// ── Ollama async scoring ───────────────────────────────────────────────────
+// If Ollama was unavailable at page-load (badges show "AI …"), retry now.
+// Also syncs bulk-bar count for any pre-checked groups.
+
+function applyOllamaResult(article, isdup, conf) {
+    const pct = Math.round(conf * 100);
+    const badge = article.querySelector('.ollama-badge');
+    if (!badge) return;
+    badge.classList.remove('ollama-pending');
+    if (isdup) {
+        badge.style.background = '#7c3aed';
+        badge.style.color = '#fff';
+        badge.title = 'AI thinks this is a duplicate';
+        badge.textContent = `AI ${pct}% dup`;
+        // Pre-check all rows, stamp AI-selected marker, show AI tag
+        article.querySelectorAll('.txn-check').forEach(c => {
+            c.checked = true;
+            c.dataset.aiSelected = '1';
+            const tag = c.parentElement.querySelector('.ai-tag');
+            if (tag) tag.style.visibility = 'visible';
+        });
+        article.querySelectorAll('tr').forEach(r => r.classList.add('ai-selected-row'));
+        const master = article.querySelector('.group-master');
+        if (master) { master.checked = true; master.dataset.aiSelected = '1'; }
+        onRowCheck();
+    } else {
+        badge.style.background = '#e5e7eb';
+        badge.style.color = '#374151';
+        badge.title = 'AI thinks this is NOT a duplicate';
+        badge.textContent = `AI ${pct}% dup`;
+    }
+}
+
+async function scoreAllPending() {
+    const pending = document.querySelectorAll('.ollama-pending');
+    if (!pending.length) {
+        // All scored at page load — just sync the bulk bar
+        onRowCheck();
+        return;
+    }
+    for (const badge of pending) {
+        const article = badge.closest('article[data-gkey]');
+        if (!article) continue;
+        const { account, date, amount } = article.dataset;
+        try {
+            const url = `/transactions/duplicates/score-group?account_id=${encodeURIComponent(account)}&txn_date=${encodeURIComponent(date)}&amount=${encodeURIComponent(amount)}`;
+            const r = await fetch(url);
+            if (!r.ok) continue;
+            const d = await r.json();
+            if (!d.available) { badge.style.display = 'none'; continue; }
+            applyOllamaResult(article, d.is_duplicate, d.confidence);
+        } catch (_) {
+            badge.style.display = 'none';
+        }
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    onRowCheck();       // sync bulk bar for server-side pre-checked boxes
+    scoreAllPending();  // async-score any groups Ollama couldn't handle at load
+});
+</script>
+{% endblock %}

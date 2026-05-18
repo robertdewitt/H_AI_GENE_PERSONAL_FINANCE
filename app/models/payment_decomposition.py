@@ -32,4 +32,4 @@ class PaymentDecomposition(Base):
         DateTime, server_default=func.now(),
     )
 
-    transaction = relationship("Transaction")
+    transaction = relationship("Transaction", overlaps="payment_decompositions")

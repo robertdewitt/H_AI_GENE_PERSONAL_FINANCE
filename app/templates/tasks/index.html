@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Tasks — Financial Hygiene{% endblock %}
+
+{% block content %}
+<style>
+.task-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+    padding: 1rem 1.2rem;
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+    border-left: 4px solid transparent;
+    background: var(--pico-card-background-color);
+    text-decoration: none;
+    color: inherit;
+    transition: box-shadow 0.15s;
+}
+.task-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+.task-card.warning { border-left-color: #f59e0b; }
+.task-card.info    { border-left-color: #6b7280; }
+.task-icon {
+    font-size: 1.4rem;
+    min-width: 2rem;
+    text-align: center;
+    margin-top: 0.1rem;
+}
+.task-body { flex: 1; }
+.task-title { font-weight: 600; margin: 0 0 0.15rem; font-size: 1rem; }
+.task-detail { font-size: 0.85rem; color: var(--pico-muted-color); margin: 0; }
+.task-count {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: var(--pico-muted-color);
+    white-space: nowrap;
+    align-self: center;
+}
+.task-count.warning { color: #d97706; }
+.section-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--pico-muted-color);
+    margin: 1.5rem 0 0.5rem;
+}
+</style>
+
+<hgroup>
+    <h1>Tasks</h1>
+    <p>
+        {% if total == 0 %}
+            Everything looks good — no action needed.
+        {% else %}
+            {{ total }} item{{ 's' if total != 1 else '' }} need{{ '' if total != 1 else 's' }} attention
+        {% endif %}
+    </p>
+</hgroup>
+
+{% if total == 0 %}
+<article style="text-align:center;padding:3rem 2rem;color:var(--pico-muted-color)">
+    <div style="font-size:3rem;margin-bottom:1rem">✓</div>
+    <p style="font-size:1.1rem;margin:0">All accounts are up to date, transfers are confirmed, and transactions are categorized.</p>
+</article>
+{% else %}
+
+{# Group tasks by category #}
+{% set categories = [
+    ("statements", "📅", "Statements"),
+    ("transfers",  "↔",  "Transfers"),
+    ("categories", "🏷",  "Categorization"),
+    ("duplicates", "⚠",  "Duplicates"),
+] %}
+
+{% for cat_key, icon, label in categories %}
+    {% set cat_tasks = tasks | selectattr("category", "equalto", cat_key) | list %}
+    {% if cat_tasks %}
+    <p class="section-label">{{ label }}</p>
+    {% for task in cat_tasks %}
+    <a href="{{ task.url }}" class="task-card {{ task.severity }}">
+        <div class="task-icon">{{ icon }}</div>
+        <div class="task-body">
+            <p class="task-title">{{ task.title }}</p>
+            <p class="task-detail">{{ task.detail }}</p>
+        </div>
+        <div class="task-count {{ task.severity }}">{{ task.count }}</div>
+    </a>
+    {% endfor %}
+    {% endif %}
+{% endfor %}
+
+{% endif %}
+{% endblock %}

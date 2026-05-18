@@ -15,7 +15,7 @@ from app.routers import (
     accounts, api, transactions, imports, transfers, net_worth,
     paychecks, valuations, fx, categories, portfolio,
 )
-from app.routers import app_settings
+from app.routers import app_settings, tasks
 from app.services.net_worth_service import compute_net_worth, compute_net_worth_series
 from app.templating import templates
 
@@ -48,6 +48,7 @@ app.include_router(fx.router)
 app.include_router(categories.router)
 app.include_router(app_settings.router)
 app.include_router(portfolio.router)
+app.include_router(tasks.router)
 app.include_router(api.router)
 
 

@@ -25,6 +25,53 @@ from app.services.categorizer import (
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
 
+def _log_deleted(db: Session, txn: Transaction) -> None:
+    """Copy a transaction to deleted_transactions before hard-deleting it."""
+    from app.models.deleted_transaction import DeletedTransaction
+    db.add(DeletedTransaction(
+        original_id=txn.id,
+        account_id=txn.account_id,
+        date=txn.date,
+        description=txn.description,
+        amount=txn.amount,
+        original_currency=txn.original_currency,
+        is_transfer=txn.is_transfer,
+        category_id=txn.category_id,
+        import_batch_id=txn.import_batch_id,
+        notes=getattr(txn, "notes", None),
+    ))
+
+
+def _delete_txn_safe(db: Session, txn: Transaction) -> None:
+    """Delete a transaction and all referencing child records safely.
+
+    Handles FK constraints that don't have ORM cascade:
+    - TransferLink rows that reference this txn as from or to
+    - Partner transactions that reference those TransferLinks via transfer_link_id
+    """
+    # 1. Find TransferLinks that involve this transaction
+    transfer_links = db.execute(
+        select(TransferLink).where(
+            (TransferLink.from_transaction_id == txn.id)
+            | (TransferLink.to_transaction_id == txn.id)
+        )
+    ).scalars().all()
+
+    for tl in transfer_links:
+        # NULL out transfer_link_id on ALL transactions pointing to this link
+        # (including this txn and its partner) before deleting the link row
+        partners = db.execute(
+            select(Transaction).where(Transaction.transfer_link_id == tl.id)
+        ).scalars().all()
+        for p in partners:
+            p.transfer_link_id = None
+        db.flush()
+        db.delete(tl)
+
+    db.flush()
+    db.delete(txn)
+
+
 def _build_filters(
     account_id, category_id, date_from, date_to, search, is_transfer,
     amount_min, amount_max, currency, uncategorized,
@@ -397,14 +444,208 @@ def _link_transfer(db: Session, txn: Transaction, other_account_id: int):
 # ── Delete single transaction ────────────────────────────────────────
 
 @router.post("/{txn_id:int}/delete")
-def transaction_delete(txn_id: int, db: Session = Depends(get_db)):
+def transaction_delete(
+    txn_id: int,
+    return_url: str = Form(""),
+    db: Session = Depends(get_db),
+):
     txn = db.get(Transaction, txn_id)
     if not txn:
         return HTMLResponse("Transaction not found", status_code=404)
     account_id = txn.account_id
-    db.delete(txn)
+    _log_deleted(db, txn)
+    _delete_txn_safe(db, txn)
     db.commit()
-    return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)
+    redirect = return_url if return_url else f"/accounts/{account_id}"
+    return RedirectResponse(url=redirect, status_code=303)
+
+
+# ── Duplicate detection ──────────────────────────────────────────────
+
+@router.get("/duplicates", response_class=HTMLResponse)
+def duplicates_page(request: Request, db: Session = Depends(get_db)):
+    from app.services.duplicate_detector import find_duplicate_groups, find_dismissed_groups
+    from app.services.ollama_duplicate import score_groups_with_db
+    groups = find_duplicate_groups(db)
+    dismissed = find_dismissed_groups(db)
+    # Ollama scoring — mutates groups in-place; silently skips if LLM unavailable
+    score_groups_with_db(groups, db)
+    return templates.TemplateResponse(request, "transactions/duplicates.html", {
+        "groups": groups,
+        "dismissed": dismissed,
+        "total_groups": len(groups),
+        "total_txns": sum(len(g.transactions) for g in groups),
+        "cross_batch_count": sum(1 for g in groups if g.cross_batch),
+    })
+
+
+@router.get("/duplicates/score-group")
+def score_group_api(
+    account_id: int,
+    txn_date: str,
+    amount: str,
+    db: Session = Depends(get_db),
+):
+    """JSON endpoint: re-score a single duplicate group with Ollama."""
+    from decimal import Decimal as _Dec
+    from sqlalchemy import func as _func
+    from app.services.ollama_duplicate import _get_examples, score_group
+    txns = db.execute(
+        select(Transaction).where(
+            Transaction.account_id == account_id,
+            _func.date(Transaction.date) == txn_date,
+            Transaction.amount == _Dec(amount),
+        )
+    ).scalars().all()
+    if not txns:
+        return {"error": "group not found"}
+    descs = [t.description or "" for t in txns]
+    dupes, non_dupes = _get_examples(db)
+    is_dup, conf = score_group(descs, dupes, non_dupes)
+    if is_dup is None:
+        return {"available": False}
+    return {"available": True, "is_duplicate": is_dup, "confidence": conf}
+
+
+# ── Dismiss duplicate group ──────────────────────────────────────────
+
+@router.post("/duplicates/dismiss")
+def dismiss_duplicate(
+    account_id: int = Form(...),
+    txn_date: str = Form(...),
+    amount: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    from decimal import Decimal as _Dec
+    from app.models.dismissed_duplicate import DismissedDuplicate
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+    key = {"account_id": account_id, "txn_date": txn_date, "amount": _Dec(amount)}
+    # Upsert — silently no-op if already dismissed
+    existing = db.execute(
+        select(DismissedDuplicate).where(
+            DismissedDuplicate.account_id == account_id,
+            DismissedDuplicate.txn_date == txn_date,
+            DismissedDuplicate.amount == _Dec(amount),
+        )
+    ).scalar_one_or_none()
+    if not existing:
+        db.add(DismissedDuplicate(**key))
+        db.commit()
+    return RedirectResponse(url="/transactions/duplicates", status_code=303)
+
+
+@router.post("/duplicates/bulk-dismiss")
+def bulk_dismiss_duplicates(
+    txn_ids: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Dismiss every duplicate group that contains at least one of the given txn IDs."""
+    from decimal import Decimal as _Dec
+    from app.models.dismissed_duplicate import DismissedDuplicate
+    ids = [int(x) for x in txn_ids.split(",") if x.strip().isdigit()]
+    if not ids:
+        return RedirectResponse(url="/transactions/duplicates", status_code=303)
+    txns = db.execute(select(Transaction).where(Transaction.id.in_(ids))).scalars().all()
+    seen: set[tuple] = set()
+    for txn in txns:
+        date_str = txn.date.strftime("%Y-%m-%d") if hasattr(txn.date, "strftime") else str(txn.date)[:10]
+        key = (txn.account_id, date_str, txn.amount)
+        if key in seen:
+            continue
+        seen.add(key)
+        exists = db.execute(
+            select(DismissedDuplicate).where(
+                DismissedDuplicate.account_id == txn.account_id,
+                DismissedDuplicate.txn_date == date_str,
+                DismissedDuplicate.amount == txn.amount,
+            )
+        ).scalar_one_or_none()
+        if not exists:
+            db.add(DismissedDuplicate(account_id=txn.account_id, txn_date=date_str, amount=txn.amount))
+    db.commit()
+    return RedirectResponse(url="/transactions/duplicates", status_code=303)
+
+
+@router.post("/duplicates/undismiss")
+def undismiss_duplicate(
+    account_id: int = Form(...),
+    txn_date: str = Form(...),
+    amount: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    from decimal import Decimal as _Dec
+    from app.models.dismissed_duplicate import DismissedDuplicate
+    row = db.execute(
+        select(DismissedDuplicate).where(
+            DismissedDuplicate.account_id == account_id,
+            DismissedDuplicate.txn_date == txn_date,
+            DismissedDuplicate.amount == _Dec(amount),
+        )
+    ).scalar_one_or_none()
+    if row:
+        db.delete(row)
+        db.commit()
+    return RedirectResponse(url="/transactions/duplicates", status_code=303)
+
+
+# ── Recovery (deleted transactions) ─────────────────────────────────
+
+@router.get("/recover", response_class=HTMLResponse)
+def recover_page(request: Request, db: Session = Depends(get_db)):
+    from app.models.deleted_transaction import DeletedTransaction
+    from app.models.account import Account as _Acct
+    deleted = db.execute(
+        select(DeletedTransaction)
+        .order_by(DeletedTransaction.deleted_at.desc())
+        .limit(500)
+    ).scalars().all()
+    acct_ids = {d.account_id for d in deleted}
+    accounts = {a.id: a for a in db.execute(
+        select(_Acct).where(_Acct.id.in_(acct_ids))
+    ).scalars().all()} if acct_ids else {}
+    return templates.TemplateResponse(request, "transactions/recover.html", {
+        "deleted": deleted,
+        "accounts": accounts,
+    })
+
+
+@router.post("/recover")
+def recover_transactions(
+    row_ids: str = Form(...),
+    return_url: str = Form("/transactions/recover"),
+    db: Session = Depends(get_db),
+):
+    from app.models.deleted_transaction import DeletedTransaction
+    from app.models.account import Account as _Acct, LIABILITY_TYPES
+    ids = [int(x) for x in row_ids.split(",") if x.strip().isdigit()]
+    rows = db.execute(
+        select(DeletedTransaction).where(DeletedTransaction.id.in_(ids))
+    ).scalars().all()
+
+    restored = 0
+    for row in rows:
+        # Don't re-insert if already exists (exact same original_id still alive)
+        if row.original_id:
+            exists = db.get(Transaction, row.original_id)
+            if exists:
+                continue
+        txn = Transaction(
+            account_id=row.account_id,
+            date=row.date,
+            description=row.description,
+            amount=row.amount,
+            original_currency=row.original_currency or "USD",
+            is_transfer=row.is_transfer,
+            category_id=row.category_id,
+            import_batch_id=row.import_batch_id,
+        )
+        db.add(txn)
+        db.delete(row)  # remove from deleted log once recovered
+        restored += 1
+
+    db.commit()
+    return RedirectResponse(url=f"{return_url}?recovered={restored}", status_code=303)
 
 
 # ── Bulk operations ──────────────────────────────────────────────────
@@ -438,9 +679,10 @@ def bulk_delete(
     db: Session = Depends(get_db),
 ):
     ids = [int(x) for x in txn_ids.split(",") if x.strip().isdigit()]
-    db.execute(
-        Transaction.__table__.delete().where(Transaction.id.in_(ids))
-    )
+    txns = db.execute(select(Transaction).where(Transaction.id.in_(ids))).scalars().all()
+    for txn in txns:
+        _log_deleted(db, txn)
+        _delete_txn_safe(db, txn)
     db.commit()
     return RedirectResponse(url=return_url, status_code=303)
 
@@ -464,18 +706,48 @@ def bulk_toggle_transfer(
 
 # ── Auto-categorize ─────────────────────────────────────────────────
 
+@router.get("/auto-categorize/score-one")
+def auto_categorize_score_one(
+    txn_id: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    """JSON: ask Ollama to suggest a category for one transaction.
+
+    Returns {available, category_id, category_name} or {available: false}.
+    """
+    from app.services.categorizer import ask_ollama
+    txn = db.get(Transaction, txn_id)
+    if not txn:
+        return {"available": False}
+    cat_list = db.execute(select(Category.name).order_by(Category.name)).scalars().all()
+    llm_match = ask_ollama(txn.description, list(cat_list))
+    if not llm_match:
+        return {"available": False}
+    cat = db.execute(
+        select(Category).where(func.lower(Category.name) == llm_match.lower())
+    ).scalar_one_or_none()
+    if not cat:
+        return {"available": False}
+    return {"available": True, "category_id": cat.id, "category_name": cat.name}
+
+
 @router.get("/auto-categorize/preview", response_class=HTMLResponse)
 def auto_categorize_preview(
     request: Request,
     limit: int = Query(200),
+    account_id: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
-    suggestions = suggest_categories(db, limit=limit)
+    account_id_val = _safe_int(account_id)
+    suggestions = suggest_categories(db, limit=limit, account_id=account_id_val)
     categories = db.execute(select(Category).order_by(Category.name)).scalars().all()
+    account = db.get(Account, account_id_val) if account_id_val else None
     return templates.TemplateResponse(request, "transactions/auto_categorize_preview.html", {
         "suggestions": suggestions,
         "categories": categories,
         "limit": limit,
+        "account": account,
+        "account_id": account_id_val,
     })
 
 
@@ -483,6 +755,7 @@ def auto_categorize_preview(
 def auto_categorize_apply(
     request: Request,
     assignments: str = Form(...),   # JSON: [[txn_id, category_id], ...]
+    account_id: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     try:
@@ -501,7 +774,10 @@ def auto_categorize_apply(
             applied += 1
 
     db.commit()
-    return RedirectResponse(url=f"/transactions?auto_cat_applied={applied}", status_code=303)
+    base = f"/transactions?auto_cat_applied={applied}"
+    if account_id:
+        base += f"&account_id={account_id}"
+    return RedirectResponse(url=base, status_code=303)
 
 
 @router.post("/auto-categorize")

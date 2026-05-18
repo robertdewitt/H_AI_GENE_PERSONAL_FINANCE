@@ -5,7 +5,7 @@
 {% set matched = suggestions | selectattr('method', '!=', 'none') | list %}
 {% set unmatched = suggestions | selectattr('method', '==', 'none') | list %}
 <hgroup>
-    <h1>Auto-Categorize Preview</h1>
+    <h1>Auto-Categorize Preview{% if account %} — {{ account.name }}{% endif %}</h1>
     <p>{{ suggestions|length }} uncategorized transaction{{ 's' if suggestions|length != 1 else '' }}
        &mdash; {{ matched|length }} auto-matched, {{ unmatched|length }} need manual assignment</p>
 </hgroup>
@@ -22,6 +22,7 @@
 
 <form method="post" action="/transactions/auto-categorize/apply" id="applyForm">
     <input type="hidden" name="assignments" id="assignmentsInput" value="[]">
+    {% if account_id %}<input type="hidden" name="account_id" value="{{ account_id }}">{% endif %}
 
     <div style="display:flex;gap:0.5rem;margin-bottom:1rem;align-items:center;flex-wrap:wrap">
         <button type="button" onclick="selectAll(true)" class="outline" style="margin:0;padding:0.3rem 0.8rem">Select All</button>
@@ -30,7 +31,7 @@
         <span id="selCount" style="color:var(--pico-muted-color)">0 selected</span>
         <div style="flex:1"></div>
         <button type="submit" id="applyBtn" onclick="return buildAssignments()" style="margin:0">Apply Selected</button>
-        <a href="/transactions" role="button" class="outline secondary" style="margin:0">Cancel</a>
+        <a href="/transactions{% if account_id %}?account_id={{ account_id }}{% endif %}" role="button" class="outline secondary" style="margin:0">Cancel</a>
     </div>
 
     <div style="overflow-x:auto">
@@ -48,7 +49,7 @@
         </thead>
         <tbody>
         {% for s in suggestions %}
-        <tr{% if s.method == 'none' %} style="opacity:0.75"{% endif %}>
+        <tr{% if s.method == 'none' %} class="pending-ollama" data-txn-id="{{ s.transaction.id }}" style="opacity:0.75"{% endif %}>
             <td><input type="checkbox" class="rowCheck" data-txn="{{ s.transaction.id }}"
                        {% if s.method != 'none' %}checked{% endif %}
                        onchange="updateCount()"></td>
@@ -68,15 +69,15 @@
                     {% endfor %}
                 </select>
             </td>
-            <td>
+            <td class="method-cell">
                 {% if s.method == 'rule' %}
                 <span style="font-size:0.75rem;color:#2a7;font-weight:600">rule</span>
                 {% elif s.method == 'keyword' %}
                 <span style="font-size:0.75rem;color:#47a;font-weight:600">keyword</span>
                 {% elif s.method == 'llm' %}
-                <span style="font-size:0.75rem;color:#a74;font-weight:600">llm</span>
+                <span style="font-size:0.75rem;color:#a74;font-weight:600">AI</span>
                 {% else %}
-                <span style="font-size:0.75rem;color:var(--pico-muted-color)">manual</span>
+                <span class="ollama-status" style="font-size:0.75rem;color:#9ca3af">…</span>
                 {% endif %}
             </td>
         </tr>
@@ -131,6 +132,66 @@ function buildAssignments() {
 
 // Init count
 updateCount();
+
+// ── Async Ollama scoring for unmatched rows ───────────────────────────────
+async function scoreWithOllama() {
+    const rows = document.querySelectorAll('tr.pending-ollama');
+    if (!rows.length) return;
+
+    let ollamaWorking = null; // null = untested
+
+    for (const row of rows) {
+        if (ollamaWorking === false) break;
+
+        const txnId = row.dataset.txnId;
+        const statusEl = row.querySelector('.ollama-status');
+        if (statusEl) statusEl.textContent = '⋯';
+
+        try {
+            const r = await fetch(`/transactions/auto-categorize/score-one?txn_id=${txnId}`);
+            if (!r.ok) { ollamaWorking = false; break; }
+            const d = await r.json();
+
+            if (!d.available) {
+                ollamaWorking = false;
+                if (statusEl) statusEl.textContent = '';
+                break;
+            }
+
+            ollamaWorking = true;
+            row.classList.remove('pending-ollama');
+            row.style.opacity = '1';
+
+            // Pre-select category
+            const sel = row.querySelector('.catSelect');
+            if (sel) {
+                sel.value = d.category_id;
+                // Auto-check this row
+                const cb = row.querySelector('.rowCheck');
+                if (cb) { cb.checked = true; cb.dataset.aiSelected = '1'; }
+            }
+
+            // Update method badge
+            const methodCell = row.querySelector('.method-cell');
+            if (methodCell) {
+                methodCell.innerHTML = '<span style="font-size:0.75rem;color:#7c3aed;font-weight:600" title="AI suggested">AI</span>';
+            }
+
+            updateCount();
+        } catch (_) {
+            ollamaWorking = false;
+            if (statusEl) statusEl.textContent = '';
+            break;
+        }
+    }
+
+    // Hide remaining "…" spinners if Ollama never responded
+    if (!ollamaWorking) {
+        document.querySelectorAll('.ollama-status').forEach(el => el.textContent = '');
+    }
+}
+
+document.addEventListener('DOMContentLoaded', scoreWithOllama);
 </script>
 {% endif %}
 {% endblock %}

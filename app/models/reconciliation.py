@@ -83,4 +83,4 @@ class ReconciliationMember(Base):
     )
 
     group = relationship("ReconciliationGroup", back_populates="members")
-    transaction = relationship("Transaction")
+    transaction = relationship("Transaction", overlaps="reconciliation_memberships")

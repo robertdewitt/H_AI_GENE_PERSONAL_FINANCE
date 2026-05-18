@@ -422,6 +422,7 @@ class CategorySuggestion:
 def suggest_categories(
     db: Session,
     limit: int = 200,
+    account_id: int | None = None,
 ) -> list[CategorySuggestion]:
     """Dry-run categorization — returns ALL uncategorized transactions.
 
@@ -429,12 +430,11 @@ def suggest_categories(
     Transactions with no match have category_id=None so the user can pick.
     Used by the preview route so the user can validate before applying.
     """
-    _has_splits = exists().where(TransactionSplit.transaction_id == Transaction.id)
+    q = select(Transaction).where(Transaction.category_id.is_(None))
+    if account_id is not None:
+        q = q.where(Transaction.account_id == account_id)
     txns = db.execute(
-        select(Transaction)
-        .where(Transaction.category_id.is_(None), ~_has_splits)
-        .order_by(Transaction.date.desc())
-        .limit(limit)
+        q.order_by(Transaction.date.desc()).limit(limit)
     ).scalars().all()
 
     all_cats = db.execute(select(Category)).scalars().all()
@@ -470,23 +470,7 @@ def suggest_categories(
                 ))
                 continue
 
-        # 3. LLM
-        if cat_list:
-            llm_match = ask_ollama(txn.description, cat_list)
-            if llm_match:
-                cat = db.execute(
-                    select(Category).where(func.lower(Category.name) == llm_match.lower())
-                ).scalar_one_or_none()
-                if cat:
-                    suggestions.append(CategorySuggestion(
-                        transaction=txn,
-                        category_id=cat.id,
-                        category_name=cat.name,
-                        method="llm",
-                    ))
-                    continue
-
-        # No match — include anyway so the user can manually assign
+        # No match from rules/keywords — include so user can pick, Ollama scores async
         suggestions.append(CategorySuggestion(
             transaction=txn,
             category_id=None,

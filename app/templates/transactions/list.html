@@ -96,7 +96,7 @@
 </details>
 
 <div style="display:flex;gap:0.5rem;margin-bottom:1rem;align-items:center">
-    <a href="/transactions/auto-categorize/preview" role="button" class="outline" style="margin:0">Auto-Categorize Uncategorized</a>
+    <a href="/transactions/auto-categorize/preview{% if filters.account_id %}?account_id={{ filters.account_id }}{% endif %}" role="button" class="outline" style="margin:0">Auto-Categorize Uncategorized</a>
 </div>
 
 {% if transactions %}

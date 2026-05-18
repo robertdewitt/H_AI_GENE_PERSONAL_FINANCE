@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Recover Deleted Transactions — Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Recover Deleted Transactions</h1>
+    <p>{{ deleted | length }} deleted transaction{{ 's' if deleted | length != 1 else '' }} on record &mdash; most recent first</p>
+</hgroup>
+
+{% if request.query_params.get("recovered") %}
+<article style="margin-bottom:1rem;padding:0.75rem 1rem;border-left:4px solid var(--pico-ins-color)">
+    <strong>{{ request.query_params.get("recovered") }} transaction{{ 's' if request.query_params.get("recovered") != '1' else '' }} restored.</strong>
+</article>
+{% endif %}
+
+{% if not deleted %}
+<article>
+    <p style="text-align:center;padding:2rem;color:var(--pico-muted-color)">
+        No deleted transactions on record. Future deletions will appear here.
+    </p>
+</article>
+{% else %}
+
+<form method="post" action="/transactions/recover" id="recoverForm">
+    <input type="hidden" name="return_url" value="/transactions/recover">
+
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.75rem;margin-bottom:1rem">
+        <div style="display:flex;gap:0.5rem;align-items:center">
+            <label style="display:flex;align-items:center;gap:0.4rem;font-weight:600;cursor:pointer">
+                <input type="checkbox" id="selectAll" onchange="toggleAll(this)">
+                Select all
+            </label>
+        </div>
+        <button type="submit" class="outline"
+                style="padding:0.4rem 1.2rem"
+                onclick="return prepareAndConfirm()">
+            Restore selected
+        </button>
+    </div>
+
+    <div style="overflow-x:auto">
+        <table>
+            <thead>
+                <tr>
+                    <th style="width:2.5rem"></th>
+                    <th>Deleted</th>
+                    <th>Account</th>
+                    <th>Txn Date</th>
+                    <th>Description</th>
+                    <th style="text-align:right">Amount</th>
+                    <th>Batch</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for row in deleted %}
+            {% set acct = accounts.get(row.account_id) %}
+            <tr>
+                <td>
+                    <input type="checkbox" name="row_check" value="{{ row.id }}" class="row-check">
+                </td>
+                <td style="white-space:nowrap;font-size:0.85rem;color:var(--pico-muted-color)">
+                    {{ row.deleted_at.strftime("%b %d, %Y %H:%M") }}
+                </td>
+                <td style="font-size:0.85rem">
+                    {% if acct %}
+                        <a href="/accounts/{{ acct.id }}">{{ acct.name }}</a>
+                    {% else %}
+                        #{{ row.account_id }}
+                    {% endif %}
+                </td>
+                <td style="white-space:nowrap">{{ row.date.strftime("%b %d, %Y") }}</td>
+                <td style="font-size:0.9rem;max-width:28rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                    title="{{ row.description or '' }}">
+                    {{ row.description or "—" }}
+                </td>
+                <td style="text-align:right;white-space:nowrap;font-weight:500"
+                    class="{% if row.amount >= 0 %}positive{% else %}negative{% endif %}">
+                    {% if row.amount >= 0 %}+{% endif %}${{ "%.2f"|format(row.amount|float) }}
+                </td>
+                <td style="font-size:0.85rem;color:var(--pico-muted-color)">
+                    {% if row.import_batch_id %}#{{ row.import_batch_id }}{% else %}—{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {# Hidden field populated by JS before submit #}
+    <input type="hidden" name="row_ids" id="rowIds">
+</form>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleAll(cb) {
+    document.querySelectorAll('.row-check').forEach(c => c.checked = cb.checked);
+}
+
+function prepareAndConfirm() {
+    const checked = [...document.querySelectorAll('.row-check:checked')];
+    if (checked.length === 0) {
+        alert('Select at least one transaction to restore.');
+        return false;
+    }
+    document.getElementById('rowIds').value = checked.map(c => c.value).join(',');
+    return confirm(`Restore ${checked.length} transaction${checked.length === 1 ? '' : 's'}?`);
+}
+</script>
+{% endblock %}

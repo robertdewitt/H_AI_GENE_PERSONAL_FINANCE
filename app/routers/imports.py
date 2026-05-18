@@ -17,6 +17,40 @@ from app.services.ibkr_import import is_ibkr_file, parse_ibkr_csv, apply_ibkr_st
 router = APIRouter(prefix="/import", tags=["import"])
 
 
+@router.post("/detect-account")
+async def detect_account_endpoint(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Save the uploaded file temporarily, detect which account it belongs to,
+    return JSON {account_id, confidence, reason} — called client-side before
+    the user confirms the import account selection.
+    """
+    import tempfile, os
+    from app.services.account_detector import detect_account
+
+    ext = Path(file.filename).suffix.lower()
+    if ext not in (".csv", ".xls", ".xlsx", ".pdf"):
+        return {"account_id": None, "confidence": 0, "reason": "unsupported type"}
+
+    # Write to a temp file so the detector can read it
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        tmp_path = tmp.name
+
+    try:
+        accounts = db.execute(select(Account).order_by(Account.name)).scalars().all()
+        account_id, confidence, reason = detect_account(tmp_path, file.filename, accounts)
+    finally:
+        os.unlink(tmp_path)
+
+    return {
+        "account_id": account_id,
+        "confidence": round(confidence, 2),
+        "reason": reason,
+    }
+
+
 @router.get("", response_class=HTMLResponse)
 def import_form(request: Request, db: Session = Depends(get_db)):
     accounts = db.execute(
@@ -198,7 +232,7 @@ def confirm_import(
                         select(_Txn)
                         .where(
                             _Txn.account_id == account.id,
-                            _Txn.import_batch_id == batch.import_batch_id,
+                            _Txn.import_batch_id == batch.id,
                         )
                         .filter(_Txn.description.ilike("%regular payment%"))
                         .order_by(_Txn.date.desc())
@@ -256,7 +290,7 @@ def confirm_import(
                         select(_Txn2)
                         .where(
                             _Txn2.account_id == account.id,
-                            _Txn2.import_batch_id == batch.import_batch_id,
+                            _Txn2.import_batch_id == batch.id,
                         )
                         .order_by(_Txn2.date.desc())
                         .limit(10)

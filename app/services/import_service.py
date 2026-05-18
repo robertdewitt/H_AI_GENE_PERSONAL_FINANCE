@@ -609,9 +609,10 @@ def import_transactions(
         elif debit_col or credit_col:
             debit_raw = parse_amount(row.get(debit_col, "")) if debit_col else None
             credit_raw = parse_amount(row.get(credit_col, "")) if credit_col else None
-            debit_amt = abs(debit_raw) if debit_raw is not None else 0.0
-            credit_amt = abs(credit_raw) if credit_raw is not None else 0.0
-            if debit_amt == 0.0 and credit_amt == 0.0:
+            from decimal import Decimal as _D
+            debit_amt = abs(debit_raw) if debit_raw is not None else _D("0")
+            credit_amt = abs(credit_raw) if credit_raw is not None else _D("0")
+            if debit_amt == 0 and credit_amt == 0:
                 amount_val = None
             else:
                 amount_val = credit_amt - debit_amt

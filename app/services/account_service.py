@@ -137,7 +137,32 @@ def get_account_balance_rich(
     )
 
     if truth_source == BalanceTruthSource.LATEST_STATEMENT.value:
-        result = _balance_from_statement(account, as_of_date, now)
+        # Prefer the most recent LiabilityBalanceSnapshot (accurate per-statement
+        # record) over account.statement_balance which can fall behind if statements
+        # are imported out of chronological order.
+        from app.models.snapshots import LiabilityBalanceSnapshot
+        snap_query = (
+            select(LiabilityBalanceSnapshot)
+            .where(LiabilityBalanceSnapshot.account_id == account_id)
+            .order_by(LiabilityBalanceSnapshot.as_of_date.desc())
+            .limit(1)
+        )
+        if as_of_date:
+            snap_query = snap_query.where(
+                LiabilityBalanceSnapshot.as_of_date <= as_of_date
+            )
+        latest_snap = db.execute(snap_query).scalar_one_or_none()
+        if latest_snap is not None:
+            stale = (now - latest_snap.as_of_date).days > 45
+            result = AccountBalanceResult(
+                value=latest_snap.value_native,
+                balance_as_of=latest_snap.as_of_date,
+                balance_source_used=BalanceTruthSource.LATEST_STATEMENT.value,
+                balance_confidence=0.95 if not stale else 0.5,
+                balance_stale=stale,
+            )
+        else:
+            result = _balance_from_statement(account, as_of_date, now)
     elif truth_source == BalanceTruthSource.LATEST_VALUATION.value:
         result = _balance_from_valuation(db, account, as_of_date, base_ccy, now)
     elif truth_source == BalanceTruthSource.LIABILITY_BALANCE.value:

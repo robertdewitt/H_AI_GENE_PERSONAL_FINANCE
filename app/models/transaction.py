@@ -83,6 +83,18 @@ class Transaction(Base):
         "TransactionSplit", back_populates="transaction",
         cascade="all, delete-orphan",
     )
+    reconciliation_memberships = relationship(
+        "ReconciliationMember",
+        foreign_keys="ReconciliationMember.transaction_id",
+        cascade="all, delete-orphan",
+        overlaps="transaction",
+    )
+    payment_decompositions = relationship(
+        "PaymentDecomposition",
+        foreign_keys="PaymentDecomposition.transaction_id",
+        cascade="all, delete-orphan",
+        overlaps="transaction",
+    )
     financial_document = relationship(
         "FinancialDocument", foreign_keys=[financial_document_id],
     )
