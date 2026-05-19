@@ -17,6 +17,7 @@ class DuplicateGroup:
     amount: Decimal
     transactions: list           # list of Transaction
     confidence: float            # 0–1; 1.0 = identical descriptions
+    currency: str = "USD"        # account currency
     cross_batch: bool = False    # True when txns came from different import files
     ollama_score: float | None = None   # LLM duplicate probability (0–1)
     ollama_suggested: bool = False      # True when LLM says likely duplicate
@@ -86,6 +87,7 @@ def find_dismissed_groups(db: Session) -> list[DuplicateGroup]:
             amount=amount,
             transactions=txn_list,
             confidence=round(confidence, 3),
+            currency=acct.currency if acct else "USD",
             cross_batch=len(batch_ids) > 1,
         ))
 
@@ -161,6 +163,12 @@ def find_duplicate_groups(db: Session) -> list[DuplicateGroup]:
         batch_ids = {t.import_batch_id for t in txn_list}
         cross_batch = len(batch_ids) > 1
 
+        # Skip same-batch groups where descriptions are clearly different —
+        # these are coincidental same-date/amount transactions, not duplicates.
+        # Cross-batch groups always surface (different files = real duplicate).
+        if not cross_batch and confidence < 0.5:
+            continue
+
         acct = accounts.get(acct_id)
         result.append(DuplicateGroup(
             account_id=acct_id,
@@ -169,6 +177,7 @@ def find_duplicate_groups(db: Session) -> list[DuplicateGroup]:
             amount=amount,
             transactions=txn_list,
             confidence=round(confidence, 3),
+            currency=acct.currency if acct else "USD",
             cross_batch=cross_batch,
         ))
 

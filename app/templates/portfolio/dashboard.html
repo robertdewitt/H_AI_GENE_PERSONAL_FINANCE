@@ -31,7 +31,20 @@
     </div>
 </div>
 
-<div style="text-align:right;margin-bottom:1rem">
+<div style="display:flex;justify-content:flex-end;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">
+    {% if prices_timestamp %}
+        {% if prices_live %}
+            <span style="font-size:0.82rem;color:#16a34a">
+                &#10003; Live prices as of {{ prices_timestamp.strftime("%Y-%m-%d %H:%M") }}
+            </span>
+        {% else %}
+            <span style="font-size:0.82rem;color:#f59e0b;font-weight:600">
+                &#9888; Cached prices &mdash; last fetched {{ prices_timestamp.strftime("%Y-%m-%d %H:%M") }}
+            </span>
+        {% endif %}
+    {% else %}
+        <span style="font-size:0.82rem;color:#dc2626">&#9888; No price data available</span>
+    {% endif %}
     <a href="/portfolio/refresh-prices" role="button" class="outline" style="padding:0.3rem 0.9rem;font-size:0.85rem">
         &#8635; Refresh Prices
     </a>

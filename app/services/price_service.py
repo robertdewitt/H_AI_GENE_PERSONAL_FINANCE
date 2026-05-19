@@ -14,22 +14,106 @@ from sqlalchemy.orm import Session
 log = logging.getLogger(__name__)
 
 
-def get_current_prices(symbols: list[str]) -> dict[str, float]:
+def get_current_prices(
+    symbols: list[str],
+    db: "Session | None" = None,
+) -> tuple[dict[str, float], dict[str, datetime], bool]:
     """Fetch the latest price for each symbol using yfinance fast_info.
 
-    Returns a dict of {symbol: price}. Symbols that fail are omitted.
+    Falls back to the most recent PriceSnapshot in the DB for any symbol
+    that cannot be fetched live.
+
+    Returns:
+        prices  — {symbol: float}
+        as_of   — {symbol: datetime} when each price was fetched or last cached
+        live    — True if at least one price came from a live fetch
     """
-    result: dict[str, float] = {}
+    prices: dict[str, float] = {}
+    as_of: dict[str, datetime] = {}
+    live = False
+    now = datetime.now()
+
     for symbol in symbols:
         try:
             ticker = yf.Ticker(symbol)
             price = ticker.fast_info.last_price
             if price is not None and price > 0:
-                result[symbol] = float(price)
+                prices[symbol] = float(price)
+                as_of[symbol] = now
+                live = True
+                if db is not None:
+                    _save_price_snapshot(db, symbol, float(price), now)
             else:
                 log.warning("price_service: no price for %s (got %r)", symbol, price)
         except Exception as exc:
             log.warning("price_service: failed to fetch price for %s: %s", symbol, exc)
+
+    # Fall back to DB cache for any symbols we didn't get live
+    missing = [s for s in symbols if s not in prices]
+    if missing and db is not None:
+        for sym, (price, ts) in _load_cached_prices(db, missing).items():
+            prices[sym] = price
+            as_of[sym] = ts
+
+    return prices, as_of, live
+
+
+def _save_price_snapshot(db: "Session", symbol: str, price: float, ts: datetime) -> None:
+    """Upsert today's live price into price_snapshots."""
+    from app.models.instrument import Instrument, PriceSnapshot
+
+    inst = db.execute(
+        select(Instrument).where(Instrument.symbol == symbol).limit(1)
+    ).scalar_one_or_none()
+    if inst is None:
+        return
+
+    today_start = ts.replace(hour=0, minute=0, second=0, microsecond=0)
+    existing = db.execute(
+        select(PriceSnapshot).where(
+            PriceSnapshot.instrument_id == inst.id,
+            PriceSnapshot.as_of_date >= today_start,
+        ).limit(1)
+    ).scalar_one_or_none()
+
+    if existing is not None:
+        existing.price = price
+        existing.as_of_date = ts
+        existing.stale_flag = False
+    else:
+        db.add(PriceSnapshot(
+            instrument_id=inst.id,
+            as_of_date=ts,
+            price=price,
+            currency=inst.currency or "USD",
+            source="yfinance_live",
+            confidence=0.95,
+            stale_flag=False,
+        ))
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        log.warning("price_service: failed to save snapshot for %s: %s", symbol, exc)
+
+
+def _load_cached_prices(
+    db: "Session", symbols: list[str]
+) -> dict[str, tuple[float, datetime]]:
+    """Return most recent PriceSnapshot for each symbol."""
+    from app.models.instrument import Instrument, PriceSnapshot
+
+    result: dict[str, tuple[float, datetime]] = {}
+    for symbol in symbols:
+        row = db.execute(
+            select(PriceSnapshot)
+            .join(Instrument, PriceSnapshot.instrument_id == Instrument.id)
+            .where(Instrument.symbol == symbol)
+            .order_by(PriceSnapshot.as_of_date.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if row is not None and row.price:
+            result[symbol] = (float(row.price), row.as_of_date)
     return result
 
 

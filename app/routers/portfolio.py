@@ -72,8 +72,14 @@ def portfolio_dashboard(request: Request, db: Session = Depends(get_db)):
 
     symbols_held = list(agg.keys())
 
-    # ── Fetch current prices ──────────────────────────────────────────────
-    current_prices = get_current_prices(symbols_held) if symbols_held else {}
+    # ── Fetch current prices (with DB fallback + caching) ────────────────
+    if symbols_held:
+        current_prices, prices_as_of, prices_live = get_current_prices(symbols_held, db=db)
+    else:
+        current_prices, prices_as_of, prices_live = {}, {}, False
+
+    # Oldest timestamp among returned prices = "data as of" time shown to user
+    prices_timestamp = min(prices_as_of.values()) if prices_as_of else None
 
     # ── Build enriched position dicts ────────────────────────────────────
     positions = []
@@ -193,6 +199,8 @@ def portfolio_dashboard(request: Request, db: Session = Depends(get_db)):
         "portfolio_history": portfolio_history,
         "accounts_with_positions": accounts_with_positions,
         "currency_symbol": currency_symbol,
+        "prices_live": prices_live,
+        "prices_timestamp": prices_timestamp,
     })
 
 

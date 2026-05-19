@@ -73,7 +73,9 @@
 {% endif %}
 
 {# ── Macro: renders one group's transaction table with checkboxes ── #}
-{% macro group_table(group, border_color, badges_html) %}
+{% set SYMBOLS = {"GBP": "£", "EUR": "€", "USD": "$", "CAD": "CA$", "AUD": "A$"} %}
+{% macro group_table(group, border_color, cross_batch, conf_pct) %}
+{% set sym = SYMBOLS.get(group.currency, group.currency ~ " ") %}
 {% set gkey = group.account_id ~ '|' ~ group.date ~ '|' ~ group.amount %}
 <article style="margin-bottom:1rem;border-left:4px solid {{ border_color }}"
          data-gkey="{{ gkey }}"
@@ -92,14 +94,19 @@
                 &nbsp;&middot;&nbsp;{{ group.date }}
                 &nbsp;&middot;&nbsp;
                 {% if group.amount < 0 %}
-                    <span style="color:#dc2626">&minus;${{ "%.2f"|format((group.amount|float)|abs) }}</span>
+                    <span style="color:#dc2626">&minus;{{ sym }}{{ "%.2f"|format((group.amount|float)|abs) }}</span>
                 {% else %}
-                    <span style="color:#16a34a">+${{ "%.2f"|format(group.amount|float) }}</span>
+                    <span style="color:#16a34a">+{{ sym }}{{ "%.2f"|format(group.amount|float) }}</span>
                 {% endif %}
             </span>
         </label>
         <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
-            {{ badges_html | safe }}
+            {% if cross_batch %}
+                <span style="background:#dc2626;color:#fff;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem">Different files</span>
+                <span style="background:#6b7280;color:#fff;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem">{{ conf_pct }}% match</span>
+            {% else %}
+                <span style="background:{{ border_color }};color:#fff;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem">{{ conf_pct }}% match</span>
+            {% endif %}
             {# Ollama badge — updated by JS if LLM unavailable at page load #}
             {% if group.ollama_score is not none %}
                 {% if group.ollama_suggested %}
@@ -165,9 +172,9 @@
                 <td style="font-size:0.9rem">{{ txn.description or "—" }}</td>
                 <td style="text-align:right;font-size:0.9rem;white-space:nowrap">
                     {% if txn.amount < 0 %}
-                        <span style="color:#dc2626">&minus;{{ "%.2f"|format(txn.amount|float|abs) }}</span>
+                        <span style="color:#dc2626">&minus;{{ sym }}{{ "%.2f"|format(txn.amount|float|abs) }}</span>
                     {% else %}
-                        <span style="color:#16a34a">+{{ "%.2f"|format(txn.amount|float) }}</span>
+                        <span style="color:#16a34a">+{{ sym }}{{ "%.2f"|format(txn.amount|float) }}</span>
                     {% endif %}
                 </td>
                 <td style="font-size:0.85rem;color:var(--pico-muted-color);white-space:nowrap">
@@ -206,10 +213,7 @@
     </p>
     {% for group in groups if group.cross_batch %}
     {% set conf_pct = (group.confidence * 100) | int %}
-    {{ group_table(group, '#dc2626',
-        '<span style="background:#dc2626;color:#fff;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem">Different files</span>
-         <span style="background:#6b7280;color:#fff;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem">' ~ conf_pct ~ '% match</span>'
-    ) }}
+    {{ group_table(group, '#dc2626', true, conf_pct) }}
     {% else %}
     <p style="color:var(--pico-muted-color)">None.</p>
     {% endfor %}
@@ -229,9 +233,7 @@
     {% for group in groups if not group.cross_batch %}
     {% set conf_pct = (group.confidence * 100) | int %}
     {% if group.confidence >= 0.8 %}{% set bc = "#f59e0b" %}{% else %}{% set bc = "#9ca3af" %}{% endif %}
-    {{ group_table(group, bc,
-        '<span style="background:' ~ bc ~ ';color:#fff;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem">' ~ conf_pct ~ '% match</span>'
-    ) }}
+    {{ group_table(group, bc, false, conf_pct) }}
     {% else %}
     <p style="color:var(--pico-muted-color)">None.</p>
     {% endfor %}
