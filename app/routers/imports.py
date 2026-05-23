@@ -371,6 +371,61 @@ def confirm_import(
         except Exception:
             pass  # metadata extraction is best-effort
 
+    # ── Credit-card statement: extract payment due + create scheduled payment ──
+    if account and filepath.lower().endswith(".pdf"):
+        from app.models.account import LIABILITY_TYPES
+        if account.account_type in LIABILITY_TYPES:
+            try:
+                from app.services.pdf_import import extract_cc_metadata
+                from app.models.scheduled_payment import ScheduledPayment
+                from sqlalchemy import select as _sel
+                from decimal import Decimal as _Dec
+                cc_meta = extract_cc_metadata(filepath)
+                if cc_meta and cc_meta.get("payment_due_date"):
+                    due_date = cc_meta["payment_due_date"]
+                    min_pay  = cc_meta.get("minimum_payment")
+                    new_bal  = cc_meta.get("new_balance")
+
+                    # Update account statement balance
+                    if new_bal is not None:
+                        account.statement_balance = new_bal
+                        account.statement_balance_as_of = cc_meta.get("statement_date")
+                        account.balance_truth_source = "latest_statement"
+
+                    # Create or update the scheduled payment for this account
+                    existing_sched = db.execute(
+                        _sel(ScheduledPayment).where(
+                            ScheduledPayment.account_id == account_id,
+                            ScheduledPayment.source == "statement",
+                            ScheduledPayment.active.is_(True),
+                        ).limit(1)
+                    ).scalar_one_or_none()
+
+                    pay_amount = _Dec(str(-(min_pay or 0)))  # outflow = negative
+
+                    if existing_sched is not None:
+                        existing_sched.next_due_date = due_date
+                        if min_pay is not None:
+                            existing_sched.amount = pay_amount
+                    else:
+                        if min_pay is not None:
+                            db.add(ScheduledPayment(
+                                account_id=account_id,
+                                description=f"{account.name} — Minimum Payment",
+                                amount=pay_amount,
+                                amount_type="estimated",
+                                currency=account.currency or "USD",
+                                frequency="monthly",
+                                next_due_date=due_date,
+                                day_of_month=due_date.day,
+                                source="statement",
+                                confidence=0.95,
+                                active=True,
+                            ))
+                    db.commit()
+            except Exception:
+                pass  # best-effort
+
     dupes = getattr(batch, "_duplicates_skipped", 0)
     return RedirectResponse(
         url=f"/accounts/{account_id}?imported={batch.row_count}"

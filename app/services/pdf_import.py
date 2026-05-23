@@ -61,6 +61,91 @@ def pdf_to_dataframe(filepath: str) -> pd.DataFrame:
     return df
 
 
+def extract_cc_metadata(filepath: str) -> dict | None:
+    """Extract credit-card statement summary from a PDF.
+
+    Returns a dict with any of:
+      payment_due_date   – date the next payment is due (date)
+      minimum_payment    – minimum payment amount (float)
+      new_balance        – statement closing balance (float)
+      statement_date     – statement closing date (date)
+    Returns None if not a recognisable credit-card statement.
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        return None
+
+    try:
+        with pdfplumber.open(filepath) as pdf:
+            full_text = "\n".join(page.extract_text() or "" for page in pdf.pages[:2])
+    except Exception:
+        return None
+
+    # Only attempt if it looks like a CC statement (not a mortgage/loan)
+    if _is_mortgage_statement(full_text):
+        return None
+    if not re.search(
+        r"payment\s*due\s*date|minimum\s*payment|new\s*balance|statement\s*closing",
+        full_text, re.I,
+    ):
+        return None
+
+    result: dict = {}
+
+    # Payment due date
+    m = re.search(
+        r"payment\s*due\s*date[:\s]+(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})",
+        full_text, re.I,
+    )
+    if m:
+        from datetime import datetime as _dt
+        for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%d/%m/%Y"):
+            try:
+                result["payment_due_date"] = _dt.strptime(m.group(1), fmt).date()
+                break
+            except ValueError:
+                pass
+
+    # Minimum payment
+    m = re.search(
+        r"(?:total\s*)?minimum\s*payment(?:\s*due)?\s+\$?([\d,]+\.?\d*)",
+        full_text, re.I,
+    )
+    if m:
+        try:
+            result["minimum_payment"] = float(m.group(1).replace(",", ""))
+        except ValueError:
+            pass
+
+    # New balance / statement balance
+    m = re.search(
+        r"new\s*balance(?:\s*total)?\s+\$?([\d,]+\.?\d*)",
+        full_text, re.I,
+    )
+    if m:
+        try:
+            result["new_balance"] = float(m.group(1).replace(",", ""))
+        except ValueError:
+            pass
+
+    # Statement closing date
+    m = re.search(
+        r"statement\s*closing\s*date[:\s]+(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})",
+        full_text, re.I,
+    )
+    if m:
+        from datetime import datetime as _dt
+        for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y"):
+            try:
+                result["statement_date"] = _dt.strptime(m.group(1), fmt).date()
+                break
+            except ValueError:
+                pass
+
+    return result if result else None
+
+
 def extract_mortgage_metadata(filepath: str) -> dict | None:
     """Extract key loan facts from a mortgage statement PDF.
 
@@ -521,8 +606,11 @@ def _looks_like_transactions(df: pd.DataFrame) -> bool:
 # ── Text-line statement parser ────────────────────────────────────────────────
 
 # Matches end-of-line amount:  optional sign, optional $£€, digits, optional cents
+# NOTE: only comma is allowed as thousands separator (not space) — space-separated
+# digit groups like "4241 320.00" in BofA statements (card-suffix + amount) would
+# otherwise be misread as a single large number.
 _EOL_AMOUNT_RE = re.compile(
-    r"([-−–+]?\s*[$£€¥]?\s?\d{1,3}(?:[,\s]\d{3})*(?:\.\d{1,2})?)\s*$"
+    r"([-−–+]?\s*[$£€¥]?\s?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)\s*$"
 )
 
 # Full-line date patterns (ordered most-specific first)
