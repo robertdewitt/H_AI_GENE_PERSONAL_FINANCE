@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Scheduled Payments — Financial Hygiene{% endblock %}
+{% block content %}
+
+{% set SYMBOLS = {"GBP": "£", "EUR": "€", "USD": "$", "CAD": "CA$", "AUD": "A$"} %}
+
+<hgroup>
+    <h1>Scheduled Payments</h1>
+    <p>Recurring bills, subscriptions, and upcoming obligations</p>
+</hgroup>
+
+{% if request.query_params.get('detected') %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #16a34a;background:#f0fdf4">
+    &#10003; {{ request.query_params.get('detected') }} recurring payment(s) added from history.
+</article>
+{% endif %}
+
+<div style="display:flex;gap:0.75rem;margin-bottom:1.5rem;flex-wrap:wrap">
+    <a href="/scheduled/new" role="button" style="padding:0.4rem 1rem;font-size:0.9rem">+ Add payment</a>
+    <a href="/scheduled/detect" role="button" class="outline" style="padding:0.4rem 1rem;font-size:0.9rem">&#128269; Detect from history</a>
+    <a href="/scheduled/forecast" role="button" class="outline" style="padding:0.4rem 1rem;font-size:0.9rem">&#128200; Cash flow forecast</a>
+</div>
+
+{% set active_payments = payments | selectattr('active') | list %}
+{% set inactive_payments = payments | rejectattr('active') | list %}
+
+{% if active_payments %}
+<h2 style="font-size:1.1rem;margin-bottom:0.75rem">Active ({{ active_payments | length }})</h2>
+<div style="overflow-x:auto">
+<table>
+    <thead>
+        <tr>
+            <th>Description</th>
+            <th>Account</th>
+            <th>Amount</th>
+            <th>Frequency</th>
+            <th style="white-space:nowrap">Next Due</th>
+            <th>Source</th>
+            <th>Last Matched</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for p in active_payments %}
+    {% set sym = SYMBOLS.get(p.currency, p.currency ~ " ") %}
+    {% set overdue = p.next_due_date < today %}
+    <tr>
+        <td>
+            {{ p.description }}
+            {% if p.category %}<br><small style="color:var(--pico-muted-color)">{{ p.category.name }}</small>{% endif %}
+            {% if p.source == 'auto_detected' %}<span style="font-size:0.72rem;background:#ede9fe;color:#7c3aed;border-radius:3px;padding:0 4px;margin-left:4px">auto</span>{% endif %}
+        </td>
+        <td style="font-size:0.9rem;white-space:nowrap">{{ p.account.name if p.account else '—' }}</td>
+        <td style="text-align:right;white-space:nowrap;font-weight:600">
+            {% if p.amount < 0 %}
+                <span style="color:#dc2626">&minus;{{ sym }}{{ "%.2f"|format(p.amount|float|abs) }}</span>
+            {% else %}
+                <span style="color:#16a34a">+{{ sym }}{{ "%.2f"|format(p.amount|float) }}</span>
+            {% endif %}
+            {% if p.amount_type == 'estimated' %}<small style="color:var(--pico-muted-color)">~</small>{% endif %}
+        </td>
+        <td style="font-size:0.9rem;text-transform:capitalize">{{ p.frequency }}</td>
+        <td style="font-size:0.9rem;white-space:nowrap{% if overdue %};color:#dc2626;font-weight:600{% endif %}">
+            {{ p.next_due_date.strftime("%d %b %Y") }}
+            {% if overdue %}<span style="font-size:0.75rem"> overdue</span>{% endif %}
+        </td>
+        <td style="font-size:0.8rem;color:var(--pico-muted-color);text-transform:capitalize">{{ p.source.replace('_', ' ') }}</td>
+        <td style="font-size:0.85rem;color:var(--pico-muted-color)">
+            {% if p.last_matched_date %}{{ p.last_matched_date.strftime("%d %b %Y") }}{% else %}—{% endif %}
+        </td>
+        <td style="white-space:nowrap">
+            <a href="/scheduled/{{ p.id }}/edit" style="font-size:0.8rem;margin-right:0.5rem">Edit</a>
+            <form method="post" action="/scheduled/{{ p.id }}/toggle" style="display:inline;margin:0">
+                <button type="submit" class="outline" style="padding:0.1rem 0.5rem;font-size:0.78rem;margin:0">Pause</button>
+            </form>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% else %}
+<article style="text-align:center;padding:2rem;color:var(--pico-muted-color)">
+    No active scheduled payments.
+    <a href="/scheduled/detect">Detect from transaction history</a> or
+    <a href="/scheduled/new">add one manually</a>.
+</article>
+{% endif %}
+
+{% if inactive_payments %}
+<details style="margin-top:2rem">
+    <summary style="font-weight:600;cursor:pointer;color:var(--pico-muted-color)">
+        Paused / inactive ({{ inactive_payments | length }})
+    </summary>
+    <table style="margin-top:0.75rem">
+        <tbody>
+        {% for p in inactive_payments %}
+        {% set sym = SYMBOLS.get(p.currency, p.currency ~ " ") %}
+        <tr style="opacity:0.6">
+            <td>{{ p.description }}</td>
+            <td>{{ p.account.name if p.account else '—' }}</td>
+            <td>{% if p.amount < 0 %}&minus;{% else %}+{% endif %}{{ sym }}{{ "%.2f"|format(p.amount|float|abs) }}</td>
+            <td>{{ p.frequency }}</td>
+            <td>
+                <form method="post" action="/scheduled/{{ p.id }}/toggle" style="display:inline;margin:0">
+                    <button type="submit" class="outline" style="padding:0.1rem 0.5rem;font-size:0.78rem;margin:0">Resume</button>
+                </form>
+                <form method="post" action="/scheduled/{{ p.id }}/delete" style="display:inline;margin:0"
+                      onsubmit="return confirm('Delete this scheduled payment?')">
+                    <button type="submit" class="outline" style="padding:0.1rem 0.5rem;font-size:0.78rem;margin:0;color:#dc2626;border-color:#dc2626">Delete</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</details>
+{% endif %}
+
+{% endblock %}

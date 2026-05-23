@@ -28,6 +28,7 @@ from app.models.snapshots import (
 from app.models.user_profile import UserProfile
 from app.models.deleted_transaction import DeletedTransaction
 from app.models.dismissed_duplicate import DismissedDuplicate
+from app.models.scheduled_payment import ScheduledPayment
 
 __all__ = [
     "Account",
@@ -59,4 +60,5 @@ __all__ = [
     "UserProfile",
     "DeletedTransaction",
     "DismissedDuplicate",
+    "ScheduledPayment",
 ]

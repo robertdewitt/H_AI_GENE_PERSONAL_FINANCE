@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}{% if payment %}Edit{% else %}New{% endif %} Scheduled Payment — Financial Hygiene{% endblock %}
+{% block content %}
+
+<hgroup>
+    <h1>{% if payment %}Edit Scheduled Payment{% else %}New Scheduled Payment{% endif %}</h1>
+</hgroup>
+
+{% set action = "/scheduled/" ~ payment.id ~ "/edit" if payment else "/scheduled/new" %}
+<form method="post" action="{{ action }}">
+
+    <label for="description">Payee / Description *</label>
+    <input type="text" id="description" name="description" required
+           value="{{ payment.description if payment else '' }}"
+           placeholder="e.g. O2 Mobile, Council Tax, Netflix">
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem">
+        <div>
+            <label for="amount">Amount *</label>
+            <input type="number" id="amount" name="amount" step="0.01" required
+                   value="{{ payment.amount if payment else '' }}"
+                   placeholder="-45.00 (negative = outflow)">
+            <small>Negative = payment out, positive = income in</small>
+        </div>
+        <div>
+            <label for="amount_type">Amount Type</label>
+            <select id="amount_type" name="amount_type">
+                {% for at in amount_types %}
+                <option value="{{ at }}" {% if payment and payment.amount_type == at %}selected{% elif not payment and at == 'fixed' %}selected{% endif %}>
+                    {{ at | capitalize }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label for="currency">Currency</label>
+            <input type="text" id="currency" name="currency" maxlength="10"
+                   value="{{ payment.currency if payment else 'USD' }}">
+        </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+        <div>
+            <label for="account_id">Account *</label>
+            <select id="account_id" name="account_id" required>
+                {% for acct in accounts %}
+                <option value="{{ acct.id }}"
+                    {% if payment and payment.account_id == acct.id %}selected{% endif %}>
+                    {{ acct.name }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label for="category_id">Category</label>
+            <select id="category_id" name="category_id">
+                <option value="">— none —</option>
+                {% for cat in categories %}
+                <option value="{{ cat.id }}"
+                    {% if payment and payment.category_id == cat.id %}selected{% endif %}>
+                    {{ cat.name }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem">
+        <div>
+            <label for="frequency">Frequency *</label>
+            <select id="frequency" name="frequency" required>
+                {% for freq in frequencies %}
+                <option value="{{ freq }}"
+                    {% if payment and payment.frequency == freq %}selected{% elif not payment and freq == 'monthly' %}selected{% endif %}>
+                    {{ freq | capitalize }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label for="next_due_date">Next Due Date *</label>
+            <input type="date" id="next_due_date" name="next_due_date" required
+                   value="{{ payment.next_due_date.isoformat() if payment else today }}">
+        </div>
+        <div>
+            <label for="day_of_month">Day of Month</label>
+            <input type="number" id="day_of_month" name="day_of_month" min="1" max="31"
+                   value="{{ payment.day_of_month if payment and payment.day_of_month else '' }}"
+                   placeholder="e.g. 1, 15, 28">
+            <small>Anchor day for monthly/quarterly payments</small>
+        </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+        <div>
+            <label for="end_date">End Date (optional)</label>
+            <input type="date" id="end_date" name="end_date"
+                   value="{{ payment.end_date.isoformat() if payment and payment.end_date else '' }}">
+            <small>Leave blank for indefinite</small>
+        </div>
+        {% if payment %}
+        <div style="display:flex;align-items:center;gap:0.5rem;padding-top:1.5rem">
+            <input type="checkbox" id="active" name="active" role="switch"
+                   {% if payment.active %}checked{% endif %} style="margin:0">
+            <label for="active" style="margin:0">Active</label>
+        </div>
+        {% endif %}
+    </div>
+
+    <label for="notes">Notes</label>
+    <textarea id="notes" name="notes" rows="2"
+              placeholder="Contract number, reference, notes…">{{ payment.notes if payment and payment.notes else '' }}</textarea>
+
+    <div style="display:flex;gap:0.75rem;margin-top:1rem">
+        <button type="submit">{% if payment %}Save changes{% else %}Add payment{% endif %}</button>
+        <a href="/scheduled" role="button" class="outline">Cancel</a>
+        {% if payment %}
+        <form method="post" action="/scheduled/{{ payment.id }}/delete" style="margin:0"
+              onsubmit="return confirm('Delete this scheduled payment?')">
+            <button type="submit" style="background:#dc2626;color:#fff;border:none;padding:0.5rem 1rem">Delete</button>
+        </form>
+        {% endif %}
+    </div>
+</form>
+
+{% endblock %}

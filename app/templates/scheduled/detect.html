@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Detect Recurring Payments — Financial Hygiene{% endblock %}
+{% block content %}
+
+{% set SYMBOLS = {"GBP": "£", "EUR": "€", "USD": "$", "CAD": "CA$", "AUD": "A$"} %}
+
+<hgroup>
+    <h1>Detected Recurring Payments</h1>
+    <p>Found in your transaction history — check the ones to add</p>
+</hgroup>
+
+{% if not suggestions %}
+<article style="text-align:center;padding:2rem;color:var(--pico-muted-color)">
+    No new recurring patterns detected — either all are already scheduled, or there isn't enough history yet.
+</article>
+<a href="/scheduled">&#8592; Back to scheduled payments</a>
+{% else %}
+
+<p style="font-size:0.9rem;color:var(--pico-muted-color);margin-bottom:1rem">
+    {{ suggestions | length }} pattern{{ 's' if suggestions | length != 1 else '' }} found.
+    Check the ones you want to track, adjust any details, then click <strong>Add selected</strong>.
+</p>
+
+<form method="post" action="/scheduled/detect/confirm">
+<div style="overflow-x:auto">
+<table>
+    <thead>
+        <tr>
+            <th style="width:2rem"></th>
+            <th>Description</th>
+            <th>Account</th>
+            <th style="text-align:right">Typical Amount</th>
+            <th>Frequency</th>
+            <th>Next Due</th>
+            <th>Category</th>
+            <th style="text-align:center">Seen</th>
+            <th style="text-align:center">Confidence</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for s in suggestions %}
+    {% set sym = SYMBOLS.get(s.currency, s.currency ~ " ") %}
+    {% set conf_pct = (s.confidence * 100) | int %}
+    {% set conf_color = "#16a34a" if conf_pct >= 80 else ("#f59e0b" if conf_pct >= 60 else "#6b7280") %}
+    <tr>
+        <td>
+            <input type="checkbox" name="selected_{{ loop.index0 }}" value="1"
+                   {% if s.confidence >= 0.7 %}checked{% endif %}
+                   onchange="toggleRow(this, {{ loop.index0 }})" style="margin:0">
+            {# Hidden fields always sent so server can zip them #}
+            <input type="hidden" name="descriptions" value="{{ s.description }}">
+            <input type="hidden" name="amounts"      value="{{ s.amount }}">
+            <input type="hidden" name="currencies"   value="{{ s.currency }}">
+            <input type="hidden" name="account_ids"  value="{{ s.account_id }}">
+            <input type="hidden" name="frequencies"  value="{{ s.frequency }}">
+            <input type="hidden" name="next_due_dates" value="{{ s.next_due_date }}">
+        </td>
+        <td style="font-size:0.9rem">{{ s.description }}</td>
+        <td style="font-size:0.85rem;white-space:nowrap">{{ s.account_name }}</td>
+        <td style="text-align:right;font-weight:600;white-space:nowrap">
+            {% if s.amount < 0 %}
+                <span style="color:#dc2626">&minus;{{ sym }}{{ "%.2f"|format(s.amount|float|abs) }}</span>
+            {% else %}
+                <span style="color:#16a34a">+{{ sym }}{{ "%.2f"|format(s.amount|float) }}</span>
+            {% endif %}
+        </td>
+        <td style="text-transform:capitalize;font-size:0.9rem">{{ s.frequency }}</td>
+        <td style="font-size:0.85rem;white-space:nowrap">{{ s.next_due_date }}</td>
+        <td>
+            <select name="category_ids" style="font-size:0.82rem;padding:0.2rem 0.4rem;margin:0">
+                <option value="">—</option>
+                {% for cat in categories %}
+                <option value="{{ cat.id }}">{{ cat.name }}</option>
+                {% endfor %}
+            </select>
+        </td>
+        <td style="text-align:center;font-size:0.85rem;color:var(--pico-muted-color)">{{ s.occurrences }}×</td>
+        <td style="text-align:center">
+            <span style="font-size:0.82rem;font-weight:700;color:{{ conf_color }}">{{ conf_pct }}%</span>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+
+<div style="display:flex;gap:0.75rem;margin-top:1.5rem;align-items:center">
+    <button type="submit">Add selected</button>
+    <a href="/scheduled" role="button" class="outline">Cancel</a>
+    <span id="selCount" style="font-size:0.85rem;color:var(--pico-muted-color)"></span>
+</div>
+</form>
+
+<script>
+// The form sends all hidden fields regardless of checkbox state.
+// We need to only send rows where checkbox is checked.
+// Simplest approach: use checkbox state to blank out hidden fields for unchecked rows.
+function toggleRow(cb, idx) {
+    updateCount();
+}
+
+document.querySelector('form').addEventListener('submit', function(e) {
+    // Blank out hidden fields for unchecked rows
+    const rows = document.querySelectorAll('tbody tr');
+    rows.forEach((tr, i) => {
+        const cb = tr.querySelector('input[type=checkbox]');
+        if (!cb.checked) {
+            tr.querySelectorAll('input[type=hidden]').forEach(h => {
+                if (h.name === 'descriptions') h.value = '';
+            });
+        }
+    });
+});
+
+function updateCount() {
+    const checked = document.querySelectorAll('input[type=checkbox]:checked').length;
+    document.getElementById('selCount').textContent = checked + ' selected';
+}
+updateCount();
+</script>
+{% endif %}
+{% endblock %}

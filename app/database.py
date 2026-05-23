@@ -161,6 +161,8 @@ def init_db():
             ("ix_stock_trade_dedup",  "stock_trades (ibkr_dedup_key)"),
             ("ix_stock_div_acct",     "stock_dividends (account_id, pay_date)"),
             ("ix_stock_div_inst",     "stock_dividends (instrument_id)"),
+            ("ix_sched_pay_account",  "scheduled_payments (account_id, next_due_date)"),
+            ("ix_sched_pay_active",   "scheduled_payments (active, next_due_date)"),
         ]
         for name, spec in _indexes:
             conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {spec}"))

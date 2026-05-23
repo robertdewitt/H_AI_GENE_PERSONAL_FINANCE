@@ -168,6 +168,13 @@ def confirm_import(
     # Auto-categorize the newly imported transactions
     cat_stats = categorize_batch(db, limit=batch.row_count + 100)
 
+    # Match against scheduled payments and advance next_due_dates
+    try:
+        from app.services.scheduled_matcher import match_batch
+        match_batch(db, batch.id)
+    except Exception:
+        pass  # matching is best-effort
+
     # For mortgage PDFs, also extract and save loan metadata (balance, rate, payment)
     if account and account.account_type == AccountType.MORTGAGE and filepath.lower().endswith(".pdf"):
         try:

@@ -146,4 +146,30 @@ def get_tasks(db: Session) -> list[Task]:
             severity="info",
         ))
 
+    # ── 5. Overdue scheduled payments ────────────────────────────────────────
+    try:
+        from app.models.scheduled_payment import ScheduledPayment
+        from datetime import date
+        today = date.today()
+        overdue = db.execute(
+            select(ScheduledPayment).where(
+                ScheduledPayment.active.is_(True),
+                ScheduledPayment.next_due_date < today,
+            )
+        ).scalars().all()
+        if overdue:
+            names = ", ".join(p.description for p in overdue[:3])
+            if len(overdue) > 3:
+                names += f" +{len(overdue) - 3} more"
+            tasks.append(Task(
+                category="scheduled",
+                title=f"{len(overdue)} overdue scheduled payment{'s' if len(overdue) != 1 else ''}",
+                detail=names,
+                count=len(overdue),
+                url="/scheduled",
+                severity="warning",
+            ))
+    except Exception:
+        pass  # table may not exist yet on old DBs
+
     return tasks
