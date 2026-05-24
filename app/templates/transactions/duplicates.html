@@ -25,7 +25,7 @@
     <h1>Duplicate Transactions</h1>
     <p>
         {{ total_groups }} group{{ 's' if total_groups != 1 else '' }}
-        ({{ cross_batch_count }} cross-file, {{ total_groups - cross_batch_count }} same-file)
+        ({% if near_dupe_count %}<span style="color:#ea580c">{{ near_dupe_count }} statement overlap</span>, {% endif %}{{ cross_batch_count - near_dupe_count }} cross-file, {{ total_groups - cross_batch_count }} same-file)
         &mdash; {{ total_txns }} transactions
     </p>
 </hgroup>
@@ -74,7 +74,7 @@
 
 {# ── Macro: renders one group's transaction table with checkboxes ── #}
 {% set SYMBOLS = {"GBP": "£", "EUR": "€", "USD": "$", "CAD": "CA$", "AUD": "A$"} %}
-{% macro group_table(group, border_color, cross_batch, conf_pct) %}
+{% macro group_table(group, border_color, cross_batch, conf_pct, near_duplicate=false) %}
 {% set sym = SYMBOLS.get(group.currency, group.currency ~ " ") %}
 {% set gkey = group.account_id ~ '|' ~ group.date ~ '|' ~ group.amount %}
 <article style="margin-bottom:1rem;border-left:4px solid {{ border_color }}"
@@ -101,7 +101,10 @@
             </span>
         </label>
         <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
-            {% if cross_batch %}
+            {% if near_duplicate %}
+                <span style="background:#ea580c;color:#fff;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem" title="Same transaction in overlapping statement downloads — dates differ by 1-3 days">Statement overlap</span>
+                <span style="background:#6b7280;color:#fff;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem">{{ conf_pct }}% match</span>
+            {% elif cross_batch %}
                 <span style="background:#dc2626;color:#fff;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem">Different files</span>
                 <span style="background:#6b7280;color:#fff;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem">{{ conf_pct }}% match</span>
             {% else %}
@@ -201,17 +204,38 @@
 </article>
 {% endmacro %}
 
+{# ── Statement-overlap section ─────────────────────────────────────── #}
+{% if near_dupe_count > 0 %}
+<details open style="margin-bottom:1.5rem">
+    <summary style="font-weight:600;cursor:pointer">
+        Statement overlap
+        <span style="background:#ea580c;color:#fff;padding:0.15rem 0.5rem;border-radius:999px;font-size:0.8rem;margin-left:0.5rem">{{ near_dupe_count }}</span>
+    </summary>
+    <p style="font-size:0.9rem;color:var(--pico-muted-color);margin:0.5rem 0 1rem">
+        Same transaction appearing in two overlapping statement downloads — dates differ by 1&ndash;3 days (transaction date vs posting date).
+        Keep one, delete the other.
+    </p>
+    {% for group in groups if group.near_duplicate %}
+    {% set conf_pct = (group.confidence * 100) | int %}
+    {{ group_table(group, '#ea580c', true, conf_pct, near_duplicate=true) }}
+    {% else %}
+    <p style="color:var(--pico-muted-color)">None.</p>
+    {% endfor %}
+</details>
+{% endif %}
+
 {# ── Cross-file section ────────────────────────────────────────────── #}
-{% if cross_batch_count > 0 %}
+{% set exact_cross_count = cross_batch_count - near_dupe_count %}
+{% if exact_cross_count > 0 %}
 <details open style="margin-bottom:1.5rem">
     <summary style="font-weight:600;cursor:pointer">
         Cross-file duplicates
-        <span style="background:#dc2626;color:#fff;padding:0.15rem 0.5rem;border-radius:999px;font-size:0.8rem;margin-left:0.5rem">{{ cross_batch_count }}</span>
+        <span style="background:#dc2626;color:#fff;padding:0.15rem 0.5rem;border-radius:999px;font-size:0.8rem;margin-left:0.5rem">{{ exact_cross_count }}</span>
     </summary>
     <p style="font-size:0.9rem;color:var(--pico-muted-color);margin:0.5rem 0 1rem">
-        Same transaction imported from two different files. Keep the most descriptive, delete the rest.
+        Same transaction imported from two different files on the same date. Keep the most descriptive, delete the rest.
     </p>
-    {% for group in groups if group.cross_batch %}
+    {% for group in groups if group.cross_batch and not group.near_duplicate %}
     {% set conf_pct = (group.confidence * 100) | int %}
     {{ group_table(group, '#dc2626', true, conf_pct) }}
     {% else %}

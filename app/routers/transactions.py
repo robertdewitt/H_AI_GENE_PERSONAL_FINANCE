@@ -464,18 +464,22 @@ def transaction_delete(
 
 @router.get("/duplicates", response_class=HTMLResponse)
 def duplicates_page(request: Request, db: Session = Depends(get_db)):
-    from app.services.duplicate_detector import find_duplicate_groups, find_dismissed_groups
+    from app.services.duplicate_detector import find_duplicate_groups, find_dismissed_groups, find_near_duplicate_groups
     from app.services.ollama_duplicate import score_groups_with_db
     groups = find_duplicate_groups(db)
+    near_groups = find_near_duplicate_groups(db)
+    # Merge: near-dupes go after exact-match groups (already sorted by confidence desc)
+    all_groups = groups + near_groups
     dismissed = find_dismissed_groups(db)
     # Ollama scoring — mutates groups in-place; silently skips if LLM unavailable
-    score_groups_with_db(groups, db)
+    score_groups_with_db(all_groups, db)
     return templates.TemplateResponse(request, "transactions/duplicates.html", {
-        "groups": groups,
+        "groups": all_groups,
         "dismissed": dismissed,
-        "total_groups": len(groups),
-        "total_txns": sum(len(g.transactions) for g in groups),
-        "cross_batch_count": sum(1 for g in groups if g.cross_batch),
+        "total_groups": len(all_groups),
+        "total_txns": sum(len(g.transactions) for g in all_groups),
+        "cross_batch_count": sum(1 for g in all_groups if g.cross_batch),
+        "near_dupe_count": len(near_groups),
     })
 
 

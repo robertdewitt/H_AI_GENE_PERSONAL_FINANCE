@@ -122,8 +122,10 @@ def get_tasks(db: Session) -> list[Task]:
         ))
 
     # ── 4. Duplicate groups ──────────────────────────────────────────────────
+    from app.services.duplicate_detector import find_near_duplicate_groups
     dup_groups = find_duplicate_groups(db)
-    cross_batch = [g for g in dup_groups if g.cross_batch]
+    near_groups = find_near_duplicate_groups(db)
+    cross_batch = [g for g in dup_groups if g.cross_batch] + near_groups
     same_batch = [g for g in dup_groups if not g.cross_batch]
 
     if cross_batch:

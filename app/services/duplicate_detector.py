@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import timedelta
 from difflib import SequenceMatcher
 from decimal import Decimal
 
@@ -19,6 +20,7 @@ class DuplicateGroup:
     confidence: float            # 0–1; 1.0 = identical descriptions
     currency: str = "USD"        # account currency
     cross_batch: bool = False    # True when txns came from different import files
+    near_duplicate: bool = False # True when dates differ by 1–3 days (statement overlap)
     ollama_score: float | None = None   # LLM duplicate probability (0–1)
     ollama_suggested: bool = False      # True when LLM says likely duplicate
 
@@ -92,6 +94,95 @@ def find_dismissed_groups(db: Session) -> list[DuplicateGroup]:
         ))
 
     result.sort(key=lambda g: (not g.cross_batch, -g.confidence))
+    return result
+
+
+def find_near_duplicate_groups(db: Session) -> list[DuplicateGroup]:
+    """Find cross-batch near-duplicates: same account+amount, description ≥85% similar,
+    dates within 3 days.  Catches the classic statement-overlap case where the same
+    Amex/credit-card transaction appears in two consecutive monthly downloads with
+    a 1-2 day date shift (transaction date vs posting date).
+    """
+    dismissed = _dismissed_keys(db)
+
+    # Use a subquery JOIN to avoid a huge OR clause.
+    # Finds transactions whose (account_id, amount) pair appears in 2+ distinct batches.
+    multi_batch_sq = (
+        select(Transaction.account_id, Transaction.amount)
+        .where(Transaction.import_batch_id.isnot(None))
+        .group_by(Transaction.account_id, Transaction.amount)
+        .having(func.count(func.distinct(Transaction.import_batch_id)) > 1)
+        .subquery()
+    )
+
+    txns = db.execute(
+        select(Transaction)
+        .join(
+            multi_batch_sq,
+            (Transaction.account_id == multi_batch_sq.c.account_id)
+            & (Transaction.amount == multi_batch_sq.c.amount),
+        )
+        .where(Transaction.import_batch_id.isnot(None))
+        .order_by(Transaction.account_id, Transaction.amount, Transaction.date)
+    ).scalars().all()
+
+    if not txns:
+        return []
+
+    # Load accounts
+    acct_ids = {t.account_id for t in txns}
+    accounts = {a.id: a for a in db.execute(
+        select(Account).where(Account.id.in_(acct_ids))
+    ).scalars().all()} if acct_ids else {}
+
+    # Bucket by (account_id, amount)
+    buckets: dict[tuple, list[Transaction]] = {}
+    for t in txns:
+        key = (t.account_id, t.amount)
+        buckets.setdefault(key, []).append(t)
+
+    result: list[DuplicateGroup] = []
+    seen_pairs: set[frozenset] = set()
+
+    for (acct_id, amount), group_txns in buckets.items():
+        if len(group_txns) < 2:
+            continue
+        # Already sorted by date from the query
+        for i, t1 in enumerate(group_txns):
+            d1 = t1.date.date() if hasattr(t1.date, "date") else t1.date
+            for t2 in group_txns[i + 1:]:
+                d2 = t2.date.date() if hasattr(t2.date, "date") else t2.date
+                day_diff = (d2 - d1).days
+                if day_diff > 3:
+                    break   # list is date-sorted; no more candidates
+                if day_diff == 0:
+                    continue  # exact same date — handled by find_duplicate_groups
+                if t1.import_batch_id == t2.import_batch_id:
+                    continue  # same batch → not a statement-overlap duplicate
+                pair_key = frozenset([t1.id, t2.id])
+                if pair_key in seen_pairs:
+                    continue
+                sim = _description_similarity(t1.description, t2.description)
+                if sim < 0.85:
+                    continue
+                # Check dismissed using the earlier date
+                if (acct_id, str(d1), amount) in dismissed:
+                    continue
+                seen_pairs.add(pair_key)
+                acct = accounts.get(acct_id)
+                result.append(DuplicateGroup(
+                    account_id=acct_id,
+                    account_name=acct.name if acct else f"Account {acct_id}",
+                    date=str(d1),
+                    amount=amount,
+                    transactions=[t1, t2],
+                    confidence=round(sim, 3),
+                    currency=acct.currency if acct else "USD",
+                    cross_batch=True,
+                    near_duplicate=True,
+                ))
+
+    result.sort(key=lambda g: -g.confidence)
     return result
 
 
