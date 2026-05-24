@@ -11,13 +11,12 @@ import logging
 import re
 
 import httpx
-from sqlalchemy import exists, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.category import Category
 from app.models.category_rule import CategoryRule
 from app.models.transaction import Transaction
-from app.models.transaction_split import TransactionSplit
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +127,7 @@ KEYWORD_MAP = {
     ],
     "salary": ["payroll", "direct deposit", "salary", "wage", "faster payment", "bacs credit"],
     "interest": ["interest earned", "interest payment", "apy", "dividend"],
+    "interest expense": ["interest charged", "overdraft interest", "finance charge", "overdraft fee"],
     "account transfer": [
         "transfer", "xfer", "ach", "wire", "zelle",
         "venmo", "paypal", "payment thank you",
@@ -145,13 +145,45 @@ KEYWORD_MAP = {
 }
 
 
+# Amount-aware keyword rules: (pattern) → (positive_category, negative_category)
+# Checked before KEYWORD_MAP when amount is known. None means "skip this direction".
+SIGNED_KEYWORD_MAP: list[tuple[list[str], str | None, str | None]] = [
+    # keywords, positive_cat (credit/inflow), negative_cat (debit/outflow)
+    (["interest interest", "savings interest", "deposit interest",
+      "credit interest", "interest credit"],       "interest",          "interest expense"),
+    (["interest earned", "interest received",
+      "interest paid to you"],                     "interest",          "interest expense"),
+    (["interest charged", "overdraft interest",
+      "finance charge"],                           None,                "interest expense"),
+    (["interest payment"],                         "interest",          "interest expense"),
+    # Generic catch-all — must come last so specific entries above win
+    (["interest"],                                 "interest",          "interest expense"),
+    (["dividend"],                                 "interest",          None),
+]
+
+
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower().strip())
 
 
-def match_keyword(description: str) -> str | None:
-    """Fast keyword-based category guess."""
+def match_keyword(description: str, amount: float | None = None) -> str | None:
+    """Fast keyword-based category guess.
+
+    When *amount* is provided, amount-aware rules are checked first so that
+    e.g. interest income vs interest expense can be distinguished by sign.
+    """
     desc = _normalize(description)
+
+    if amount is not None:
+        for keywords, pos_cat, neg_cat in SIGNED_KEYWORD_MAP:
+            for kw in keywords:
+                if kw in desc:
+                    result = pos_cat if amount >= 0 else neg_cat
+                    if result is not None:
+                        return result
+                    # matched but no category for this direction — fall through
+                    break
+
     for category_name, keywords in KEYWORD_MAP.items():
         for kw in keywords:
             if kw in desc:
@@ -329,17 +361,24 @@ def _pattern_tokens(pattern: str) -> list[str]:
 def ask_ollama(
     description: str,
     categories: list[str],
+    amount: float | None = None,
 ) -> str | None:
     """Ask a local Ollama LLM to categorize a transaction.
 
     Returns category name or None if Ollama is unavailable.
     """
+    if amount is not None:
+        direction = "credit/income" if amount >= 0 else "debit/expense"
+        amount_hint = f" [{direction} {abs(amount):.2f}]"
+    else:
+        amount_hint = ""
+
     prompt = (
         "You are a personal finance categorizer. Given a bank transaction "
         "description, pick the single best category from the list below. "
         "Reply with ONLY the category name, nothing else.\n\n"
         f"Categories: {', '.join(categories)}\n\n"
-        f"Transaction: {description}\n\n"
+        f"Transaction: {description}{amount_hint}\n\n"
         "Category:"
     )
 
@@ -384,7 +423,7 @@ def categorize_transaction(
         return rule_cat_id
 
     # 2. Keyword heuristics
-    kw_match = match_keyword(transaction.description)
+    kw_match = match_keyword(transaction.description, amount=transaction.amount)
     if kw_match:
         cat = db.execute(
             select(Category).where(func.lower(Category.name) == kw_match.lower())
@@ -395,7 +434,7 @@ def categorize_transaction(
     # 3. LLM fallback
     all_cats = db.execute(select(Category.name)).scalars().all()
     if all_cats:
-        llm_match = ask_ollama(transaction.description, list(all_cats))
+        llm_match = ask_ollama(transaction.description, list(all_cats), amount=transaction.amount)
         if llm_match:
             cat = db.execute(
                 select(Category).where(
@@ -456,7 +495,7 @@ def suggest_categories(
             continue
 
         # 2. Keywords
-        kw_match = match_keyword(txn.description)
+        kw_match = match_keyword(txn.description, amount=txn.amount)
         if kw_match:
             cat = db.execute(
                 select(Category).where(func.lower(Category.name) == kw_match.lower())
@@ -490,8 +529,7 @@ def categorize_batch(
 
     Returns stats: {rules: N, keywords: N, llm: N, failed: N}.
     """
-    _has_splits = exists().where(TransactionSplit.transaction_id == Transaction.id)
-    query = select(Transaction).where(Transaction.category_id.is_(None), ~_has_splits)
+    query = select(Transaction).where(Transaction.category_id.is_(None))
     if transaction_ids:
         query = query.where(Transaction.id.in_(transaction_ids))
     query = query.limit(limit)
@@ -511,7 +549,7 @@ def categorize_batch(
             continue
 
         # 2. Keywords
-        kw_match = match_keyword(txn.description)
+        kw_match = match_keyword(txn.description, amount=txn.amount)
         if kw_match:
             cat = db.execute(
                 select(Category).where(
@@ -524,7 +562,7 @@ def categorize_batch(
                 continue
 
         # 3. LLM
-        llm_match = ask_ollama(txn.description, cat_list)
+        llm_match = ask_ollama(txn.description, cat_list, amount=txn.amount)
         if llm_match:
             cat = db.execute(
                 select(Category).where(
