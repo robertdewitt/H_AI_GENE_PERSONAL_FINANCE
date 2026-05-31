@@ -56,6 +56,11 @@
                 {% if item.account.institution %}
                 <span class="account-institution">{{ item.account.institution }}</span>
                 {% endif %}
+                {% if not item.account.is_asset and item.balance_source == 'transaction_sum' and not item.account.statement_balance %}
+                <a href="/accounts/{{ item.account.id }}/edit#statement-balance-fields"
+                   title="Balance estimated from transactions only — click to set statement balance"
+                   style="font-size:0.75rem;color:var(--pico-color-orange-500, #f59e0b);text-decoration:none;margin-left:0.4rem">⚠ set balance</a>
+                {% endif %}
             </div>
             <div class="account-balance {% if item.balance >= 0 and item.account.is_asset %}positive{% elif not item.account.is_asset %}negative{% endif %}">
                 {{ sym }}{{ "{:,.2f}".format(item.balance) }}

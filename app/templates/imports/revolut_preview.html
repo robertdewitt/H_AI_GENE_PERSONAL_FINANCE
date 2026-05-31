@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Revolut Statement Preview &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Revolut Statement Preview</h1>
+    <p>Choose which sections of this statement to import into <strong>{{ account_name }}</strong></p>
+</hgroup>
+
+{% if not sections %}
+<article style="border-left:4px solid #ef4444;background:rgba(239,68,68,0.06);padding:0.75rem 1rem">
+    <strong style="color:#ef4444">No importable sections found.</strong>
+    The file may not be a supported Revolut PDF format.
+</article>
+<div style="margin-top:1rem">
+    <a href="/import" role="button" class="outline">Back</a>
+</div>
+{% else %}
+
+<form method="post" action="/import/revolut-confirm">
+    <input type="hidden" name="account_id" value="{{ account_id }}">
+    <input type="hidden" name="filepath" value="{{ filepath }}">
+
+    <article style="margin-bottom:1.5rem;padding:1rem 1.25rem">
+        <h3 style="margin-top:0;margin-bottom:0.75rem">Select sections to import</h3>
+
+        {% set total_selected_count = namespace(value=0) %}
+        {% for sec in sections %}
+        {% if sec.is_main %}{% set total_selected_count.value = total_selected_count.value + sec.count %}{% endif %}
+        {% endfor %}
+
+        <div style="display:flex;flex-direction:column;gap:0.6rem">
+            {% for sec in sections %}
+            <label style="display:flex;align-items:center;gap:0.75rem;cursor:pointer;padding:0.5rem 0.6rem;border-radius:0.4rem;border:1px solid var(--pico-muted-border-color)">
+                <input
+                    type="checkbox"
+                    name="sections"
+                    value="{{ sec.key }}"
+                    {% if sec.is_main %}checked{% endif %}
+                    onchange="updateTotal()"
+                    data-count="{{ sec.count }}"
+                    style="margin:0;flex-shrink:0"
+                >
+                <span style="flex:1">
+                    <strong>{{ sec.display_name }}</strong>
+                    {% if sec.is_main %}
+                    <span style="font-size:0.75rem;color:var(--pico-primary);margin-left:0.4rem">primary</span>
+                    {% endif %}
+                </span>
+                <span style="font-size:0.85rem;color:var(--pico-muted-color);white-space:nowrap">
+                    {{ "{:,}".format(sec.count) }} transaction{{ 's' if sec.count != 1 else '' }}
+                </span>
+            </label>
+            {% endfor %}
+        </div>
+
+        {% set total_all = sections | sum(attribute='count') %}
+        <p style="margin-top:0.75rem;margin-bottom:0;font-size:0.85rem;color:var(--pico-muted-color)">
+            Total in file: <strong>{{ "{:,}".format(total_all) }}</strong> transactions across
+            {{ sections | length }} section{{ 's' if sections | length != 1 else '' }}.
+            Duplicates will be skipped automatically.
+        </p>
+    </article>
+
+    <div id="import-summary" style="margin-bottom:1rem;font-size:0.9rem;color:var(--pico-muted-color)">
+        <!-- updated by JS -->
+    </div>
+
+    <div style="display:flex;gap:1rem;align-items:center">
+        <button type="submit" id="import-btn">Import</button>
+        <a href="/import" role="button" class="outline">Cancel</a>
+    </div>
+</form>
+
+<script>
+function updateTotal() {
+    const checked = document.querySelectorAll('input[name="sections"]:checked');
+    const total = Array.from(checked).reduce((s, el) => s + parseInt(el.dataset.count || 0), 0);
+    const names = Array.from(checked).map(el => el.closest('label').querySelector('strong').textContent.trim());
+    const btn = document.getElementById('import-btn');
+    const summary = document.getElementById('import-summary');
+    if (checked.length === 0) {
+        btn.disabled = true;
+        summary.textContent = 'Select at least one section to import.';
+        summary.style.color = '#ef4444';
+    } else {
+        btn.disabled = false;
+        summary.innerHTML = 'Will import up to <strong>' + total.toLocaleString() +
+            '</strong> transaction' + (total !== 1 ? 's' : '') +
+            ' from: ' + names.join(', ') + '.';
+        summary.style.color = '';
+    }
+}
+updateTotal();
+</script>
+
+{% endif %}
+{% endblock %}

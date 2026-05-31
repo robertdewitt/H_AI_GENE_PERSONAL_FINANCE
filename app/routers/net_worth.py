@@ -100,6 +100,44 @@ def net_worth_page(
     })
 
 
+@router.get("/monte-carlo")
+def monte_carlo_api(
+    horizon: int = Query(60, ge=12, le=120),
+    simulations: int = Query(1000, ge=100, le=5000),
+    db: Session = Depends(get_db),
+):
+    """JSON endpoint — Monte Carlo projection broken down by asset group."""
+    from app.services.monte_carlo import run_monte_carlo
+    result = run_monte_carlo(db, horizon_months=horizon, simulations=simulations)
+    return {
+        "current_nw": result.current_nw,
+        "flagged": result.flagged,
+        "flag_reason": result.flag_reason,
+        "horizon_months": result.horizon_months,
+        "simulations": result.simulations,
+        "dates": result.dates,
+        "total_p10": result.total_p10,
+        "total_p50": result.total_p50,
+        "total_p90": result.total_p90,
+        "groups": [
+            {
+                "name": g.name,
+                "key": g.key,
+                "current_value": g.current_value,
+                "median": g.median,
+                "flagged": g.flagged,
+                "flag_reason": g.flag_reason,
+                "ann_return_pct": g.ann_return_pct,
+                "ann_volatility_pct": g.ann_volatility_pct,
+                "deterministic": g.deterministic,
+                "months_of_history": g.months_of_history,
+                "source_note": g.source_note,
+            }
+            for g in result.groups
+        ],
+    }
+
+
 @router.get("/api/data")
 def net_worth_api(
     months: int = Query(12, ge=1, le=120),

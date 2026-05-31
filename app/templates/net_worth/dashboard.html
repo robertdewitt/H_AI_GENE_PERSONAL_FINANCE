@@ -39,6 +39,39 @@
 </div>
 {% endif %}
 
+<hr style="margin:2rem 0">
+
+<div style="display:flex;align-items:baseline;gap:1rem;flex-wrap:wrap;margin-bottom:0.5rem">
+    <h2 style="margin:0">Monte Carlo Projection</h2>
+    <span style="font-size:0.8rem;color:var(--pico-muted-color)">1 000 simulations &bull; per-asset breakdown</span>
+</div>
+<p style="font-size:0.85rem;color:var(--pico-muted-color);margin-top:0;margin-bottom:0.75rem">
+    Each asset group is projected independently. Mortgages use deterministic amortisation.
+    The shaded band is the 10th–90th percentile range for total net worth.
+</p>
+
+<div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.75rem;align-items:center">
+    <span style="font-size:0.85rem;color:var(--pico-muted-color)">Horizon:</span>
+    <button onclick="loadMonteCarlo(12)"  id="mc-btn-12"  class="outline" style="margin:0;padding:0.3rem 0.8rem;font-size:0.85rem">1Y</button>
+    <button onclick="loadMonteCarlo(36)"  id="mc-btn-36"  class="outline" style="margin:0;padding:0.3rem 0.8rem;font-size:0.85rem">3Y</button>
+    <button onclick="loadMonteCarlo(60)"  id="mc-btn-60"  style="margin:0;padding:0.3rem 0.8rem;font-size:0.85rem">5Y</button>
+    <button onclick="loadMonteCarlo(120)" id="mc-btn-120" class="outline" style="margin:0;padding:0.3rem 0.8rem;font-size:0.85rem">10Y</button>
+</div>
+
+<div id="mc-flag" style="display:none;margin-bottom:0.75rem"></div>
+
+<div class="chart-container" style="height:420px;position:relative">
+    <div id="mc-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:0.5rem;color:var(--pico-muted-color)">
+        <span aria-busy="true"></span> Loading projection…
+    </div>
+    <canvas id="mcChart" style="display:none"></canvas>
+</div>
+
+<div id="mc-group-flags" style="display:none;margin-top:0.6rem"></div>
+<div id="mc-stats" style="display:none;margin-top:0.4rem;font-size:0.8rem;color:var(--pico-muted-color)"></div>
+
+<hr style="margin:2rem 0">
+
 <div class="grid">
     <div>
         <h2>Assets by Group</h2>
@@ -197,6 +230,191 @@ new Chart(pieCtx, {
     }
 });
 {% endif %}
+
+// ── Monte Carlo ──────────────────────────────────────────────────────────────
+let mcChart = null;
+
+// Colour palette per group key
+const MC_COLORS = {
+    investments:  { line: '#2563eb', band: 'rgba(37,99,235,0.13)'  },
+    real_estate:  { line: '#16a34a', band: 'rgba(22,163,74,0.13)'  },
+    banking:      { line: '#0891b2', band: 'rgba(8,145,178,0.10)'  },
+    mortgage:     { line: '#dc2626', band: 'rgba(220,38,38,0.10)'  },
+    credit_loans: { line: '#f59e0b', band: 'rgba(245,158,11,0.10)' },
+    other:        { line: '#8b5cf6', band: 'rgba(139,92,246,0.10)' },
+};
+const MC_DEFAULT_COLOR = { line: '#6b7280', band: 'rgba(107,114,128,0.10)' };
+
+function loadMonteCarlo(horizon) {
+    [12, 36, 60, 120].forEach(h => {
+        const b = document.getElementById('mc-btn-' + h);
+        if (b) { b.className = h === horizon ? '' : 'outline'; b.removeAttribute('aria-current'); }
+    });
+    const ab = document.getElementById('mc-btn-' + horizon);
+    if (ab) ab.setAttribute('aria-current', 'true');
+
+    document.getElementById('mc-loading').style.display = 'flex';
+    document.getElementById('mc-flag').style.display = 'none';
+    document.getElementById('mc-group-flags').style.display = 'none';
+    document.getElementById('mc-stats').style.display = 'none';
+    const canvas = document.getElementById('mcChart');
+    canvas.style.display = 'none';
+
+    fetch('/net-worth/monte-carlo?horizon=' + horizon)
+        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(data => renderMonteCarlo(data))
+        .catch(err => {
+            document.getElementById('mc-loading').innerHTML =
+                '<span style="color:#ef4444">Failed to load projection: ' + err.message + '</span>';
+        });
+}
+
+function renderMonteCarlo(data) {
+    document.getElementById('mc-loading').style.display = 'none';
+
+    // Overall flag banner
+    if (data.flagged && data.flag_reason) {
+        const el = document.getElementById('mc-flag');
+        el.innerHTML = '<article style="padding:0.5rem 0.75rem;border-left:4px solid #f59e0b;' +
+            'background:rgba(245,158,11,0.07);font-size:0.85rem;margin:0">' +
+            '⚠ <strong>Data quality:</strong> ' + data.flag_reason + '</article>';
+        el.style.display = 'block';
+    }
+
+    // Per-group flag list
+    const flaggedGroups = (data.groups || []).filter(g => g.flagged && g.flag_reason);
+    if (flaggedGroups.length > 0) {
+        const rows = flaggedGroups.map(g => {
+            const c = MC_COLORS[g.key] || MC_DEFAULT_COLOR;
+            return '<li style="font-size:0.8rem"><span style="color:' + c.line +
+                ';font-weight:600">' + g.name + ':</span> <span style="color:#ef4444">' +
+                g.flag_reason + '</span></li>';
+        }).join('');
+        const el = document.getElementById('mc-group-flags');
+        el.innerHTML = '<ul style="margin:0.4rem 0 0 1rem;padding:0">' + rows + '</ul>';
+        el.style.display = 'block';
+    }
+
+    if (!data.dates || data.dates.length === 0) return;
+
+    // Stats row
+    const statParts = (data.groups || [])
+        .filter(g => g.ann_return_pct != null)
+        .map(g => {
+            const c = MC_COLORS[g.key] || MC_DEFAULT_COLOR;
+            const sign = g.ann_return_pct >= 0 ? '+' : '';
+            const src  = g.source_note ? ' <span title="' + g.source_note + '" style="cursor:help;text-decoration:underline dotted">ⓘ</span>' : '';
+            return '<span style="margin-right:1rem"><span style="color:' + c.line +
+                ';font-weight:600">' + g.name + '</span> ' + sign + g.ann_return_pct +
+                '%/yr · ' + g.ann_volatility_pct + '% vol' + src + '</span>';
+        });
+    document.getElementById('mc-stats').innerHTML =
+        data.simulations.toLocaleString() + ' simulations &bull; ' + statParts.join('');
+    document.getElementById('mc-stats').style.display = 'block';
+
+    const canvas = document.getElementById('mcChart');
+    canvas.style.display = 'block';
+    if (mcChart) { mcChart.destroy(); mcChart = null; }
+
+    const TR = 'rgba(0,0,0,0)';
+    const datasets = [];
+
+    // Uncertainty band for total NW — drawn first so it sits behind group lines
+    // Order: [0] p10 (no fill), [1] p90 (fill '-1' → fills to p10)
+    datasets.push({
+        label: 'P10 (total)',
+        data: data.total_p10,
+        borderColor: 'rgba(37,99,235,0.2)',
+        backgroundColor: TR,
+        borderWidth: 1,
+        borderDash: [4, 4],
+        fill: false,
+        pointRadius: 0,
+        tension: 0.3,
+        order: 10,
+    });
+    datasets.push({
+        label: 'P90 (total)',
+        data: data.total_p90,
+        borderColor: 'rgba(37,99,235,0.2)',
+        backgroundColor: 'rgba(37,99,235,0.08)',
+        borderWidth: 1,
+        borderDash: [4, 4],
+        fill: '-1',
+        pointRadius: 0,
+        tension: 0.3,
+        order: 10,
+    });
+
+    // One line per asset group (median)
+    (data.groups || []).forEach(g => {
+        const c = MC_COLORS[g.key] || MC_DEFAULT_COLOR;
+        const isDashed = g.deterministic;
+        datasets.push({
+            label: g.name,
+            data: g.median,
+            borderColor: c.line,
+            backgroundColor: TR,
+            borderWidth: g.key === 'mortgage' || g.key === 'credit_loans' ? 1.5 : 2,
+            borderDash: isDashed ? [5, 3] : [],
+            fill: false,
+            pointRadius: 0,
+            tension: 0.3,
+            order: 1,
+        });
+    });
+
+    // Total net worth median — thickest line on top
+    datasets.push({
+        label: 'Total Net Worth (median)',
+        data: data.total_p50,
+        borderColor: '#1e40af',
+        backgroundColor: TR,
+        borderWidth: 3,
+        fill: false,
+        pointRadius: 0,
+        tension: 0.3,
+        order: 0,
+    });
+
+    mcChart = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: { labels: data.dates, datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: {
+                    labels: {
+                        filter: item => !item.text.startsWith('P10') && !item.text.startsWith('P90'),
+                        usePointStyle: true,
+                        pointStyle: 'line',
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: ctx => {
+                            if (ctx.dataset.label.startsWith('P10') || ctx.dataset.label.startsWith('P90')) return null;
+                            const v = ctx.parsed.y;
+                            const sign = v < 0 ? '-$' : '$';
+                            return ctx.dataset.label + ': ' + sign + Math.round(Math.abs(v)).toLocaleString();
+                        },
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    ticks: {
+                        callback: v => (v < 0 ? '-$' : '$') + Math.round(Math.abs(v)).toLocaleString()
+                    }
+                }
+            }
+        }
+    });
+}
+
+document.addEventListener('DOMContentLoaded', () => loadMonteCarlo(60));
 
 {% if category_summary %}
 const spendColors = ['#2563eb','#16a34a','#f59e0b','#8b5cf6','#ec4899','#06b6d4','#84cc16','#f97316','#ef4444','#6366f1','#14b8a6','#d946ef','#fb923c','#a3e635','#38bdf8','#818cf8'];

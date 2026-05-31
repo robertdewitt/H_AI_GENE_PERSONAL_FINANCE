@@ -91,16 +91,27 @@ def detect_account(
 
             # Boost if a long phrase token (5+ chars) appears verbatim in text
             verbatim_boost = 0.0
+            verbatim_tok: str | None = None
             for tok in phrase_tokens:
                 if len(tok) >= 5 and tok in combined.lower():
                     verbatim_boost = 0.2
+                    verbatim_tok = tok
                     break
 
             score = min(1.0, ratio + verbatim_boost)
             if score > best_score:
                 best_score = score
                 matched = ", ".join(f'"{t}"' for t in sorted(matches)[:3])
-                best_reason = f'matched {matched} in {"filename" if tok in _tokenize(filename) else "file content"}'
+                # Source label: filename if any match (or verbatim-boost token)
+                # appears in the filename tokens, otherwise file content.
+                filename_tokens = _tokenize(filename)
+                from_filename = bool(matches & filename_tokens) or (
+                    verbatim_tok is not None and verbatim_tok in filename_tokens
+                )
+                best_reason = (
+                    f'matched {matched} in '
+                    f'{"filename" if from_filename else "file content"}'
+                )
 
         scores[acct.id] = (best_score, best_reason)
 

@@ -77,6 +77,7 @@ def match_batch(db: "Session", import_batch_id: int) -> dict:
         by_account.setdefault(p.account_id, []).append(p)
 
     matched_count = 0
+    matched_payment_ids: set[int] = set()  # prevents one payment matching two txns in the same batch
 
     for txn in txns:
         acct_payments = by_account.get(txn.account_id, [])
@@ -90,6 +91,9 @@ def match_batch(db: "Session", import_batch_id: int) -> dict:
         best_score   = 0.0
 
         for pmt in acct_payments:
+            if pmt.id in matched_payment_ids:
+                continue
+
             # Date check
             date_diff = abs((txn_date - pmt.next_due_date).days)
             if date_diff > DATE_WINDOW:
@@ -122,16 +126,17 @@ def match_batch(db: "Session", import_batch_id: int) -> dict:
             best_payment.last_matched_txn_id = txn.id
             best_payment.last_matched_date   = txn_date
             _advance_next_due(best_payment, txn_date)
+            matched_payment_ids.add(best_payment.id)
             matched_count += 1
 
     db.commit()
 
-    # Count missed payments (active, past-due, unmatched this batch)
-    today   = date.today()
-    missed  = sum(
+    # Count missed payments: active, past-due, AND not just matched in this batch.
+    today  = date.today()
+    missed = sum(
         1 for p in payments
         if p.active and p.next_due_date < today
-        and p.last_matched_date != today  # rough proxy
+        and p.id not in matched_payment_ids
     )
 
     return {"matched": matched_count, "missed": missed}

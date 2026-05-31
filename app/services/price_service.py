@@ -90,11 +90,13 @@ def _save_price_snapshot(db: "Session", symbol: str, price: float, ts: datetime)
             confidence=0.95,
             stale_flag=False,
         ))
+    # Flush only — let the caller own the transaction boundary. Committing
+    # here would prematurely persist any unrelated writes the caller has
+    # staged on this session.
     try:
-        db.commit()
+        db.flush()
     except Exception as exc:
-        db.rollback()
-        log.warning("price_service: failed to save snapshot for %s: %s", symbol, exc)
+        log.warning("price_service: failed to flush snapshot for %s: %s", symbol, exc)
 
 
 def _load_cached_prices(

@@ -64,24 +64,15 @@ def _advance_date(d: date, frequency: str, day_of_month: int | None = None) -> d
 
 
 def _get_account_balance(db: "Session", account_id: int) -> Decimal:
-    """Best available current balance for the account."""
-    from sqlalchemy import select, func
-    from app.models.transaction import Transaction
-    from app.models.account import Account
+    """Best available current balance for the account.
 
-    acct = db.get(Account, account_id)
-    if acct is None:
-        return Decimal("0.00")
-
-    # Use statement balance if available, otherwise sum transactions
-    if acct.statement_balance is not None:
-        return Decimal(str(acct.statement_balance))
-
-    total = db.execute(
-        select(func.sum(Transaction.amount))
-        .where(Transaction.account_id == account_id)
-    ).scalar()
-    return Decimal(str(total or 0))
+    Delegates to account_service so the forecast opening balance accounts for
+    post-statement transactions (hybrid mode), running-balance markers
+    (balance_after), and FX — rather than blindly returning a stale
+    statement_balance.
+    """
+    from app.services.account_service import get_account_balance
+    return get_account_balance(db, account_id)
 
 
 def build_forecast(db: "Session", months: int = 3) -> ForecastResult:

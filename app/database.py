@@ -98,6 +98,7 @@ def init_db():
         _col("transactions", "classification_confidence",  "REAL")
         _col("transactions", "financial_document_id",      "INTEGER")
         _col("transactions", "transfer_dismissed",         "BOOLEAN",      "0")
+        _col("transactions", "balance_after",               "REAL")
 
         # ── Truth layer columns on accounts ──────────────────
         _col("accounts", "balance_truth_source",       "VARCHAR(30)",  "'transaction_sum'")
@@ -128,6 +129,16 @@ def init_db():
 
         # ── v2 split / document columns ──────────────────────
         _col("transaction_splits", "document_line_id", "INTEGER")
+
+        # ── Soft-delete log: preserve truth-layer + FX + balance fields ──
+        _col("deleted_transactions", "amount_base",                "REAL")
+        _col("deleted_transactions", "exchange_rate",              "REAL")
+        _col("deleted_transactions", "balance_after",              "REAL")
+        _col("deleted_transactions", "event_type",                 "VARCHAR(50)")
+        _col("deleted_transactions", "classification_provenance",  "VARCHAR(30)")
+        _col("deleted_transactions", "classification_confidence",  "REAL")
+        _col("deleted_transactions", "transfer_dismissed",         "BOOLEAN")
+        _col("deleted_transactions", "financial_document_id",      "INTEGER")
 
         # ── Indexes (CREATE INDEX IF NOT EXISTS works on both backends) ──
         _indexes = [

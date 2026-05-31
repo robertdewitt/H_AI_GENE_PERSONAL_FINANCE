@@ -62,7 +62,11 @@ async function detectAccount(input) {
             hint.style.borderLeftColor = '#f59e0b';
             hint.style.background = '#fffbeb';
             hint.style.color = '#92400e';
-            hint.innerHTML = `&#128270; Detected <strong>${name}</strong> (${pct}% confidence) — change if wrong`;
+            hint.replaceChildren();
+            hint.append('\u{1F50E} Detected ');
+            const strong = document.createElement('strong');
+            strong.textContent = name;
+            hint.append(strong, ` (${pct}% confidence) — change if wrong`);
         } else {
             hint.style.borderLeftColor = '#9ca3af';
             hint.style.background = '#f9fafb';

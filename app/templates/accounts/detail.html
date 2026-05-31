@@ -20,6 +20,24 @@
        {% if account.currency != "USD" %} &mdash; <strong>{{ account.currency }}</strong>{% endif %}</p>
 </hgroup>
 
+{% if not account.is_asset and balance_source == 'transaction_sum' and not account.statement_balance %}
+<article style="margin-bottom:1rem;padding:0.75rem 1rem;border-left:4px solid #f59e0b;background:color-mix(in srgb,#f59e0b 8%,transparent)">
+    <strong>Balance may be inaccurate.</strong>
+    This is a running transaction total — not the actual outstanding balance.
+    Imported history may be incomplete or start partway through the account's life.
+    <a href="/accounts/{{ account.id }}/edit#statement-balance-fields">Set your latest statement closing balance</a>
+    to get an accurate balance going forward.
+</article>
+{% endif %}
+
+{% if balance_stale %}
+<article style="margin-bottom:1rem;padding:0.75rem 1rem;border-left:4px solid var(--pico-color-orange-400,#fb923c)">
+    <strong>Balance may be stale</strong> — statement balance was set more than 45 days ago.
+    <a href="/accounts/{{ account.id }}/edit#statement-balance-fields">Update statement balance</a>
+    or import recent transactions.
+</article>
+{% endif %}
+
 <div class="summary-grid">
     <div class="summary-card">
         <div class="label">Current Balance ({{ account.currency }})</div>

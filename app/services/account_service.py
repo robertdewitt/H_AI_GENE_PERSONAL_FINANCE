@@ -221,6 +221,27 @@ def _balance_from_txn_sum(
     db: Session, account: Account, account_id: int,
     as_of_date: datetime | None, now: datetime,
 ) -> AccountBalanceResult:
+    # Prefer the bank's own running balance when transactions include balance_after.
+    # This gives accurate balances even when transaction history is incomplete.
+    if not as_of_date:
+        bal_after_row = db.execute(
+            select(Transaction.balance_after, Transaction.date)
+            .where(
+                Transaction.account_id == account_id,
+                Transaction.balance_after.isnot(None),
+            )
+            .order_by(Transaction.date.desc(), Transaction.id.desc())
+            .limit(1)
+        ).one_or_none()
+        if bal_after_row and bal_after_row.balance_after is not None:
+            return AccountBalanceResult(
+                value=Decimal(str(bal_after_row.balance_after)),
+                balance_as_of=bal_after_row.date,
+                balance_source_used="latest_balance_after",
+                balance_confidence=0.92,
+                balance_stale=False,
+            )
+
     query = select(
         func.coalesce(func.sum(Transaction.amount), 0)
     ).where(Transaction.account_id == account_id)
@@ -274,8 +295,11 @@ def _balance_from_valuation(
         stale = (now - valuation.date).days > 90
         val = valuation.value
         if valuation.currency != base_ccy:
+            # For current-balance display use today's rate; for historical queries
+            # use the rate at the as_of_date so the time-series chart is accurate.
+            fx_date = as_of_date or now
             converted, _ = convert_amount(
-                db, val, valuation.currency, base_ccy, valuation.date,
+                db, val, valuation.currency, base_ccy, fx_date,
             )
             if converted is not None:
                 val = converted
@@ -340,13 +364,35 @@ def _balance_hybrid(
     db: Session, account: Account, account_id: int,
     as_of_date: datetime | None, now: datetime,
 ) -> AccountBalanceResult:
-    """Transaction sum preferred; fall back to statement if txn sum is zero."""
-    txn_result = _balance_from_txn_sum(db, account, account_id, as_of_date, now)
-    if txn_result.value != Decimal("0.00"):
-        return txn_result
-    if account.statement_balance is not None:
-        return _balance_from_statement(account, as_of_date, now)
-    return txn_result
+    """Statement-anchored balance: statement_balance + sum(txns since statement_date).
+
+    This gives accurate balances even with incomplete transaction history.
+    Falls back to pure transaction_sum when no statement balance is set.
+    """
+    if account.statement_balance is not None and account.statement_balance_as_of is not None:
+        stmt_bal = account.statement_balance
+        stmt_date = account.statement_balance_as_of
+        cutoff = as_of_date or now
+        delta = db.execute(
+            select(func.coalesce(func.sum(Transaction.amount), 0))
+            .where(
+                Transaction.account_id == account_id,
+                Transaction.date > stmt_date,
+                Transaction.date <= cutoff,
+            )
+        ).scalar() or Decimal("0.00")
+        balance = stmt_bal + Decimal(str(delta))
+        stale = (now - stmt_date).days > 45
+        return AccountBalanceResult(
+            value=balance,
+            balance_as_of=cutoff,
+            balance_source_used="statement_anchored",
+            balance_confidence=0.9 if not stale else 0.6,
+            balance_stale=stale,
+        )
+
+    # No statement balance — fall back to transaction_sum (with balance_after enhancement)
+    return _balance_from_txn_sum(db, account, account_id, as_of_date, now)
 
 
 # ── Backward-compatible thin wrapper ────────────────────────────────
@@ -402,23 +448,142 @@ def get_many_account_balances_rich(
         a.id for a in accounts
         if (a.balance_truth_source or "") == BalanceTruthSource.LATEST_VALUATION.value
     ]
+    latest_statement_ids = [
+        a.id for a in accounts
+        if (a.balance_truth_source or "") == BalanceTruthSource.LATEST_STATEMENT.value
+    ]
 
-    # Batch: transaction sums
-    txn_sums: dict[int, Decimal] = {}
+    # Batch: latest LiabilityBalanceSnapshot per account for LATEST_STATEMENT sources
+    # (matches single-account path, which prefers snapshots over account.statement_balance).
+    latest_liab_snap: dict[int, tuple[Decimal, datetime]] = {}
+    if latest_statement_ids:
+        from app.models.snapshots import LiabilityBalanceSnapshot
+        snap_sq = (
+            select(
+                LiabilityBalanceSnapshot.account_id,
+                func.max(LiabilityBalanceSnapshot.as_of_date).label("max_date"),
+            )
+            .where(LiabilityBalanceSnapshot.account_id.in_(latest_statement_ids))
+            .group_by(LiabilityBalanceSnapshot.account_id)
+            .subquery()
+        )
+        for row in db.execute(
+            select(
+                LiabilityBalanceSnapshot.account_id,
+                LiabilityBalanceSnapshot.value_native,
+                LiabilityBalanceSnapshot.as_of_date,
+            )
+            .join(
+                snap_sq,
+                (LiabilityBalanceSnapshot.account_id == snap_sq.c.account_id)
+                & (LiabilityBalanceSnapshot.as_of_date == snap_sq.c.max_date),
+            )
+        ).all():
+            latest_liab_snap[row.account_id] = (
+                Decimal(str(row.value_native)), row.as_of_date,
+            )
+
+    # Batch: latest balance_after per account (most accurate when available)
+    latest_bal_after: dict[int, tuple[Decimal, datetime]] = {}
     if txn_sum_ids:
+        # Subquery: latest transaction id with balance_after per account
+        sq = (
+            select(
+                Transaction.account_id,
+                func.max(Transaction.id).label("max_id"),
+            )
+            .where(
+                Transaction.account_id.in_(txn_sum_ids),
+                Transaction.balance_after.isnot(None),
+            )
+            .group_by(Transaction.account_id)
+            .subquery()
+        )
+        for row in db.execute(
+            select(Transaction.account_id, Transaction.balance_after, Transaction.date)
+            .join(sq, (Transaction.account_id == sq.c.account_id) & (Transaction.id == sq.c.max_id))
+        ).all():
+            if row.balance_after is not None:
+                latest_bal_after[row.account_id] = (
+                    Decimal(str(row.balance_after)), row.date
+                )
+
+    # Batch: transaction sums (used when balance_after not available)
+    # Separate hybrid accounts that have a statement anchor from pure transaction_sum ones.
+    hybrid_anchored: dict[int, tuple[Decimal, datetime]] = {}  # id -> (stmt_bal, stmt_date)
+    for a in accounts:
+        if (
+            (a.balance_truth_source or BalanceTruthSource.TRANSACTION_SUM.value) == BalanceTruthSource.HYBRID.value
+            and a.statement_balance is not None
+            and a.statement_balance_as_of is not None
+            and a.id not in latest_bal_after
+        ):
+            hybrid_anchored[a.id] = (a.statement_balance, a.statement_balance_as_of)
+
+    txn_sum_ids_without_bal_after = [
+        i for i in txn_sum_ids
+        if i not in latest_bal_after and i not in hybrid_anchored
+    ]
+    txn_sums: dict[int, Decimal] = {}
+    if txn_sum_ids_without_bal_after:
         for row in db.execute(
             select(
                 Transaction.account_id,
                 func.coalesce(func.sum(Transaction.amount), 0).label("total"),
             )
-            .where(Transaction.account_id.in_(txn_sum_ids))
+            .where(Transaction.account_id.in_(txn_sum_ids_without_bal_after))
             .group_by(Transaction.account_id)
         ).all():
             txn_sums[row.account_id] = row.total
 
-    # Batch: latest valuation dates
+    # Batch: delta sums for statement-anchored accounts (since each statement_date)
+    # Fetch all transactions >= min(statement_date), then filter per-account in Python.
+    hybrid_deltas: dict[int, Decimal] = {}
+    if hybrid_anchored:
+        min_stmt_date = min(d for _, d in hybrid_anchored.values())
+        for row in db.execute(
+            select(
+                Transaction.account_id,
+                Transaction.date,
+                Transaction.amount,
+            )
+            .where(
+                Transaction.account_id.in_(list(hybrid_anchored.keys())),
+                Transaction.date > min_stmt_date,
+            )
+        ).all():
+            _, stmt_date = hybrid_anchored[row.account_id]
+            if row.date > stmt_date:
+                hybrid_deltas[row.account_id] = (
+                    hybrid_deltas.get(row.account_id, Decimal("0.00"))
+                    + Decimal(str(row.amount))
+                )
+
+    # Batch: latest valuation per account (max date, then max id to break ties)
     latest_val: dict[int, tuple[datetime, Decimal, str]] = {}
     if valuation_ids:
+        max_date_sq = (
+            select(
+                AssetValuation.account_id,
+                func.max(AssetValuation.date).label("max_date"),
+            )
+            .where(AssetValuation.account_id.in_(valuation_ids))
+            .group_by(AssetValuation.account_id)
+            .subquery()
+        )
+        max_id_sq = (
+            select(
+                AssetValuation.account_id,
+                func.max(AssetValuation.id).label("max_id"),
+            )
+            .join(
+                max_date_sq,
+                (AssetValuation.account_id == max_date_sq.c.account_id)
+                & (AssetValuation.date == max_date_sq.c.max_date),
+            )
+            .group_by(AssetValuation.account_id)
+            .subquery()
+        )
         for row in db.execute(
             select(
                 AssetValuation.account_id,
@@ -426,9 +591,11 @@ def get_many_account_balances_rich(
                 AssetValuation.value,
                 AssetValuation.currency,
             )
-            .where(AssetValuation.account_id.in_(valuation_ids))
-            .order_by(AssetValuation.account_id, AssetValuation.date.desc())
-            .distinct(AssetValuation.account_id)
+            .join(
+                max_id_sq,
+                (AssetValuation.account_id == max_id_sq.c.account_id)
+                & (AssetValuation.id == max_id_sq.c.max_id),
+            )
         ).all():
             latest_val[row.account_id] = (row.date, row.value, row.currency)
 
@@ -436,7 +603,10 @@ def get_many_account_balances_rich(
     # We need the rate that converts account currency → base_ccy, i.e.
     # base_currency=acct.currency, quote_currency=base_ccy (e.g. EUR→USD).
     # Fallback: if only the inverse is stored (base_ccy→acct.currency), use 1/rate.
+    # Also include currencies from asset valuations (which may differ from account.currency,
+    # e.g. a USD-denominated IRA account with GBP-valued IBKR statements).
     non_base_ccys = {a.currency for a in accounts if a.currency != base_ccy}
+    non_base_ccys |= {ccy for _, __, ccy in latest_val.values() if ccy != base_ccy}
     fx_rates: dict[str, tuple[float, datetime] | None] = {}
     for ccy in non_base_ccys:
         # Preferred direction: ccy → base_ccy (e.g. EUR→USD)
@@ -474,34 +644,69 @@ def get_many_account_balances_rich(
             BalanceTruthSource.TRANSACTION_SUM.value,
             BalanceTruthSource.HYBRID.value,
         ):
-            balance = txn_sums.get(acct.id, Decimal("0.00"))
-            # HYBRID fallback to statement when txn sum is zero
-            if balance == Decimal("0.00") and truth_source == BalanceTruthSource.HYBRID.value:
-                if acct.statement_balance is not None:
-                    balance = acct.statement_balance
-            if balance == Decimal("0.00") and acct.current_value is not None:
-                balance = acct.current_value
-            result = AccountBalanceResult(
-                value=balance,
-                balance_as_of=now,
-                balance_source_used=truth_source,
-                balance_confidence=0.8 if balance != Decimal("0.00") else 0.3,
-                balance_stale=False,
-                currency=base_ccy,
-            )
+            # Prefer bank's running balance (balance_after) over sum of transactions
+            if acct.id in latest_bal_after:
+                bal_val, bal_date = latest_bal_after[acct.id]
+                result = AccountBalanceResult(
+                    value=bal_val,
+                    balance_as_of=bal_date,
+                    balance_source_used="latest_balance_after",
+                    balance_confidence=0.92,
+                    balance_stale=False,
+                    currency=acct.currency,
+                )
+            elif acct.id in hybrid_anchored:
+                stmt_bal, stmt_date = hybrid_anchored[acct.id]
+                delta = hybrid_deltas.get(acct.id, Decimal("0.00"))
+                stale = (now - stmt_date).days > 45
+                result = AccountBalanceResult(
+                    value=stmt_bal + delta,
+                    balance_as_of=now,
+                    balance_source_used="statement_anchored",
+                    balance_confidence=0.9 if not stale else 0.6,
+                    balance_stale=stale,
+                    currency=acct.currency,
+                )
+            else:
+                balance = txn_sums.get(acct.id, Decimal("0.00"))
+                if balance == Decimal("0.00") and acct.current_value is not None:
+                    balance = acct.current_value
+                result = AccountBalanceResult(
+                    value=balance,
+                    balance_as_of=now,
+                    balance_source_used=truth_source,
+                    balance_confidence=0.8 if balance != Decimal("0.00") else 0.3,
+                    balance_stale=False,
+                    currency=acct.currency,
+                )
 
         elif truth_source == BalanceTruthSource.LATEST_STATEMENT.value:
-            balance = acct.statement_balance or acct.current_value or Decimal("0.00")
-            stmt_date = acct.statement_balance_as_of
-            stale = bool(stmt_date and (now - stmt_date).days > 45)
-            result = AccountBalanceResult(
-                value=balance,
-                balance_as_of=stmt_date or now,
-                balance_source_used=BalanceTruthSource.LATEST_STATEMENT.value,
-                balance_confidence=0.9 if not stale else 0.5,
-                balance_stale=stale,
-                currency=base_ccy,
-            )
+            # Prefer the most recent LiabilityBalanceSnapshot (accurate per-statement
+            # record) over account.statement_balance which can fall behind if statements
+            # are imported out of chronological order.
+            if acct.id in latest_liab_snap:
+                snap_val, snap_date = latest_liab_snap[acct.id]
+                stale = (now - snap_date).days > 45
+                result = AccountBalanceResult(
+                    value=snap_val,
+                    balance_as_of=snap_date,
+                    balance_source_used=BalanceTruthSource.LATEST_STATEMENT.value,
+                    balance_confidence=0.95 if not stale else 0.5,
+                    balance_stale=stale,
+                    currency=acct.currency,
+                )
+            else:
+                balance = acct.statement_balance or acct.current_value or Decimal("0.00")
+                stmt_date = acct.statement_balance_as_of
+                stale = bool(stmt_date and (now - stmt_date).days > 45)
+                result = AccountBalanceResult(
+                    value=balance,
+                    balance_as_of=stmt_date or now,
+                    balance_source_used=BalanceTruthSource.LATEST_STATEMENT.value,
+                    balance_confidence=0.9 if not stale else 0.5,
+                    balance_stale=stale,
+                    currency=acct.currency,
+                )
 
         elif truth_source == BalanceTruthSource.LIABILITY_BALANCE.value:
             source = acct.liability_balance_source or "statement_balance"
@@ -521,7 +726,7 @@ def get_many_account_balances_rich(
                 balance_source_used=BalanceTruthSource.LIABILITY_BALANCE.value,
                 balance_confidence=0.85 if not stale else 0.4,
                 balance_stale=stale,
-                currency=base_ccy,
+                currency=acct.currency,
             )
 
         elif truth_source == BalanceTruthSource.MANUAL_MARK.value:
@@ -534,7 +739,7 @@ def get_many_account_balances_rich(
                 balance_source_used=BalanceTruthSource.MANUAL_MARK.value,
                 balance_confidence=0.5 if not stale else 0.2,
                 balance_stale=stale,
-                currency=base_ccy,
+                currency=acct.currency,
             )
 
         elif truth_source == BalanceTruthSource.LATEST_VALUATION.value:
@@ -565,23 +770,27 @@ def get_many_account_balances_rich(
                 balance_source_used=truth_source,
                 balance_confidence=0.3,
                 balance_stale=True,
-                currency=base_ccy,
+                currency=acct.currency,
             )
 
-        # FX conversion using pre-cached rates
-        if acct.currency != base_ccy and result.value != Decimal("0.00"):
-            fx_entry = fx_rates.get(acct.currency)
+        # FX conversion using pre-cached rates.
+        # result.currency now honestly reflects the currency of result.value
+        # (account.currency for transaction/statement-based sources, valuation
+        # currency for LATEST_VALUATION). Convert when it differs from base.
+        effective_ccy = result.currency or acct.currency
+        if effective_ccy != base_ccy and result.value != Decimal("0.00"):
+            fx_entry = fx_rates.get(effective_ccy)
             if fx_entry is not None:
                 rate, rate_date = fx_entry
                 result.value = result.value * Decimal(str(rate))
                 result.fx = FxMetadata(
-                    fx_pair=f"{acct.currency}/{base_ccy}",
+                    fx_pair=f"{effective_ccy}/{base_ccy}",
                     fx_rate_date=rate_date,
                     fx_stale=(now - rate_date).days > 7,
                 )
             else:
                 result.fx = FxMetadata(
-                    fx_pair=f"{acct.currency}/{base_ccy}",
+                    fx_pair=f"{effective_ccy}/{base_ccy}",
                     fx_stale=True,
                 )
 
@@ -597,16 +806,20 @@ def get_accounts_grouped(
 ) -> dict[str, list[dict]]:
     """Return accounts grouped by type_group with balances."""
     accounts = list_accounts(db)
+    balances = get_many_account_balances_rich(db, accounts=accounts, target_currency=target_currency)
     groups: dict[str, list[dict]] = {}
 
     for acct in accounts:
-        balance = get_account_balance(db, acct.id, target_currency=target_currency)
+        result = balances.get(acct.id) or AccountBalanceResult()
         group_name = acct.type_group
         if group_name not in groups:
             groups[group_name] = []
         groups[group_name].append({
             "account": acct,
-            "balance": balance,
+            "balance": result.value,
+            "balance_source": result.balance_source_used,
+            "balance_stale": result.balance_stale,
+            "balance_confidence": result.balance_confidence,
         })
 
     return groups

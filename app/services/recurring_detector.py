@@ -28,8 +28,12 @@ _FREQ_BUCKETS = [
     ("annually",   365, 20),
 ]
 
-_MIN_OCCURRENCES = 3   # need at least this many to infer a pattern
-_MIN_CONFIDENCE  = 0.50
+_MIN_OCCURRENCES   = 3    # need at least this many to infer a pattern
+_MIN_CONFIDENCE    = 0.50
+_MIN_AMT_CONSISTENCY = 0.70  # reject buckets with highly variable amounts
+                              # (prevents collapsing distinct merchants whose
+                              # descriptions only differ by stripped digits, e.g.
+                              # multiple Amazon orders at different totals)
 
 
 def _normalize(description: str) -> str:
@@ -156,6 +160,8 @@ def detect_recurring_payments(db: "Session") -> list[dict]:
         amt_score = _amount_consistency(amounts)
         confidence = round(regularity * amt_score, 3)
 
+        if amt_score < _MIN_AMT_CONSISTENCY:
+            continue  # amounts too variable — likely distinct merchants in one bucket
         if confidence < _MIN_CONFIDENCE:
             continue
 

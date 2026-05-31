@@ -55,6 +55,10 @@ def get_tasks(db: Session) -> list[Task]:
                 Transaction.account_id == acct.id
             )
         ).scalar()
+        # Normalise to naive so aware datetimes (from any tz-aware import path)
+        # don't TypeError against the naive cutoff.
+        if last_txn_date is not None and last_txn_date.tzinfo is not None:
+            last_txn_date = last_txn_date.replace(tzinfo=None)
         if last_txn_date is None or last_txn_date < cutoff:
             stale_accounts.append(acct)
 

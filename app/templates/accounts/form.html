@@ -94,6 +94,31 @@
         <small>Link a mortgage to see equity (property value minus outstanding balance) on the account page.</small>
     </div>
 
+    {# Statement balance — shown for transactional accounts to anchor balance calculations #}
+    <div id="statement-balance-fields">
+        <hr>
+        <h4 style="margin-bottom:0.25rem">Statement Balance</h4>
+        <p style="font-size:0.85rem;color:var(--pico-muted-color);margin-bottom:0.75rem">
+            Set a known closing balance from your latest statement. The app will compute the current balance
+            as: <em>statement balance + transactions since that date</em>. Useful when you don't have full
+            transaction history going back to account opening.
+        </p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+            <div>
+                <label for="statement_balance">Closing Balance</label>
+                <input type="number" id="statement_balance" name="statement_balance" step="0.01"
+                       value="{{ account.statement_balance if account and account.statement_balance is not none else '' }}"
+                       placeholder="e.g., -4521.38 for a credit card">
+                <small>Use negative for credit card balances (what you owe).</small>
+            </div>
+            <div>
+                <label for="statement_balance_as_of">As of Date</label>
+                <input type="date" id="statement_balance_as_of" name="statement_balance_as_of"
+                       value="{{ account.statement_balance_as_of.strftime('%Y-%m-%d') if account and account.statement_balance_as_of else '' }}">
+            </div>
+        </div>
+    </div>
+
     <label for="notes">Notes</label>
     <textarea id="notes" name="notes" rows="3"
               placeholder="Optional notes about this account">{{ account.notes if account and account.notes else '' }}</textarea>

@@ -3,7 +3,7 @@ import urllib.parse
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -20,6 +20,7 @@ from app.services.account_service import (
     delete_account,
     get_account,
     get_account_balance,
+    get_account_balance_rich,
     get_accounts_grouped,
     get_transaction_count,
     list_accounts,
@@ -207,6 +208,8 @@ def account_create(
     linked_mortgage_account_id: str = Form(""),
     interest_rate: str = Form(""),
     monthly_payment: str = Form(""),
+    statement_balance: str = Form(""),
+    statement_balance_as_of: str = Form(""),
     db: Session = Depends(get_db),
 ):
     acct_type = AccountType(account_type)
@@ -280,7 +283,27 @@ def account_create(
                 pass
         db.commit()
 
-    return RedirectResponse(url="/accounts", status_code=303)
+    stmt_err: str | None = None
+    if statement_balance.strip():
+        try:
+            acct.statement_balance = Decimal(statement_balance)
+            acct.statement_balance_as_of = (
+                datetime.strptime(statement_balance_as_of.strip(), "%Y-%m-%d")
+                if statement_balance_as_of.strip()
+                else datetime.now()
+            )
+            if acct.balance_truth_source in (None, "transaction_sum"):
+                acct.balance_truth_source = "hybrid"
+            db.commit()
+        except (ValueError, InvalidOperation) as exc:
+            db.rollback()
+            stmt_err = f"Could not parse statement balance: {exc}"
+            log.warning("account_form: statement_balance parse failed: %s", exc)
+
+    redirect = "/accounts"
+    if stmt_err:
+        redirect += "?error=" + urllib.parse.quote(stmt_err)
+    return RedirectResponse(url=redirect, status_code=303)
 
 
 @router.get("/{account_id}", response_class=HTMLResponse)
@@ -293,9 +316,10 @@ def account_detail(
     if not acct:
         return HTMLResponse("Account not found", status_code=404)
 
-    balance = get_account_balance(
+    balance_result = get_account_balance_rich(
         db, account_id, target_currency=acct.currency,
     )
+    balance = balance_result.value
     total_txn_count = get_transaction_count(db, account_id)
 
     from sqlalchemy import select as sa_select
@@ -562,6 +586,8 @@ def account_detail(
     return templates.TemplateResponse(request, "accounts/detail.html", {
         "account": acct,
         "balance": balance,
+        "balance_source": balance_result.balance_source_used,
+        "balance_stale": balance_result.balance_stale,
         "transactions": recent_txns,
         "split_categories": split_categories,
         "total_transactions": total_txn_count,
@@ -616,6 +642,8 @@ def account_update(
     linked_mortgage_account_id: str = Form(""),
     interest_rate: str = Form(""),
     monthly_payment: str = Form(""),
+    statement_balance: str = Form(""),
+    statement_balance_as_of: str = Form(""),
     db: Session = Depends(get_db),
 ):
     acct_type = AccountType(account_type)
@@ -688,6 +716,27 @@ def account_update(
                 pass
         elif not monthly_payment.strip():
             acct.monthly_payment = None
+        db.commit()
+
+    if statement_balance.strip():
+        try:
+            acct.statement_balance = Decimal(statement_balance)
+            acct.statement_balance_as_of = (
+                datetime.strptime(statement_balance_as_of.strip(), "%Y-%m-%d")
+                if statement_balance_as_of.strip()
+                else datetime.now()
+            )
+            if acct.balance_truth_source in (None, "transaction_sum"):
+                acct.balance_truth_source = "hybrid"
+            db.commit()
+        except (ValueError, Exception):
+            pass
+    elif acct.statement_balance is not None and not statement_balance.strip():
+        # User cleared the field — remove it
+        acct.statement_balance = None
+        acct.statement_balance_as_of = None
+        if acct.balance_truth_source == "hybrid":
+            acct.balance_truth_source = "transaction_sum"
         db.commit()
 
     return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)

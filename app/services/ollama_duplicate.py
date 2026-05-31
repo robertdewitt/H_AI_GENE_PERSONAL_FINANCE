@@ -124,14 +124,26 @@ def _build_prompt(
 
 # ── Main scorer ──────────────────────────────────────────────────────────────
 
+class OllamaTransportError(Exception):
+    """Connection / HTTP error talking to Ollama — service is unreachable."""
+
+
+class OllamaContentError(Exception):
+    """Ollama responded but the body was unusable (malformed JSON, missing keys)."""
+
+
 def score_group(
     descriptions: list[str],
     dupes: list[tuple[str, str]],
     non_dupes: list[tuple[str, str]],
-) -> tuple[bool, float] | tuple[None, None]:
+) -> tuple[bool, float]:
     """Ask Ollama whether this group is a real duplicate.
 
-    Returns (is_duplicate, confidence) or (None, None) if Ollama unavailable.
+    Raises:
+        OllamaTransportError — connection failed / HTTP error. Caller should
+            mark Ollama unreachable and skip subsequent calls.
+        OllamaContentError — response was malformed for this group only.
+            Caller should skip this group but keep trying others.
     """
     import json
 
@@ -149,14 +161,18 @@ def score_group(
             timeout=OLLAMA_TIMEOUT,
         )
         resp.raise_for_status()
+    except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+        raise OllamaTransportError(str(exc)) from exc
+
+    try:
         raw = resp.json().get("response", "").strip()
         data = json.loads(raw)
         is_dup = bool(data.get("is_duplicate", False))
         conf = float(data.get("confidence", 0.5))
         conf = max(0.0, min(1.0, conf))
         return is_dup, conf
-    except Exception:
-        return None, None
+    except (ValueError, KeyError, TypeError) as exc:
+        raise OllamaContentError(str(exc)) from exc
 
 
 def score_groups_with_db(
@@ -181,12 +197,14 @@ def score_groups_with_db(
             group.ollama_suggested = True
             # Still try Ollama for a confidence score, but don't block on it
             if reachable is not False:
-                is_dup, conf = score_group(descs, dupes, non_dupes)
-                if is_dup is None:
-                    reachable = False
-                else:
+                try:
+                    _is_dup, conf = score_group(descs, dupes, non_dupes)
                     reachable = True
                     group.ollama_score = conf
+                except OllamaTransportError:
+                    reachable = False
+                except OllamaContentError:
+                    pass  # skip just this group; Ollama is still up
             continue
 
         # Same-batch: identical descriptions → trivially suggested
@@ -198,10 +216,13 @@ def score_groups_with_db(
         # Same-batch, different descriptions → ask Ollama
         if reachable is False:
             continue
-        is_dup, conf = score_group(descs, dupes, non_dupes)
-        if is_dup is None:
+        try:
+            is_dup, conf = score_group(descs, dupes, non_dupes)
+        except OllamaTransportError:
             reachable = False
             continue
+        except OllamaContentError:
+            continue  # skip this group only
         reachable = True
         group.ollama_score = conf
         group.ollama_suggested = is_dup and conf >= 0.65

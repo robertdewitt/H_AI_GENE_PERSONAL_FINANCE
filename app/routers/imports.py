@@ -13,6 +13,11 @@ from app.models.account import Account
 from app.services.categorizer import categorize_batch
 from app.services.import_service import import_transactions, preview_file
 from app.services.ibkr_import import is_ibkr_file, parse_ibkr_csv, apply_ibkr_statement
+from app.services.revolut_pdf_parser import (
+    detect_revolut_sections,
+    is_revolut_pdf,
+    parse_revolut_pdf,
+)
 
 router = APIRouter(prefix="/import", tags=["import"])
 
@@ -79,6 +84,23 @@ async def upload_file(
     dest = upload_dir / file.filename
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
+
+    # Detect Revolut GBP PDF statement
+    if ext == ".pdf" and is_revolut_pdf(str(dest)):
+        try:
+            sections = detect_revolut_sections(str(dest))
+        except Exception as exc:
+            return templates.TemplateResponse(request, "imports/upload.html", {
+                "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+                "error": f"Failed to read Revolut PDF: {exc}",
+            })
+        account = db.get(Account, account_id)
+        return templates.TemplateResponse(request, "imports/revolut_preview.html", {
+            "account_id": account_id,
+            "account_name": account.name if account else f"Account {account_id}",
+            "filepath": str(dest),
+            "sections": sections,
+        })
 
     # Detect IBKR activity statement CSV — route to dedicated preview
     if ext == ".csv" and is_ibkr_file(str(dest)):
@@ -457,5 +479,93 @@ def ibkr_confirm(
     dividends = stats["dividends_added"]
     return RedirectResponse(
         url=f"/portfolio?ibkr_imported=1&positions={positions}&trades={trades}&dividends={dividends}",
+        status_code=303,
+    )
+
+
+@router.post("/revolut-confirm")
+def revolut_confirm(
+    request: Request,
+    account_id: int = Form(...),
+    filepath: str = Form(...),
+    sections: list[str] = Form(default=[]),
+    db: Session = Depends(get_db),
+):
+    from decimal import Decimal
+    from app.models.transaction import Transaction
+    from app.models.import_batch import ImportBatch
+    from app.models.account import Account, LIABILITY_TYPES
+
+    account = db.get(Account, account_id)
+    if not account:
+        return RedirectResponse(url="/import", status_code=303)
+
+    include = set(sections) if sections else {"main"}
+
+    try:
+        txns = parse_revolut_pdf(filepath, include_sections=include)
+    except Exception as exc:
+        accounts = db.execute(select(Account).order_by(Account.name)).scalars().all()
+        return templates.TemplateResponse(request, "imports/upload.html", {
+            "accounts": accounts,
+            "error": f"Revolut PDF import failed: {exc}",
+        })
+
+    # Build dedup set from existing transactions for this account
+    from sqlalchemy import func as _func
+    existing_keys: set[tuple] = set()
+    for row in db.execute(
+        select(Transaction.date, Transaction.description, Transaction.amount)
+        .where(Transaction.account_id == account_id)
+    ).all():
+        existing_keys.add((
+            row.date.strftime("%Y-%m-%d"),
+            (row.description or "").strip().lower(),
+            round(float(row.amount), 2),
+        ))
+
+    batch = ImportBatch(
+        account_id=account_id,
+        filename=Path(filepath).name,
+        file_type="pdf",
+        row_count=0,
+        source="revolut_pdf",
+    )
+    db.add(batch)
+    db.flush()
+
+    imported = 0
+    dupes = 0
+    for t in txns:
+        key = (
+            t["date"].strftime("%Y-%m-%d"),
+            t["description"].strip().lower(),
+            round(float(t["amount"]), 2),
+        )
+        if key in existing_keys:
+            dupes += 1
+            continue
+        existing_keys.add(key)
+
+        txn = Transaction(
+            account_id=account_id,
+            date=t["date"],
+            description=t["description"],
+            amount=t["amount"],
+            balance_after=t["balance"],
+            import_batch_id=batch.id,
+        )
+        db.add(txn)
+        imported += 1
+
+    batch.row_count = imported
+    db.commit()
+
+    # Auto-categorize
+    cat_stats = categorize_batch(db, limit=imported + 100)
+
+    return RedirectResponse(
+        url=f"/accounts/{account_id}?imported={imported}&duplicates={dupes}"
+            f"&categorized={cat_stats['rules'] + cat_stats['keywords'] + cat_stats['llm']}",
         status_code=303,
     )

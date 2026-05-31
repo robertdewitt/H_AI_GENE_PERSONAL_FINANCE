@@ -75,6 +75,12 @@ def portfolio_dashboard(request: Request, db: Session = Depends(get_db)):
     # ── Fetch current prices (with DB fallback + caching) ────────────────
     if symbols_held:
         current_prices, prices_as_of, prices_live = get_current_prices(symbols_held, db=db)
+        # Persist any new PriceSnapshot rows the service staged (it only
+        # flushes — the route owns the transaction boundary).
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
     else:
         current_prices, prices_as_of, prices_live = {}, {}, False
 

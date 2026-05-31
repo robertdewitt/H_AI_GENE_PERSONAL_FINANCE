@@ -26,7 +26,13 @@ router = APIRouter(prefix="/transactions", tags=["transactions"])
 
 
 def _log_deleted(db: Session, txn: Transaction) -> None:
-    """Copy a transaction to deleted_transactions before hard-deleting it."""
+    """Copy a transaction to deleted_transactions before hard-deleting it.
+
+    Preserves the truth-layer + FX + balance columns so that recover restores
+    the txn in the same state it was deleted from. Splits / reconciliation
+    memberships / payment decompositions are NOT captured here — they are
+    cascade-deleted with the Transaction and are not recoverable.
+    """
     from app.models.deleted_transaction import DeletedTransaction
     db.add(DeletedTransaction(
         original_id=txn.id,
@@ -39,6 +45,14 @@ def _log_deleted(db: Session, txn: Transaction) -> None:
         category_id=txn.category_id,
         import_batch_id=txn.import_batch_id,
         notes=getattr(txn, "notes", None),
+        amount_base=txn.amount_base,
+        exchange_rate=txn.exchange_rate,
+        balance_after=txn.balance_after,
+        event_type=txn.event_type,
+        classification_provenance=txn.classification_provenance,
+        classification_confidence=txn.classification_confidence,
+        transfer_dismissed=txn.transfer_dismissed,
+        financial_document_id=txn.financial_document_id,
     ))
 
 
@@ -643,6 +657,14 @@ def recover_transactions(
             is_transfer=row.is_transfer,
             category_id=row.category_id,
             import_batch_id=row.import_batch_id,
+            amount_base=row.amount_base,
+            exchange_rate=row.exchange_rate,
+            balance_after=row.balance_after,
+            event_type=row.event_type,
+            classification_provenance=row.classification_provenance,
+            classification_confidence=row.classification_confidence,
+            transfer_dismissed=bool(row.transfer_dismissed) if row.transfer_dismissed is not None else False,
+            financial_document_id=row.financial_document_id,
         )
         db.add(txn)
         db.delete(row)  # remove from deleted log once recovered
