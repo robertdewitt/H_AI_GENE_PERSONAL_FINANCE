@@ -29,6 +29,7 @@ from app.models.user_profile import UserProfile
 from app.models.deleted_transaction import DeletedTransaction
 from app.models.dismissed_duplicate import DismissedDuplicate
 from app.models.scheduled_payment import ScheduledPayment
+from app.models.plan_it_plan import PlanItPlan
 
 __all__ = [
     "Account",
@@ -61,4 +62,5 @@ __all__ = [
     "DeletedTransaction",
     "DismissedDuplicate",
     "ScheduledPayment",
+    "PlanItPlan",
 ]

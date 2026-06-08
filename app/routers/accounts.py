@@ -583,6 +583,15 @@ def account_detail(
             )
         ).scalar() or Decimal("0")
 
+    # Plan-It plans (Amex BA) — order by start date so the table reads like
+    # the statement; totals are computed in the template.
+    from app.models.plan_it_plan import PlanItPlan
+    plan_it_plans = db.execute(
+        sa_select(PlanItPlan)
+        .where(PlanItPlan.account_id == account_id)
+        .order_by(PlanItPlan.start_date.asc(), PlanItPlan.id.asc())
+    ).scalars().all()
+
     return templates.TemplateResponse(request, "accounts/detail.html", {
         "account": acct,
         "balance": balance,
@@ -601,6 +610,7 @@ def account_detail(
         "liability_balance_history": liability_balance_history,
         "payment_breakdown": payment_breakdown,
         "interest_ytd": interest_ytd,
+        "plan_it_plans": plan_it_plans,
         "now": datetime.now(),
     })
 

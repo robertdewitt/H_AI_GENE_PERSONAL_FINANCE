@@ -87,7 +87,8 @@
             <input type="checkbox" class="group-master"
                    data-gkey="{{ gkey }}"
                    onchange="toggleGroup(this)"
-                   {% if group.ollama_suggested %}checked data-ai-selected="1"{% endif %}
+                   {# Master starts unchecked; JS sets indeterminate after rows
+                      pre-select N-1 of N members. #}
                    style="margin:0">
             <span>
                 {{ group.account_name }}
@@ -156,16 +157,22 @@
             </thead>
             <tbody>
             {% for txn in group.transactions %}
-            <tr{% if group.ollama_suggested %} class="ai-selected-row"{% endif %}>
+            {# Pre-select N-1 of N members for deletion when the AI suggests
+               the group is a duplicate, keeping the first row as the survivor.
+               This guarantees we never auto-select every member of a group. #}
+            {% set ai_delete = group.ollama_suggested and not loop.first %}
+            <tr{% if ai_delete %} class="ai-selected-row"{% endif %}>
                 <td style="white-space:nowrap">
                     <input type="checkbox" class="txn-check"
                            value="{{ txn.id }}"
                            data-gkey="{{ gkey }}"
                            onchange="onRowCheck(this)"
-                           {% if group.ollama_suggested %}checked data-ai-selected="1"{% endif %}
+                           {% if ai_delete %}checked data-ai-selected="1"{% endif %}
                            style="margin:0">
-                    {% if group.ollama_suggested %}
-                    <span class="ai-tag" title="AI selected">AI</span>
+                    {% if ai_delete %}
+                    <span class="ai-tag" title="AI selected for delete">AI</span>
+                    {% elif group.ollama_suggested %}
+                    <span class="ai-tag" style="background:#16a34a" title="AI suggests keeping this one">keep</span>
                     {% else %}
                     <span class="ai-tag" style="visibility:hidden">AI</span>
                     {% endif %}
@@ -392,16 +399,31 @@ function applyOllamaResult(article, isdup, conf) {
         badge.style.color = '#fff';
         badge.title = 'AI thinks this is a duplicate';
         badge.textContent = `AI ${pct}% dup`;
-        // Pre-check all rows, stamp AI-selected marker, show AI tag
-        article.querySelectorAll('.txn-check').forEach(c => {
-            c.checked = true;
-            c.dataset.aiSelected = '1';
+        // Pre-check N-1 of N rows for deletion — keep the first row as the
+        // survivor. Never auto-select every member of a group.
+        const rows = article.querySelectorAll('.txn-check');
+        rows.forEach((c, idx) => {
             const tag = c.parentElement.querySelector('.ai-tag');
-            if (tag) tag.style.visibility = 'visible';
+            if (idx === 0) {
+                // First row: mark as "keep"
+                if (tag) {
+                    tag.textContent = 'keep';
+                    tag.style.background = '#16a34a';
+                    tag.title = 'AI suggests keeping this one';
+                    tag.style.visibility = 'visible';
+                }
+            } else {
+                c.checked = true;
+                c.dataset.aiSelected = '1';
+                if (tag) {
+                    tag.textContent = 'AI';
+                    tag.title = 'AI selected for delete';
+                    tag.style.visibility = 'visible';
+                }
+                c.closest('tr')?.classList.add('ai-selected-row');
+            }
         });
-        article.querySelectorAll('tr').forEach(r => r.classList.add('ai-selected-row'));
-        const master = article.querySelector('.group-master');
-        if (master) { master.checked = true; master.dataset.aiSelected = '1'; }
+        // Master stays unchecked; onRowCheck() sets indeterminate.
         onRowCheck();
     } else {
         badge.style.background = '#e5e7eb';

@@ -33,12 +33,16 @@ def compute_net_worth(
         balance = get_account_balance(
             db, acct.id, as_of_date=as_of_date, target_currency=base_ccy,
         )
-        signed_balance = balance if acct.is_asset else -abs(balance)
-
+        # Liability convention: stored value is amount owed (positive) or, when
+        # the account is in credit, the negative of what the bank owes the user.
+        # Honour the sign so a credit balance improves net worth instead of
+        # silently flipping it back to debt.
         if acct.is_asset:
+            signed_balance = balance
             total_assets += balance  # negative = overdraft, correctly reduces assets
         else:
-            total_liabilities += abs(balance)
+            signed_balance = -balance  # owed → negative NW; credit → positive NW
+            total_liabilities += balance  # net owed (can go negative if in credit)
 
         breakdown.append(AccountBalance(
             account_id=acct.id,

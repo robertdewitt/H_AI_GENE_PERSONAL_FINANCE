@@ -14,6 +14,15 @@
     {% endif %}
 </article>
 {% endif %}
+{% if request.query_params.get("stmt_warning") %}
+<article style="margin-bottom:1rem;padding:0.75rem 1rem;border-left:4px solid #f59e0b;background:color-mix(in srgb,#f59e0b 8%,transparent)">
+    <strong>Statement reconciliation warning:</strong>
+    {{ request.query_params.get("stmt_warning") }}.
+    The transactions imported from this PDF do not bridge the previous and new
+    statement balances. There may be missing or duplicate rows, or a sign-convention
+    mismatch on this account.
+</article>
+{% endif %}
 <hgroup>
     <h1>{{ account.name }}</h1>
     <p>{{ account.display_type }}{% if account.institution %} &mdash; {{ account.institution }}{% endif %}
@@ -45,6 +54,17 @@
             {% if not account.is_asset %}&minus;{% endif %}{{ account.currency_symbol }}{{ "{:,.2f}".format(balance|abs) }}
         </div>
     </div>
+    {% if account.plan_it_balance is not none and account.plan_it_balance != 0 %}
+    <div class="summary-card">
+        <div class="label">Plan-It Outstanding</div>
+        <div class="value negative" style="font-size:1.4rem">
+            &minus;{{ account.currency_symbol }}{{ "{:,.2f}".format(account.plan_it_balance|abs) }}
+        </div>
+        <div style="font-size:0.8rem;color:var(--pico-muted-color);margin-top:0.25rem">
+            Future instalment obligation{% if account.plan_it_as_of %} as of {{ account.plan_it_as_of.strftime("%b %d, %Y") }}{% endif %}
+        </div>
+    </div>
+    {% endif %}
     <div class="summary-card">
         <div class="label">Type</div>
         <div class="value" style="font-size:1.1rem">{{ account.type_group }}</div>
@@ -151,6 +171,81 @@
     {% endif %}
 </div>
 {% endif %}
+{% endif %}
+
+{% if plan_it_plans %}
+{# ── Plan-It Instalments section (Amex BA-style breakdown) ── #}
+{% set sym = account.currency_symbol %}
+<h2>Plan-It Instalments</h2>
+<p style="color:var(--pico-muted-color);font-size:0.9rem;margin:-0.25rem 0 0.75rem 0">
+    Active instalment plans on this account
+    {% if account.plan_it_as_of %} as of {{ account.plan_it_as_of.strftime("%b %d, %Y") }}{% endif %}.
+    Future obligations — already included in the running statement balance only
+    for the current month's instalment.
+</p>
+{% set ns = namespace(t_plan=0, t_remain=0, t_pm=0, t_fee=0, t_total=0, t_lf=0) %}
+<div style="overflow-x:auto;margin-bottom:1.5rem">
+    <table>
+        <thead>
+            <tr>
+                <th>Start</th>
+                <th>Details</th>
+                <th style="text-align:right;white-space:nowrap">Original</th>
+                <th style="text-align:right;white-space:nowrap">Lifetime Fee</th>
+                <th style="text-align:right;white-space:nowrap">Remaining</th>
+                <th style="text-align:right;white-space:nowrap">Plan / mo</th>
+                <th style="text-align:right;white-space:nowrap">Fee / mo</th>
+                <th style="text-align:right;white-space:nowrap">Due / mo</th>
+                <th style="text-align:center;white-space:nowrap">Instalment</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for p in plan_it_plans %}
+            {% set ns.t_plan = ns.t_plan + (p.plan_total|float) %}
+            {% set ns.t_remain = ns.t_remain + (p.balance_remaining|float) %}
+            {% set ns.t_pm = ns.t_pm + (p.monthly_plan_amount|float) %}
+            {% set ns.t_fee = ns.t_fee + (p.monthly_fee|float) %}
+            {% set ns.t_total = ns.t_total + (p.monthly_total|float) %}
+            {% set ns.t_lf = ns.t_lf + ((p.plan_total_fee or 0)|float) %}
+            <tr>
+                <td style="white-space:nowrap;font-size:0.85rem">
+                    {% if p.start_date %}{{ p.start_date.strftime("%b %d, %Y") }}{% else %}&mdash;{% endif %}
+                </td>
+                <td style="font-size:0.9rem">{{ p.description }}</td>
+                <td style="text-align:right;white-space:nowrap">{{ sym }}{{ "{:,.2f}".format(p.plan_total) }}</td>
+                <td style="text-align:right;white-space:nowrap;color:var(--pico-muted-color)">
+                    {% if p.plan_total_fee is not none %}{{ sym }}{{ "{:,.2f}".format(p.plan_total_fee) }}{% else %}&mdash;{% endif %}
+                </td>
+                <td style="text-align:right;white-space:nowrap;{% if p.balance_remaining > 0 %}color:#dc2626{% endif %}">
+                    {{ sym }}{{ "{:,.2f}".format(p.balance_remaining) }}
+                </td>
+                <td style="text-align:right;white-space:nowrap">{{ sym }}{{ "{:,.2f}".format(p.monthly_plan_amount) }}</td>
+                <td style="text-align:right;white-space:nowrap;color:var(--pico-muted-color)">{{ sym }}{{ "{:,.2f}".format(p.monthly_fee) }}</td>
+                <td style="text-align:right;white-space:nowrap;font-weight:600">{{ sym }}{{ "{:,.2f}".format(p.monthly_total) }}</td>
+                <td style="text-align:center;white-space:nowrap;font-size:0.85rem">
+                    {% set pct = (p.instalment_number / p.instalment_total * 100)|int if p.instalment_total else 0 %}
+                    <div>{{ p.instalment_number }} of {{ p.instalment_total }}</div>
+                    <div style="background:var(--pico-muted-border-color);height:4px;border-radius:2px;margin-top:0.2rem">
+                        <div style="background:#7c3aed;height:4px;border-radius:2px;width:{{ pct }}%"></div>
+                    </div>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+        <tfoot>
+            <tr style="border-top:2px solid var(--pico-muted-border-color);font-weight:600">
+                <td colspan="2" style="text-align:right">Total ({{ plan_it_plans|length }} plan{{ "" if plan_it_plans|length == 1 else "s" }})</td>
+                <td style="text-align:right;white-space:nowrap">{{ sym }}{{ "{:,.2f}".format(ns.t_plan) }}</td>
+                <td style="text-align:right;white-space:nowrap;color:var(--pico-muted-color)">{{ sym }}{{ "{:,.2f}".format(ns.t_lf) }}</td>
+                <td style="text-align:right;white-space:nowrap;color:#dc2626">{{ sym }}{{ "{:,.2f}".format(ns.t_remain) }}</td>
+                <td style="text-align:right;white-space:nowrap">{{ sym }}{{ "{:,.2f}".format(ns.t_pm) }}</td>
+                <td style="text-align:right;white-space:nowrap;color:var(--pico-muted-color)">{{ sym }}{{ "{:,.2f}".format(ns.t_fee) }}</td>
+                <td style="text-align:right;white-space:nowrap">{{ sym }}{{ "{:,.2f}".format(ns.t_total) }}</td>
+                <td></td>
+            </tr>
+        </tfoot>
+    </table>
+</div>
 {% endif %}
 
 {% if liability_balance_history %}

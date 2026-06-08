@@ -94,6 +94,13 @@ class Account(Base):
     balance_stale_hint: Mapped[bool | None] = mapped_column(Boolean)
     liability_balance_stale: Mapped[bool | None] = mapped_column(Boolean)
 
+    # Plan-It / instalment-plan outstanding balance (Amex BA, etc.) — total
+    # remaining principal across active plans, separate from the revolving
+    # statement_balance. Surfaced in the UI as a sub-balance so the user
+    # sees future committed obligations.
+    plan_it_balance: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    plan_it_as_of: Mapped[datetime | None] = mapped_column(DateTime)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )

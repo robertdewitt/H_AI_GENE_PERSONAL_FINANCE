@@ -393,28 +393,143 @@ def confirm_import(
         except Exception:
             pass  # metadata extraction is best-effort
 
-    # ── Credit-card statement: extract payment due + create scheduled payment ──
+    # ── Credit-card statement: extract balance, snapshot, scheduled payment,
+    #    and sanity-check the imported transactions against the statement deltas ──
+    stmt_warning: str | None = None
     if account and filepath.lower().endswith(".pdf"):
         from app.models.account import LIABILITY_TYPES
         if account.account_type in LIABILITY_TYPES:
             try:
                 from app.services.pdf_import import extract_cc_metadata
                 from app.models.scheduled_payment import ScheduledPayment
-                from sqlalchemy import select as _sel
+                from app.models.snapshots import LiabilityBalanceSnapshot
+                from app.models.transaction import Transaction as _Txn
+                from sqlalchemy import select as _sel, func as _func
+                from datetime import datetime as _dt
                 from decimal import Decimal as _Dec
-                cc_meta = extract_cc_metadata(filepath)
-                if cc_meta and cc_meta.get("payment_due_date"):
-                    due_date = cc_meta["payment_due_date"]
-                    min_pay  = cc_meta.get("minimum_payment")
-                    new_bal  = cc_meta.get("new_balance")
+                cc_meta = extract_cc_metadata(filepath) or {}
+                new_bal  = cc_meta.get("new_balance")
+                prev_bal = cc_meta.get("previous_balance")
+                stmt_date = cc_meta.get("statement_date")
+                due_date  = cc_meta.get("payment_due_date")
+                min_pay   = cc_meta.get("minimum_payment")
+                plan_due  = cc_meta.get("plan_it_due")
+                plan_out  = cc_meta.get("plan_it_outstanding")
 
-                    # Update account statement balance
-                    if new_bal is not None:
-                        account.statement_balance = new_bal
-                        account.statement_balance_as_of = cc_meta.get("statement_date")
-                        account.balance_truth_source = "latest_statement"
+                # 1) Persist balance + snapshot whenever we can extract them.
+                if new_bal is not None:
+                    stmt_dt = (
+                        _dt.combine(stmt_date, _dt.min.time())
+                        if stmt_date is not None else _dt.now()
+                    )
+                    account.statement_balance = new_bal
+                    account.statement_balance_as_of = stmt_dt
+                    account.balance_truth_source = "latest_statement"
 
-                    # Create or update the scheduled payment for this account
+                    # Upsert a snapshot for this (account, as_of_date)
+                    existing_snap = db.execute(
+                        _sel(LiabilityBalanceSnapshot).where(
+                            LiabilityBalanceSnapshot.account_id == account.id,
+                            LiabilityBalanceSnapshot.as_of_date == stmt_dt,
+                        ).limit(1)
+                    ).scalar_one_or_none()
+                    if existing_snap is not None:
+                        existing_snap.value_native = _Dec(str(new_bal))
+                        existing_snap.source = "cc_statement_pdf"
+                        existing_snap.confidence = 1.0
+                    else:
+                        db.add(LiabilityBalanceSnapshot(
+                            account_id=account.id,
+                            as_of_date=stmt_dt,
+                            value_native=_Dec(str(new_bal)),
+                            value_base=_Dec(str(new_bal)),
+                            currency=account.currency or "USD",
+                            fx_rate=1.0,
+                            source="cc_statement_pdf",
+                            confidence=1.0,
+                            stale_flag=False,
+                        ))
+
+                # 2) Sanity check: previous + sum(this batch's txns) should
+                #    equal new_balance (sign convention varies by issuer, so
+                #    accept either orientation). For BA Amex / Plan-It cards,
+                #    plan_it_due is an aggregate that isn't represented as
+                #    individual transactions, so subtract it from the
+                #    expected change before comparing to the batch sum.
+                if (
+                    new_bal is not None
+                    and prev_bal is not None
+                    and batch is not None
+                ):
+                    batch_sum_raw = db.execute(
+                        _sel(_func.coalesce(_func.sum(_Txn.amount), 0))
+                        .where(_Txn.import_batch_id == batch.id)
+                    ).scalar()
+                    batch_sum = float(batch_sum_raw or 0)
+                    expected_change = new_bal - prev_bal - float(plan_due or 0)
+                    diff_a = abs(expected_change - batch_sum)
+                    diff_b = abs(expected_change + batch_sum)
+                    diff = min(diff_a, diff_b)
+                    TOL = max(1.00, abs(new_bal) * 0.001)  # $1 or 0.1%, whichever bigger
+                    if diff > TOL:
+                        extra = f" (excl. plan-it {plan_due:.2f})" if plan_due else ""
+                        stmt_warning = (
+                            f"prev {prev_bal:.2f} + sum {batch_sum:.2f}{extra} "
+                            f"≠ new {new_bal:.2f} (off by {diff:.2f})"
+                        )
+
+                # Persist Plan-It outstanding if extracted
+                if plan_out is not None:
+                    from datetime import datetime as _dt2
+                    account.plan_it_balance = _Dec(str(plan_out))
+                    account.plan_it_as_of = (
+                        _dt.combine(stmt_date, _dt.min.time())
+                        if stmt_date is not None else _dt2.now()
+                    )
+
+                # Replace per-plan detail rows for this account from the PDF
+                # (delete-and-re-insert so completed plans drop off and
+                # counters/balances reflect the latest snapshot).
+                from app.services.pdf_import import extract_plan_it_plans
+                from app.models.plan_it_plan import PlanItPlan
+                plans = extract_plan_it_plans(filepath)
+                if plans:
+                    as_of_dt = (
+                        _dt.combine(stmt_date, _dt.min.time())
+                        if stmt_date is not None
+                        else __import__("datetime").datetime.now()
+                    )
+                    db.execute(
+                        _sel(PlanItPlan)
+                        .where(PlanItPlan.account_id == account.id)
+                    ).scalars().all()  # populate identity map so deletes cascade
+                    from sqlalchemy import delete as _del
+                    db.execute(
+                        _del(PlanItPlan).where(PlanItPlan.account_id == account.id)
+                    )
+                    for p in plans:
+                        if p.get("plan_total") is None:
+                            continue
+                        db.add(PlanItPlan(
+                            account_id=account.id,
+                            start_date=p.get("start_date"),
+                            description=p["description"][:500],
+                            plan_total=_Dec(str(p["plan_total"])),
+                            plan_total_fee=(
+                                _Dec(str(p["plan_total_fee"]))
+                                if p.get("plan_total_fee") is not None else None
+                            ),
+                            balance_remaining=_Dec(str(p.get("balance_remaining") or 0)),
+                            monthly_plan_amount=_Dec(str(p.get("monthly_plan_amount") or 0)),
+                            monthly_fee=_Dec(str(p.get("monthly_fee") or 0)),
+                            monthly_total=_Dec(str(p.get("monthly_total") or 0)),
+                            instalment_number=int(p.get("instalment_number") or 0),
+                            instalment_total=int(p.get("instalment_total") or 0),
+                            as_of_date=as_of_dt,
+                        ))
+
+                # 3) Scheduled minimum payment, if we have a due date.
+                if due_date is not None:
                     existing_sched = db.execute(
                         _sel(ScheduledPayment).where(
                             ScheduledPayment.account_id == account_id,
@@ -422,39 +537,44 @@ def confirm_import(
                             ScheduledPayment.active.is_(True),
                         ).limit(1)
                     ).scalar_one_or_none()
-
                     pay_amount = _Dec(str(-(min_pay or 0)))  # outflow = negative
-
                     if existing_sched is not None:
                         existing_sched.next_due_date = due_date
                         if min_pay is not None:
                             existing_sched.amount = pay_amount
-                    else:
-                        if min_pay is not None:
-                            db.add(ScheduledPayment(
-                                account_id=account_id,
-                                description=f"{account.name} — Minimum Payment",
-                                amount=pay_amount,
-                                amount_type="estimated",
-                                currency=account.currency or "USD",
-                                frequency="monthly",
-                                next_due_date=due_date,
-                                day_of_month=due_date.day,
-                                source="statement",
-                                confidence=0.95,
-                                active=True,
-                            ))
-                    db.commit()
-            except Exception:
-                pass  # best-effort
+                    elif min_pay is not None:
+                        db.add(ScheduledPayment(
+                            account_id=account_id,
+                            description=f"{account.name} — Minimum Payment",
+                            amount=pay_amount,
+                            amount_type="estimated",
+                            currency=account.currency or "USD",
+                            frequency="monthly",
+                            next_due_date=due_date,
+                            day_of_month=due_date.day,
+                            source="statement",
+                            confidence=0.95,
+                            active=True,
+                        ))
+
+                db.commit()
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "cc statement metadata extraction failed: %s", exc,
+                )
+                db.rollback()
 
     dupes = getattr(batch, "_duplicates_skipped", 0)
-    return RedirectResponse(
-        url=f"/accounts/{account_id}?imported={batch.row_count}"
-            f"&duplicates={dupes}"
-            f"&categorized={cat_stats['rules'] + cat_stats['keywords'] + cat_stats['llm']}",
-        status_code=303,
+    url = (
+        f"/accounts/{account_id}?imported={batch.row_count}"
+        f"&duplicates={dupes}"
+        f"&categorized={cat_stats['rules'] + cat_stats['keywords'] + cat_stats['llm']}"
     )
+    if stmt_warning:
+        import urllib.parse as _u
+        url += f"&stmt_warning={_u.quote(stmt_warning)}"
+    return RedirectResponse(url=url, status_code=303)
 
 
 @router.post("/ibkr-confirm")

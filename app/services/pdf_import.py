@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -40,6 +41,15 @@ def pdf_to_dataframe(filepath: str) -> pd.DataFrame:
                 log.info("Mortgage statement: %d transactions", len(df))
                 return df
 
+        # Attempt 1b: Amex UK statement — its "MonDD MonDD ... amount" lines
+        # don't survive table extraction and the generic line parser misses
+        # them too (no slash in dates). Use a dedicated parser.
+        if _is_amex_uk_statement(full_text):
+            df = _parse_amex_uk_transactions(full_text)
+            if df is not None and len(df) > 0:
+                log.info("Amex UK statement: %d transactions", len(df))
+                return df
+
         # Attempt 2: proper table extraction
         df = _extract_tables(pdf)
         if df is not None and len(df) >= 2:
@@ -61,13 +71,130 @@ def pdf_to_dataframe(filepath: str) -> pd.DataFrame:
     return df
 
 
+# ── Amex UK statement parser ────────────────────────────────────────────────
+
+_AMEX_MONTHS = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+}
+
+# Two date columns (`MonDD MonDD`), description, amount at end of line.
+# Optional "CR" marker (on same line or next line) inverts the sign.
+_AMEX_TXN_RE = re.compile(
+    r"^([A-Z][a-z]{2})(\d{1,2})\s+([A-Z][a-z]{2})(\d{1,2})\s+(.+?)\s+"
+    r"(-?\d{1,3}(?:,\d{3})*\.\d{2})\s*(CR)?\s*$"
+)
+
+# Statement date like "15/05/26" near the page header
+_AMEX_HEADER_DATE_RE = re.compile(r"\b(\d{2})/(\d{2})/(\d{2})\b")
+
+
+def _is_amex_uk_statement(text: str) -> bool:
+    """Detect an American Express UK statement of account."""
+    head = text[:4000].lower()
+    return (
+        "american express" in head
+        and ("statement of account" in head or "balance due" in head)
+        and ("£" in text[:2000] or "GBP" in head)
+    )
+
+
+def _amex_statement_year(text: str) -> int:
+    """Infer the statement year. Uses the header date (DD/MM/YY) when present."""
+    m = _AMEX_HEADER_DATE_RE.search(text[:2000])
+    if m:
+        yy = int(m.group(3))
+        return 2000 + yy if yy < 80 else 1900 + yy
+    # Fall back: search for a 4-digit year in the Statement Period line
+    m = re.search(r"\b(20\d{2})\b", text[:3000])
+    return int(m.group(1)) if m else datetime.now().year
+
+
+def _parse_amex_uk_transactions(text: str) -> pd.DataFrame | None:
+    """Parse transaction rows from an Amex UK statement.
+
+    Output DataFrame columns: date (YYYY-MM-DD), description, amount (signed).
+    Convention: positive = charge (increases what you owe), negative = credit
+    (CR marker — payment received, refund). The credit-card import flow in
+    ``import_service`` flips the sign when ``is_liability=True`` so that a
+    charge ends up negative in the transactions table — the same convention
+    the rest of the app uses.
+    """
+    year = _amex_statement_year(text)
+    rows: list[dict] = []
+
+    lines = text.splitlines()
+    # Skip everything before "Statement Period" / the first transaction header
+    # so we don't accidentally grab the summary line.
+    for i, ln in enumerate(lines):
+        m = _AMEX_TXN_RE.match(ln.strip())
+        if not m:
+            continue
+        mon1, d1, mon2, d2, desc, amt_str, cr = m.groups()
+        if mon1 not in _AMEX_MONTHS or mon2 not in _AMEX_MONTHS:
+            continue
+        # Use the process date (second column) — that's when the txn cleared
+        month = _AMEX_MONTHS[mon2]
+        day = int(d2)
+        # Guard against year-boundary statements: if process date is December
+        # but statement year is in the new year, it belongs to the prior year.
+        try:
+            dt = datetime(year, month, day)
+        except ValueError:
+            continue
+        # Some entries have CR on the *next* line (e.g. foreign refunds)
+        is_credit = cr == "CR"
+        if not is_credit and i + 1 < len(lines):
+            nxt = lines[i + 1].strip()
+            if nxt == "CR":
+                is_credit = True
+        amount = float(amt_str.replace(",", ""))
+        if is_credit:
+            amount = -amount
+        rows.append({
+            "date": dt.strftime("%Y-%m-%d"),
+            "description": desc.strip(),
+            "amount": amount,
+        })
+
+    if not rows:
+        return None
+    return pd.DataFrame(rows)
+
+
+_CURRENCY_SYMBOLS = "$£€¥"
+
+
+def _parse_signed_amount(raw: str) -> float | None:
+    """Parse an amount string that may have a leading or trailing minus and a
+    currency symbol ($, £, €, ¥).
+
+    Examples that should yield -1333.76: -$1,333.76  $-1,333.76  -1,333.76
+    1,333.76-  -£1,333.76  £-1,333.76
+    """
+    s = raw.strip().replace(",", "")
+    # Trailing-minus accounting style: "1333.76-"
+    trailing_neg = s.endswith("-")
+    # Detect a leading minus that may sit before *or* after the currency symbol
+    has_inner_neg = any(f"{sym}-" in raw for sym in _CURRENCY_SYMBOLS)
+    sign = -1.0 if s.startswith("-") or has_inner_neg or trailing_neg else 1.0
+    # Strip everything that isn't a digit or decimal point
+    s = s.lstrip(_CURRENCY_SYMBOLS + "- ").rstrip(_CURRENCY_SYMBOLS + "- ")
+    s = s.lstrip(_CURRENCY_SYMBOLS + "-")  # in case "$-" left the "-" behind
+    try:
+        return sign * float(s)
+    except ValueError:
+        return None
+
+
 def extract_cc_metadata(filepath: str) -> dict | None:
     """Extract credit-card statement summary from a PDF.
 
     Returns a dict with any of:
       payment_due_date   – date the next payment is due (date)
       minimum_payment    – minimum payment amount (float)
-      new_balance        – statement closing balance (float)
+      new_balance        – statement closing balance (float, signed — negative means credit)
+      previous_balance   – prior statement closing balance (float, signed)
       statement_date     – statement closing date (date)
     Returns None if not a recognisable credit-card statement.
     """
@@ -78,7 +205,9 @@ def extract_cc_metadata(filepath: str) -> dict | None:
 
     try:
         with pdfplumber.open(filepath) as pdf:
-            full_text = "\n".join(page.extract_text() or "" for page in pdf.pages[:2])
+            # First 2 pages cover the summary; read more so multi-page sections
+            # like the Plan-It Instalments Summary (typically pp. 7-8) are reachable.
+            full_text = "\n".join(page.extract_text() or "" for page in pdf.pages[:10])
     except Exception:
         return None
 
@@ -86,14 +215,16 @@ def extract_cc_metadata(filepath: str) -> dict | None:
     if _is_mortgage_statement(full_text):
         return None
     if not re.search(
-        r"payment\s*due\s*date|minimum\s*payment|new\s*balance|statement\s*closing",
+        r"payment\s*due\s*date|minimum\s*payment|new\s*balance|statement\s*closing|previous\s*balance|opening/?closing\s*date",
         full_text, re.I,
     ):
         return None
 
     result: dict = {}
+    # Amount pattern allowing $, £, €, ¥ and signed values
+    _AMT = r"(-?[\$£€¥]?-?[\d,]+\.?\d*-?)"
 
-    # Payment due date
+    # Payment due date — slash format OR Amex "28May2026" / "28 May 2026"
     m = re.search(
         r"payment\s*due\s*date[:\s]+(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})",
         full_text, re.I,
@@ -106,44 +237,343 @@ def extract_cc_metadata(filepath: str) -> dict | None:
                 break
             except ValueError:
                 pass
+    if "payment_due_date" not in result:
+        # Amex UK: "Balance Due £5,267.29 28May2026"
+        m = re.search(
+            r"(?:payment\s*due\s*date|balance\s*due)[^\n]{0,40}?"
+            r"(\d{1,2})\s*([A-Za-z]{3,9})\s*(\d{2,4})",
+            full_text, re.I,
+        )
+        if m:
+            from datetime import datetime as _dt
+            d, mon, yr = m.group(1), m.group(2), m.group(3)
+            for fmt in ("%d %b %Y", "%d %B %Y", "%d %b %y", "%d %B %y"):
+                try:
+                    result["payment_due_date"] = _dt.strptime(
+                        f"{d} {mon} {yr}", fmt
+                    ).date()
+                    break
+                except ValueError:
+                    pass
 
     # Minimum payment
     m = re.search(
-        r"(?:total\s*)?minimum\s*payment(?:\s*due)?\s+\$?([\d,]+\.?\d*)",
+        r"(?:total\s*)?minimum\s*payment(?:\s*due)?[:\s]+" + _AMT,
         full_text, re.I,
     )
     if m:
-        try:
-            result["minimum_payment"] = float(m.group(1).replace(",", ""))
-        except ValueError:
-            pass
+        v = _parse_signed_amount(m.group(1))
+        if v is not None:
+            result["minimum_payment"] = abs(v)
 
-    # New balance / statement balance
+    # Amex UK summary block — labels and values on different lines.
+    # Two layouts seen so far:
+    #   Platinum: Previous Closing Balance  New Credits  New Charges  Closing Balance
+    #             £6,534.05  -  £6,631.76  +  £5,365.00  =  £5,267.29
+    #   BA Amex:  Previous Closing Balance  New Credits  New Debits  Plan It Instalments Due  Closing Balance
+    #             £5,752.46  -  £5,879.82  +  £2,732.51  +  £2,948.25  =  £5,553.40
+    # Run BEFORE the generic patterns so the standalone "Closing Balance"
+    # label on the heading row doesn't grab the previous-balance value beneath.
+    # Try BA-Amex (5-value) first because Plan-It is a hard signal.
     m = re.search(
-        r"new\s*balance(?:\s*total)?\s+\$?([\d,]+\.?\d*)",
+        r"previous\s*closing\s*balance\s+new\s*credits\s+new\s*debits\s+"
+        r"plan\s*it\s*instal?ments?\s*due\s+closing\s*balance\s*\n\s*"
+        + _AMT + r"\s*[-−]\s*" + _AMT + r"\s*\+\s*" + _AMT
+        + r"\s*\+\s*" + _AMT + r"\s*=\s*" + _AMT,
         full_text, re.I,
     )
     if m:
-        try:
-            result["new_balance"] = float(m.group(1).replace(",", ""))
-        except ValueError:
-            pass
+        prev_v = _parse_signed_amount(m.group(1))
+        plan_due_v = _parse_signed_amount(m.group(4))
+        new_v = _parse_signed_amount(m.group(5))
+        if prev_v is not None:
+            result["previous_balance"] = prev_v
+        if new_v is not None:
+            result["new_balance"] = new_v
+        if plan_due_v is not None:
+            result["plan_it_due"] = plan_due_v
+    else:
+        # Platinum 4-value summary
+        m = re.search(
+            r"previous\s*closing\s*balance\s+new\s*credits\s+new\s*charges\s+"
+            r"closing\s*balance\s*\n\s*"
+            + _AMT + r"\s*[-−]\s*" + _AMT + r"\s*\+\s*" + _AMT
+            + r"\s*=\s*" + _AMT,
+            full_text, re.I,
+        )
+        if m:
+            prev_v = _parse_signed_amount(m.group(1))
+            new_v  = _parse_signed_amount(m.group(4))
+            if prev_v is not None:
+                result["previous_balance"] = prev_v
+            if new_v is not None:
+                result["new_balance"] = new_v
 
-    # Statement closing date
+    # Plan-It outstanding: from the "Plan It Instalments Summary" table, the
+    # Total row carries the remaining outstanding balance across all plans.
+    # Format (one logical row, often wrapped):
+    #   Total  16,177.82  7,083.06  2,779.49  168.76  2,948.25
+    #          ^orig      ^remain   ^plan     ^fee    ^total-this-month
+    # The "remain" column (2nd numeric) is the future obligation we want.
+    m = re.search(
+        r"plan\s*it\s*instal?ments?\s*summary[\s\S]{0,4000}?"
+        r"\bTotal\b\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})"
+        r"\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})",
+        full_text, re.I,
+    )
+    if m:
+        remain = _parse_signed_amount(m.group(2))
+        if remain is not None:
+            result["plan_it_outstanding"] = remain
+        plan_total_fees = _parse_signed_amount(m.group(4))
+        if plan_total_fees is not None:
+            result["plan_it_total_fees_due"] = plan_total_fees
+
+    # New / closing balance — handle "New Balance", "New Balance Total",
+    # and "Closing Balance" when the value is on the SAME line. Capture
+    # leading sign so credit balances ("-$1,333.76") survive.
+    if "new_balance" not in result:
+        m = re.search(
+            r"new\s*balance(?:\s*total)?[:\s]+" + _AMT,
+            full_text, re.I,
+        )
+        if not m:
+            m = re.search(
+                r"(?<!previous\s)(?<!previous)(?<!opening\s)closing\s*balance[ \t:]+"
+                + _AMT,
+                full_text, re.I,
+            )
+        if m:
+            v = _parse_signed_amount(m.group(1))
+            if v is not None:
+                result["new_balance"] = v
+
+    # Previous balance — also matches "Previous Closing Balance" (BofA/Chase
+    # use it inline with the value on the same line).
+    if "previous_balance" not in result:
+        m = re.search(
+            r"previous(?:\s*closing)?\s*balance[ \t:]+" + _AMT,
+            full_text, re.I,
+        )
+        if m:
+            v = _parse_signed_amount(m.group(1))
+            if v is not None:
+                result["previous_balance"] = v
+
+    # Amex UK due-date / balance-due block (labels + values on separate lines):
+    #   Balance Due  Payment Due Date
+    #   £5,267.29  28May2026
+    if "payment_due_date" not in result:
+        m = re.search(
+            r"balance\s*due\s+payment\s*due\s*date\s*\n\s*"
+            + _AMT + r"\s+(\d{1,2})\s*([A-Za-z]{3,9})\s*(\d{2,4})",
+            full_text, re.I,
+        )
+        if m:
+            from datetime import datetime as _dt
+            d, mon, yr = m.group(2), m.group(3), m.group(4)
+            for fmt in ("%d %b %Y", "%d %B %Y", "%d %b %y", "%d %B %y"):
+                try:
+                    result["payment_due_date"] = _dt.strptime(
+                        f"{d} {mon} {yr}", fmt
+                    ).date()
+                    break
+                except ValueError:
+                    pass
+
+    # Statement closing date — try several issuer formats:
+    #   "Statement Closing Date: 05/19/2026"   (BofA)
+    #   "Opening/Closing Date 04/25/26 - 05/24/26"  (Chase — pick the second)
+    #   Amex UK: "Statement Period From 16April to 15May2026"  (pick the second)
+    from datetime import datetime as _dt
     m = re.search(
         r"statement\s*closing\s*date[:\s]+(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})",
         full_text, re.I,
     )
+    if not m:
+        m = re.search(
+            r"opening/?closing\s*date[:\s]+\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}\s*[-–]\s*(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})",
+            full_text, re.I,
+        )
     if m:
-        from datetime import datetime as _dt
-        for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y"):
+        for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%m-%d-%y"):
             try:
                 result["statement_date"] = _dt.strptime(m.group(1), fmt).date()
                 break
             except ValueError:
                 pass
+    if "statement_date" not in result:
+        # Amex UK style "to 15May2026"
+        m = re.search(
+            r"to\s*(\d{1,2})\s*([A-Za-z]{3,9})\s*(\d{2,4})",
+            full_text, re.I,
+        )
+        if m:
+            d, mon, yr = m.group(1), m.group(2), m.group(3)
+            for fmt in ("%d %b %Y", "%d %B %Y", "%d %b %y", "%d %B %y"):
+                try:
+                    result["statement_date"] = _dt.strptime(
+                        f"{d} {mon} {yr}", fmt
+                    ).date()
+                    break
+                except ValueError:
+                    pass
 
     return result if result else None
+
+
+# ── Plan-It instalment plan extractor (Amex BA) ────────────────────────────
+
+# A plan starts with a "MonDD YYYY" date prefix. The full record spans 3 lines
+# in the extracted text (line wraps mangle the table columns):
+#   Line A: "{MonDD} {YYYY} {description}"
+#   Line B: "{plan_total} {balance_remaining} {plan_amt_month} {fee_month} {total_amt_month} {n} OF{m}"
+#   Line C: "{plan_total_fee}"        # lifetime fee summed across all instalments
+#
+# Sometimes line C is followed by page-header noise (Statement of Account /
+# Page X of Y / Prepared for / Membership Number / DD/MM/YY) before the next
+# plan's line A. The parser skips those.
+
+_PLAN_HEADER_RE = re.compile(
+    r"^([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{4})\s+(.+?)\s*$"
+)
+_PLAN_VALUES_RE = re.compile(
+    r"^([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+"
+    r"([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+(\d+)\s*OF\s*(\d+)\s*$"
+)
+_PLAN_FEE_RE = re.compile(r"^([\d,]+\.\d{2})\s*$")
+
+
+def extract_plan_it_plans(filepath: str) -> list[dict]:
+    """Extract the per-plan rows from an Amex BA 'Plan It Instalments Summary'.
+
+    Returns a list of dicts ready to upsert into PlanItPlan, or [] if the
+    section isn't present or no plans parse cleanly.
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        return []
+
+    try:
+        with pdfplumber.open(filepath) as pdf:
+            full_text = "\n".join(
+                page.extract_text() or "" for page in pdf.pages
+            )
+    except Exception:
+        return []
+
+    # Locate the section between "Plan It Instalments Summary" and the
+    # closing "Total <numbers>" row, which is followed by "Total Fees".
+    start_m = re.search(r"plan\s*it\s*instal?ments?\s*summary", full_text, re.I)
+    if not start_m:
+        return []
+    # End is the Total row at the bottom of the table
+    section = full_text[start_m.end():]
+    end_m = re.search(
+        r"\bTotal\b\s+[\d,]+\.\d{2}\s+[\d,]+\.\d{2}\s+[\d,]+\.\d{2}"
+        r"\s+[\d,]+\.\d{2}\s+[\d,]+\.\d{2}",
+        section,
+    )
+    body = section[:end_m.start()] if end_m else section[:8000]
+
+    lines = [ln.strip() for ln in body.splitlines()]
+    plans: list[dict] = []
+
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if not ln or ln not in lines:  # belt and braces
+            i += 1
+            continue
+
+        # Skip page-break noise so plans split across pages still parse
+        if (
+            ln.startswith("Statement of Account")
+            or ln.startswith("Page ")
+            or ln.startswith("Prepared for")
+            or "Membership Number" in ln
+            or re.match(r"^MR\b", ln)
+            or re.match(r"^xxxx-", ln)
+            or re.match(r"^\d{2}/\d{2}/\d{2}\b", ln)
+        ):
+            i += 1
+            continue
+
+        header = _PLAN_HEADER_RE.match(ln)
+        if not header or header.group(1) not in _AMEX_MONTHS:
+            i += 1
+            continue
+
+        # Look ahead for the values line, skipping page-break noise
+        j = i + 1
+        values = None
+        while j < len(lines) and j < i + 6:
+            if not lines[j]:
+                j += 1
+                continue
+            if (
+                lines[j].startswith("Statement of Account")
+                or lines[j].startswith("Page ")
+                or lines[j].startswith("Prepared for")
+                or "Membership Number" in lines[j]
+                or re.match(r"^MR\b", lines[j])
+                or re.match(r"^xxxx-", lines[j])
+                or re.match(r"^\d{2}/\d{2}/\d{2}\b", lines[j])
+            ):
+                j += 1
+                continue
+            values = _PLAN_VALUES_RE.match(lines[j])
+            break
+
+        if not values:
+            i += 1
+            continue
+
+        # And the lifetime-fee line (single number) after the values line
+        k = j + 1
+        fee_total = None
+        while k < len(lines) and k < j + 6:
+            if not lines[k]:
+                k += 1
+                continue
+            if (
+                lines[k].startswith("Statement of Account")
+                or lines[k].startswith("Page ")
+                or lines[k].startswith("Prepared for")
+                or "Membership Number" in lines[k]
+                or re.match(r"^MR\b", lines[k])
+                or re.match(r"^xxxx-", lines[k])
+                or re.match(r"^\d{2}/\d{2}/\d{2}\b", lines[k])
+            ):
+                k += 1
+                continue
+            fee_match = _PLAN_FEE_RE.match(lines[k])
+            if fee_match:
+                fee_total = _parse_signed_amount(fee_match.group(1))
+            break
+
+        mon, day, year, desc = header.groups()
+        try:
+            start_date = datetime(int(year), _AMEX_MONTHS[mon], int(day)).date()
+        except ValueError:
+            start_date = None
+
+        plans.append({
+            "start_date":          start_date,
+            "description":         desc.strip(),
+            "plan_total":          _parse_signed_amount(values.group(1)),
+            "balance_remaining":   _parse_signed_amount(values.group(2)),
+            "monthly_plan_amount": _parse_signed_amount(values.group(3)),
+            "monthly_fee":         _parse_signed_amount(values.group(4)),
+            "monthly_total":       _parse_signed_amount(values.group(5)),
+            "instalment_number":   int(values.group(6)),
+            "instalment_total":    int(values.group(7)),
+            "plan_total_fee":      fee_total,
+        })
+        i = k + 1 if fee_total is not None else j + 1
+
+    return plans
 
 
 def extract_mortgage_metadata(filepath: str) -> dict | None:
@@ -596,8 +1026,16 @@ def _extract_tables(pdf) -> pd.DataFrame | None:
 
 def _looks_like_transactions(df: pd.DataFrame) -> bool:
     """Sanity-check: does the DataFrame have at least a date-like and amount-like column?"""
+    seen: set = set()
     for col in df.columns:
-        vals = df[col].dropna().astype(str)
+        if col in seen:
+            continue  # df[col] would return a DataFrame for duplicate names
+        seen.add(col)
+        sub = df[col]
+        if isinstance(sub, pd.DataFrame):
+            # Duplicate column name → take the first matching column
+            sub = sub.iloc[:, 0]
+        vals = sub.dropna().astype(str)
         if vals.str.match(r"\d{1,4}[/\-\.]\d{1,2}").sum() > len(df) * 0.3:
             return True
     return False
