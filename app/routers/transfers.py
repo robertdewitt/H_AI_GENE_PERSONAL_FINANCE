@@ -161,15 +161,25 @@ def transfer_flow(
         date_from = (today - timedelta(days=365)).isoformat()
         date_to = today.isoformat()
 
+    from app.config import settings
+    from app.services.fx_service import convert_amount
+    base_ccy = settings.base_currency
+
     FromTxn = Transaction.__table__.alias("from_txn")
     ToTxn = Transaction.__table__.alias("to_txn")
     FromAcct = Account.__table__.alias("from_acct")
     ToAcct = Account.__table__.alias("to_acct")
 
+    # Group by (from_account, to_account, currency) so we can convert each
+    # currency bucket to the base currency before summing — mixing GBP and
+    # USD into one number was making the Sankey nonsensical with many
+    # accounts.
     q = (
         select(
             FromAcct.c.name.label("from_account"),
             ToAcct.c.name.label("to_account"),
+            FromAcct.c.currency.label("from_currency"),
+            ToAcct.c.currency.label("to_currency"),
             func.sum(TransferLink.amount).label("total"),
             func.count(TransferLink.id).label("count"),
         )
@@ -193,23 +203,43 @@ def transfer_flow(
         except ValueError:
             df_to = None
 
-    q = q.group_by(FromAcct.c.name, ToAcct.c.name).order_by(func.sum(TransferLink.amount).desc())
+    q = q.group_by(
+        FromAcct.c.name, ToAcct.c.name,
+        FromAcct.c.currency, ToAcct.c.currency,
+    ).order_by(func.sum(TransferLink.amount).desc())
 
     rows = db.execute(q).all()
 
-    # Build Sankey data: [{from, to, flow}]
-    sankey_data = [
-        {
-            "from": r.from_account,
-            "to": r.to_account,
-            "flow": float(r.total),
-            "count": r.count,
-        }
-        for r in rows
-        if r.from_account != r.to_account  # skip self-transfers
-    ]
+    # Collapse to one entry per (from, to) pair with all flows converted to
+    # base currency. Per-currency native totals are kept for tooltips.
+    now = datetime.now()
+    pair_flow: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        if r.from_account == r.to_account:
+            continue
+        ccy = (r.from_currency or base_ccy) or base_ccy
+        native_amount = float(r.total or 0)
+        if ccy == base_ccy:
+            base_amount = native_amount
+        else:
+            conv, _ = convert_amount(
+                db, Decimal(str(native_amount)), ccy, base_ccy, now,
+            )
+            base_amount = float(conv) if conv is not None else native_amount
+        key = (r.from_account, r.to_account)
+        entry = pair_flow.setdefault(key, {
+            "from": r.from_account, "to": r.to_account,
+            "flow": 0.0, "count": 0, "native": [],
+        })
+        entry["flow"] += base_amount
+        entry["count"] += int(r.count or 0)
+        entry["native"].append({
+            "ccy": ccy, "amount": native_amount, "count": int(r.count or 0),
+        })
 
-    # Per-account totals for summary table
+    sankey_data = sorted(pair_flow.values(), key=lambda d: -d["flow"])
+
+    # Per-account totals for summary table (in base currency)
     out_totals: dict[str, float] = {}
     in_totals: dict[str, float] = {}
     for r in sankey_data:
@@ -234,4 +264,6 @@ def transfer_flow(
         "date_to": df_to or "",
         "preset": preset or "",
         "total_flows": len(sankey_data),
+        "node_count": len(accounts),
+        "base_currency": base_ccy,
     })

@@ -91,7 +91,7 @@
             <div style="font-size:0.8rem;color:var(--pico-muted-color);text-transform:uppercase;letter-spacing:0.05em">From</div>
             <strong>{{ candidate.from_account_name }}</strong><br>
             <span style="font-size:0.95rem">{{ candidate.from_description }}</span><br>
-            <span class="txn-amount negative">-${{ "{:,.2f}".format(candidate.amount) }}</span>
+            <span class="txn-amount negative">&minus;{{ candidate.from_currency | currency_symbol }}{{ "{:,.2f}".format(candidate.amount) }}</span>
             &nbsp;<small style="color:var(--pico-muted-color)">{{ candidate.date.strftime("%b %d, %Y") }}</small>
         </div>
         <div style="font-size:1.5rem;color:var(--pico-muted-color)">&rarr;</div>
@@ -99,7 +99,10 @@
             <div style="font-size:0.8rem;color:var(--pico-muted-color);text-transform:uppercase;letter-spacing:0.05em">To</div>
             <strong>{{ candidate.to_account_name }}</strong><br>
             <span style="font-size:0.95rem">{{ candidate.to_description }}</span><br>
-            <span class="txn-amount positive">+${{ "{:,.2f}".format(candidate.amount) }}</span>
+            <span class="txn-amount positive">+{{ candidate.to_currency | currency_symbol }}{{ "{:,.2f}".format(candidate.amount) }}</span>
+            {% if candidate.from_currency != candidate.to_currency %}
+            <small style="color:var(--pico-muted-color)">({{ candidate.from_currency }} → {{ candidate.to_currency }})</small>
+            {% endif %}
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.4rem">
             <span class="badge badge-confidence" style="font-size:0.9rem">{{ "{:.0%}".format(candidate.confidence) }}</span>
@@ -155,7 +158,7 @@
                 {% if item.to_account %}{{ item.to_account.name }}{% endif %}
                 <br><small>{{ item.to_txn.description if item.to_txn else '' }}</small>
             </td>
-            <td style="text-align:right;white-space:nowrap" class="txn-amount">${{ "{:,.2f}".format(item.link.amount) }}</td>
+            <td style="text-align:right;white-space:nowrap" class="txn-amount">{{ (item.from_account.currency if item.from_account else 'USD') | currency_symbol }}{{ "{:,.2f}".format(item.link.amount) }}{% if item.from_account and item.to_account and item.from_account.currency != item.to_account.currency %}<br><small style="color:var(--pico-muted-color)">{{ item.from_account.currency }} → {{ item.to_account.currency }}</small>{% endif %}</td>
             <td>
                 <span class="badge badge-confidence">{{ "{:.0%}".format(item.link.confidence) }}</span>
                 {% if item.link.confirmed_by_user %}<span class="badge badge-income">Confirmed</span>{% endif %}

@@ -37,11 +37,21 @@
    <a href="/transfers">Confirm some transfers</a> first.</p>
 {% else %}
 
+{# Scale canvas height with the number of accounts so the Sankey has room
+   to breathe when there are many nodes. ~38px per node is comfortable. #}
+{% set chart_height = [360, (node_count|default(1)) * 38] | max %}
+{% set base_symbol = base_currency | currency_symbol %}
 <div style="background:var(--pico-card-background-color,#fff);border:1px solid var(--pico-muted-border-color);border-radius:8px;padding:1rem;margin-bottom:1.5rem">
-    <canvas id="sankeyChart" style="width:100%;min-height:350px"></canvas>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">
+        <small style="color:var(--pico-muted-color)">All flows in {{ base_currency }} (mixed-currency totals converted at today's rate)</small>
+        <small style="color:var(--pico-muted-color)">{{ node_count }} accounts · {{ total_flows }} flow{{ '' if total_flows == 1 else 's' }}</small>
+    </div>
+    <div style="overflow:auto">
+        <canvas id="sankeyChart" style="width:100%;height:{{ chart_height }}px"></canvas>
+    </div>
 </div>
 
-<h2 style="font-size:1rem;margin-bottom:0.75rem">Per-Account Summary</h2>
+<h2 style="font-size:1rem;margin-bottom:0.75rem">Per-Account Summary ({{ base_currency }})</h2>
 <div style="overflow-x:auto">
 <table>
     <thead>
@@ -57,13 +67,13 @@
     <tr>
         <td>{{ row.account }}</td>
         <td style="text-align:right;color:var(--pico-del-color)">
-            {% if row.out > 0 %}−${{ "{:,.2f}".format(row.out) }}{% else %}—{% endif %}
+            {% if row.out > 0 %}&minus;{{ base_symbol }}{{ "{:,.2f}".format(row.out) }}{% else %}&mdash;{% endif %}
         </td>
         <td style="text-align:right;color:var(--pico-ins-color)">
-            {% if row.in > 0 %}+${{ "{:,.2f}".format(row["in"]) }}{% else %}—{% endif %}
+            {% if row.in > 0 %}+{{ base_symbol }}{{ "{:,.2f}".format(row["in"]) }}{% else %}&mdash;{% endif %}
         </td>
         <td style="text-align:right;font-weight:600;color:{{ 'var(--pico-ins-color)' if row.net > 0 else 'var(--pico-del-color)' if row.net < 0 else 'inherit' }}">
-            {{ '+' if row.net > 0 else '' }}${{ "{:,.2f}".format(row.net) }}
+            {{ '+' if row.net > 0 else '' }}{{ base_symbol }}{{ "{:,.2f}".format(row.net) }}
         </td>
     </tr>
     {% endfor %}
@@ -75,14 +85,34 @@
 <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-sankey@0.12.0/dist/chartjs-chart-sankey.min.js"></script>
 <script>
 const rawData = {{ sankey_data | safe }};
+const baseSymbol = {{ base_symbol | tojson }};
+const baseCcy    = {{ base_currency | tojson }};
+const CCY_SYMBOLS = {
+    "USD":"$", "EUR":"€", "GBP":"£", "JPY":"¥",
+    "CHF":"Fr","CAD":"C$","AUD":"A$","NZD":"NZ$",
+    "SEK":"kr","NOK":"kr","CNY":"¥","INR":"₹",
+    "BRL":"R$","KRW":"₩","MXN":"$","HKD":"HK$","SGD":"S$",
+};
+const sym = c => CCY_SYMBOLS[c] || c;
+const fmt2 = n => n.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
 
 // Assign a consistent colour per node
 const nodeNames = [...new Set(rawData.flatMap(d => [d.from, d.to]))];
 const palette = [
   '#2563eb','#16a34a','#f59e0b','#8b5cf6','#ec4899',
   '#06b6d4','#f97316','#ef4444','#14b8a6','#d946ef',
+  '#0891b2','#65a30d','#c026d3','#0ea5e9','#dc2626',
 ];
 const colorMap = Object.fromEntries(nodeNames.map((n, i) => [n, palette[i % palette.length]]));
+
+// Sort nodes into rough columns by their flow role: sources (no inbound),
+// sinks (no outbound), and middle. Chart.js sankey respects `priority` to
+// stack adjacent nodes — this keeps the diagram readable with many accounts.
+const inDeg = Object.fromEntries(nodeNames.map(n => [n, 0]));
+const outDeg = Object.fromEntries(nodeNames.map(n => [n, 0]));
+rawData.forEach(d => { inDeg[d.to]++; outDeg[d.from]++; });
+const priority = {};
+nodeNames.forEach((n, i) => { priority[n] = i; });
 
 const ctx = document.getElementById('sankeyChart').getContext('2d');
 new Chart(ctx, {
@@ -95,11 +125,14 @@ new Chart(ctx, {
             colorTo: d => colorMap[d.dataset.data[d.dataIndex].to] || '#888',
             colorMode: 'gradient',
             borderWidth: 0,
+            priority,
+            size: 'max',
         }]
     },
     options: {
         responsive: true,
         maintainAspectRatio: false,
+        layout: { padding: 8 },
         plugins: {
             legend: { display: false },
             tooltip: {
@@ -107,7 +140,20 @@ new Chart(ctx, {
                     label: ctx => {
                         const d = ctx.dataset.data[ctx.dataIndex];
                         const item = rawData[ctx.dataIndex];
-                        return `${d.from} → ${d.to}: $${d.flow.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})} (${item.count} transfer${item.count !== 1 ? 's' : ''})`;
+                        const lines = [
+                            `${d.from} → ${d.to}: ${baseSymbol}${fmt2(d.flow)} ${baseCcy}`,
+                            `${item.count} transfer${item.count !== 1 ? 's' : ''}`,
+                        ];
+                        // Per-currency native breakdown if mixed
+                        if (item.native && item.native.length > 0) {
+                            const nonBase = item.native.filter(n => n.ccy !== baseCcy);
+                            if (nonBase.length || item.native.length > 1) {
+                                item.native.forEach(n => {
+                                    lines.push(`  ${sym(n.ccy)}${fmt2(n.amount)} ${n.ccy} (${n.count})`);
+                                });
+                            }
+                        }
+                        return lines;
                     }
                 }
             }

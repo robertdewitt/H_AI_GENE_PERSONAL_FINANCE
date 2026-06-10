@@ -14,6 +14,8 @@ class TransferCandidate(BaseModel):
     to_account_name: str
     from_description: str
     to_description: str
+    from_currency: str = "USD"
+    to_currency: str = "USD"
 
 
 class TransferLinkCreate(BaseModel):

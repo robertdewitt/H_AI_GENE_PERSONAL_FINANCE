@@ -167,6 +167,8 @@ def detect_transfers(
                 to_account_name=in_acct.name if in_acct else "Unknown",
                 from_description=out_txn.description,
                 to_description=in_txn.description,
+                from_currency=(out_acct.currency if out_acct else "USD") or "USD",
+                to_currency=(in_acct.currency if in_acct else "USD") or "USD",
             ))
 
     candidates.sort(key=lambda c: c.confidence, reverse=True)
