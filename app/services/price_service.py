@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from app.services.clock import naive_utc_now
 
 import yfinance as yf
 from sqlalchemy import select
@@ -31,7 +32,7 @@ def get_current_prices(
     prices: dict[str, float] = {}
     as_of: dict[str, datetime] = {}
     live = False
-    now = datetime.now()
+    now = naive_utc_now()
 
     for symbol in symbols:
         try:
@@ -157,7 +158,7 @@ def compute_portfolio_history(db: Session, account_id: int) -> list[dict]:
     if trade_rows:
         start_date = min(t.trade_date for t, _ in trade_rows)
     else:
-        start_date = datetime.now() - timedelta(days=365)
+        start_date = naive_utc_now() - timedelta(days=365)
 
     # Give a one-day buffer so yfinance captures the first day
     start_date_dl = start_date - timedelta(days=5)

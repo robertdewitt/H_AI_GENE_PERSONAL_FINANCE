@@ -7,6 +7,7 @@ as_of_date and flags staleness explicitly.
 """
 from dataclasses import dataclass, field
 from datetime import datetime
+from app.services.clock import naive_utc_now
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -37,7 +38,7 @@ def validate_group(
     base_ccy = group.base_currency or "USD"
     fx_treatment = group.fx_treatment or FxTreatmentMode.NONE.value
     fee_treatment = group.fee_treatment or FeeTreatment.EXCLUDE_FROM_NET.value
-    as_of = group.as_of_date or datetime.now()
+    as_of = group.as_of_date or naive_utc_now()
 
     result = InvariantResult(tolerance=tolerance)
     net = Decimal("0.00")

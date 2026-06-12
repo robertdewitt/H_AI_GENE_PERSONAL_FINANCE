@@ -16,6 +16,7 @@ import math
 import random
 from dataclasses import dataclass, field
 from datetime import datetime
+from app.services.clock import naive_utc_now
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -125,7 +126,7 @@ def _get_investment_monthly_values(
     from app.models.instrument import Instrument, PositionLot
 
     log = logging.getLogger(__name__)
-    now = datetime.now()
+    now = naive_utc_now()
     lookback_start = now - timedelta(days=history_months * 31)
 
     # ── All positions across these accounts ──────────────────────────────────
@@ -470,7 +471,7 @@ def run_monte_carlo(
 ) -> MonteCarloResult:
     """Run Monte Carlo net worth projection broken down by asset group."""
 
-    now = datetime.now()
+    now = naive_utc_now()
     accounts: list[Account] = db.execute(select(Account)).scalars().all()
 
     # ── Current balances per account ─────────────────────────────────────────

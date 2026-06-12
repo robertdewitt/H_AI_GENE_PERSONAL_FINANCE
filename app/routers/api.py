@@ -4,6 +4,7 @@ All endpoints return structured JSON designed for consumption by LLM agents
 that analyze spending habits, investments, and financial health.
 """
 from datetime import datetime, timedelta
+from app.services.clock import naive_utc_now
 from decimal import Decimal
 from pathlib import Path
 
@@ -201,7 +202,7 @@ def api_spending_by_category(
     db: Session = Depends(get_db),
 ):
     """Spending breakdown by category for the last N months."""
-    since = datetime.now() - timedelta(days=months * 30)
+    since = naive_utc_now() - timedelta(days=months * 30)
 
     q = (
         select(
@@ -243,7 +244,7 @@ def api_spending_monthly(
     db: Session = Depends(get_db),
 ):
     """Monthly income vs spending totals for trend analysis."""
-    since = datetime.now() - timedelta(days=months * 30)
+    since = naive_utc_now() - timedelta(days=months * 30)
 
     non_transfer_filter = (
         (Transaction.event_type.is_(None))
@@ -301,7 +302,7 @@ def api_top_merchants(
 ):
     """Top merchants/payees by total spend — helps agents identify
     recurring expenses and optimization opportunities."""
-    since = datetime.now() - timedelta(days=months * 30)
+    since = naive_utc_now() - timedelta(days=months * 30)
 
     rows = db.execute(
         select(
@@ -401,7 +402,7 @@ def api_agent_context(db: Session = Depends(get_db)):
     recurring merchants, and data quality metrics.
     """
     base = settings.base_currency
-    now = datetime.now()
+    now = naive_utc_now()
     three_months_ago = now - timedelta(days=90)
     one_month_ago = now - timedelta(days=30)
 

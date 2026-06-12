@@ -7,6 +7,7 @@ each warning subtracts 5 (clamped to 0).
 """
 from dataclasses import dataclass, field
 from datetime import datetime
+from app.services.clock import naive_utc_now
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -61,7 +62,7 @@ def assess_quality(
     as_of_date: datetime | None = None,
 ) -> DataQualityReport:
     """Produce a data-quality report for the entire ledger."""
-    now = as_of_date or datetime.now()
+    now = as_of_date or naive_utc_now()
     report = DataQualityReport(as_of=now)
 
     _check_uncategorized(db, report)

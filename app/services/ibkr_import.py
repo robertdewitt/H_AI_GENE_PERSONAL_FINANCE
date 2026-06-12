@@ -15,6 +15,7 @@ import logging
 import re
 from collections import defaultdict
 from datetime import datetime
+from app.services.clock import naive_utc_now
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -343,7 +344,7 @@ def apply_ibkr_statement(db: Session, account_id: int, parsed: dict) -> dict[str
         "nav_saved": 0,
     }
 
-    as_of_date = parsed["period_end"] or datetime.now()
+    as_of_date = parsed["period_end"] or naive_utc_now()
     base_currency = parsed["base_currency"]
 
     # ── 1. Upsert instruments ─────────────────────────────────────────────

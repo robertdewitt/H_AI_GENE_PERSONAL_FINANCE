@@ -230,10 +230,11 @@ def confirm_import(
             meta = extract_mortgage_metadata(filepath)
             if meta:
                 from datetime import datetime as _dt
+from app.services.clock import naive_utc_now
                 from decimal import Decimal as _Dec
                 from app.models.snapshots import LiabilityBalanceSnapshot
 
-                stmt_date = meta.get("statement_date") or _dt.now()
+                stmt_date = meta.get("statement_date") or naive_utc_now()
 
                 if "outstanding_balance" in meta:
                     bal = meta["outstanding_balance"]
@@ -448,7 +449,7 @@ def confirm_import(
             stmt_date = od.get("statement_date")
             account.overdraft_as_of = (
                 _dt.combine(stmt_date, _dt.min.time())
-                if stmt_date is not None else _dt.now()
+                if stmt_date is not None else naive_utc_now()
             )
             db.commit()
 
@@ -479,7 +480,7 @@ def confirm_import(
                 if new_bal is not None:
                     stmt_dt = (
                         _dt.combine(stmt_date, _dt.min.time())
-                        if stmt_date is not None else _dt.now()
+                        if stmt_date is not None else naive_utc_now()
                     )
                     account.statement_balance = new_bal
                     account.statement_balance_as_of = stmt_dt
@@ -543,7 +544,7 @@ def confirm_import(
                     account.plan_it_balance = _Dec(str(plan_out))
                     account.plan_it_as_of = (
                         _dt.combine(stmt_date, _dt.min.time())
-                        if stmt_date is not None else _dt2.now()
+                        if stmt_date is not None else naive_utc_now()
                     )
 
                 # Replace per-plan detail rows for this account from the PDF
@@ -556,7 +557,7 @@ def confirm_import(
                     as_of_dt = (
                         _dt.combine(stmt_date, _dt.min.time())
                         if stmt_date is not None
-                        else __import__("datetime").datetime.now()
+                        else __import__("datetime").naive_utc_now()
                     )
                     db.execute(
                         _sel(PlanItPlan)

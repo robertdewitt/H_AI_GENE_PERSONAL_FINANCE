@@ -125,6 +125,7 @@ def _bootstrap_fx_rates():
 
     def _sync():
         from datetime import datetime, timedelta
+from app.services.clock import naive_utc_now
 
         from sqlalchemy import func as sa_func
 
@@ -149,7 +150,7 @@ def _bootstrap_fx_rates():
                 log.warning("FX startup current-rate sync failed: %s", exc)
 
             key_quotes = ["GBP", "EUR", "JPY"]
-            five_years_ago = datetime.now() - timedelta(days=5 * 365)
+            five_years_ago = naive_utc_now() - timedelta(days=5 * 365)
 
             for quote in key_quotes:
                 if quote == base:

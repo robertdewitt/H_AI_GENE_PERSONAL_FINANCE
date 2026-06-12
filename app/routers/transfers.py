@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+from app.services.clock import naive_utc_now
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Form, Query, Request
@@ -212,7 +213,7 @@ def transfer_flow(
 
     # Collapse to one entry per (from, to) pair with all flows converted to
     # base currency. Per-currency native totals are kept for tooltips.
-    now = datetime.now()
+    now = naive_utc_now()
     pair_flow: dict[tuple[str, str], dict] = {}
     for r in rows:
         if r.from_account == r.to_account:

@@ -1,5 +1,6 @@
 import shutil
 from datetime import datetime
+from app.services.clock import naive_utc_now
 from decimal import Decimal
 from pathlib import Path
 
@@ -25,7 +26,7 @@ router = APIRouter(prefix="/paychecks", tags=["paychecks"])
 @router.get("", response_class=HTMLResponse)
 def paychecks_list(request: Request, db: Session = Depends(get_db)):
     stubs = list_paychecks(db)
-    now = datetime.now()
+    now = naive_utc_now()
     summary = get_paycheck_summary(db, year=now.year)
     accounts = db.execute(
         select(Account).order_by(Account.name)

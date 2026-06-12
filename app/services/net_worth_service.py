@@ -5,6 +5,7 @@ the batch balance helpers in :mod:`app.services.account_service` so the
 hot path stays bounded in SQL statements rather than O(months × accounts).
 """
 from datetime import datetime, timedelta
+from app.services.clock import naive_utc_now
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -79,7 +80,7 @@ def compute_net_worth(
     When ``as_of_date`` is None the **current** net worth is computed using
     the full account balance (no date filter on transactions).
     """
-    snapshot_date = as_of_date or datetime.now()
+    snapshot_date = as_of_date or naive_utc_now()
     base_ccy = target_currency or settings.base_currency
 
     accounts = db.execute(select(Account)).scalars().all()
@@ -109,7 +110,7 @@ def compute_net_worth_series(
     Uses the batched series helper so the whole timeline is produced with
     a bounded number of SQL statements rather than O(months × accounts).
     """
-    now = datetime.now()
+    now = naive_utc_now()
     base_ccy = target_currency or settings.base_currency
 
     # Build the list of month-end snapshot dates (capped at "now" for the

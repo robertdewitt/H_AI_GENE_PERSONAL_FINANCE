@@ -7,6 +7,7 @@ stored with stale_flag=True rather than omitted.
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from app.services.clock import naive_utc_now
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -42,7 +43,7 @@ def compute_household_snapshot(
     as_of_date: datetime | None = None,
 ) -> HouseholdSnapshot:
     """Compute and persist a full household balance-sheet snapshot."""
-    now = as_of_date or datetime.now()
+    now = as_of_date or naive_utc_now()
     base_ccy = settings.base_currency
 
     accounts = db.execute(select(Account)).scalars().all()
@@ -126,7 +127,7 @@ def compute_household_snapshot(
 def compute_startup_state(db: Session) -> StartupStateResult:
     """Run on application startup: refresh all account balances and
     produce a household snapshot. Does NOT fabricate live precision."""
-    now = datetime.now()
+    now = naive_utc_now()
     result = StartupStateResult()
 
     accounts = db.execute(select(Account)).scalars().all()

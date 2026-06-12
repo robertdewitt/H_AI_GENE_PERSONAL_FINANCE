@@ -40,4 +40,7 @@ class DeletedTransaction(Base):
     transfer_dismissed: Mapped[bool | None] = mapped_column(nullable=True)
     financial_document_id: Mapped[int | None] = mapped_column(nullable=True)
 
-    deleted_at: Mapped[datetime] = mapped_column(default=datetime.now, nullable=False)
+    deleted_at: Mapped[datetime] = mapped_column(
+        default=lambda: __import__("app.services.clock", fromlist=["naive_utc_now"]).naive_utc_now(),
+        nullable=False,
+    )

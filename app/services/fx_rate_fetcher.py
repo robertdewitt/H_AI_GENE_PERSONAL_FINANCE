@@ -7,6 +7,7 @@ and sourced from the European Central Bank.
 """
 import logging
 from datetime import datetime, timedelta
+from app.services.clock import naive_utc_now
 
 import httpx
 import yfinance as yf
@@ -77,7 +78,7 @@ def fetch_yahoo_historical(
     Returns list of {date: datetime, rate: float}.
     """
     if end_date is None:
-        end_date = datetime.now()
+        end_date = naive_utc_now()
 
     ticker = f"{base}{quote}=X"
     results: list[dict] = []
@@ -152,7 +153,7 @@ def fetch_frankfurter_historical(
     Splits large ranges into yearly chunks to avoid 404s on the API.
     """
     if end_date is None:
-        end_date = datetime.now()
+        end_date = naive_utc_now()
 
     results: list[dict] = []
     chunk_start = start_date
@@ -201,7 +202,7 @@ def sync_current_rates(
     if quotes is None:
         quotes = [c for c in COMMON_CURRENCIES if c != base]
 
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today = naive_utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
     statuses: dict[str, str] = {}
 
     # Try Yahoo Finance first

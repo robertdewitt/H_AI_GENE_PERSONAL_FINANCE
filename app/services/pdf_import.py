@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
+from app.services.clock import naive_utc_now
 from typing import Any
 
 import pandas as pd
@@ -107,7 +108,7 @@ def _amex_statement_year(text: str) -> int:
         return 2000 + yy if yy < 80 else 1900 + yy
     # Fall back: search for a 4-digit year in the Statement Period line
     m = re.search(r"\b(20\d{2})\b", text[:3000])
-    return int(m.group(1)) if m else datetime.now().year
+    return int(m.group(1)) if m else naive_utc_now().year
 
 
 def _parse_amex_uk_transactions(text: str) -> pd.DataFrame | None:
@@ -1156,7 +1157,7 @@ def _infer_year(text: str) -> int:
         from collections import Counter
         return int(Counter(years).most_common(1)[0][0])
     from datetime import datetime
-    return datetime.now().year
+    return naive_utc_now().year
 
 
 def _parse_date_mm_dd(raw: str, year: int) -> str | None:

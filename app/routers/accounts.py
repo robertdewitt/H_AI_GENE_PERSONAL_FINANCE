@@ -3,6 +3,7 @@ import urllib.parse
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta
+from app.services.clock import naive_utc_now
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request
@@ -66,7 +67,7 @@ _SPEND_PRESETS = [
 
 def _preset_to_since(preset: str | None) -> datetime:
     from datetime import date
-    today = datetime.now()
+    today = naive_utc_now()
     if preset == "ytd":
         return datetime(today.year, 1, 1)
     if preset == "mtd":
@@ -225,7 +226,7 @@ def account_create(
         currency=currency,
         is_asset=is_asset,
         current_value=val,
-        value_as_of_date=datetime.now() if val is not None else None,
+        value_as_of_date=naive_utc_now() if val is not None else None,
         notes=notes or None,
     )
     acct = create_account(db, data)
@@ -252,11 +253,11 @@ def account_create(
         acct.balance_truth_source = "manual_mark"
         if val:
             acct.current_value = val
-            acct.value_as_of_date = datetime.now()
+            acct.value_as_of_date = naive_utc_now()
         elif acct.purchase_price and not acct.current_value:
             # Fall back to purchase price until a market value is fetched
             acct.current_value = acct.purchase_price
-            acct.value_as_of_date = datetime.now()
+            acct.value_as_of_date = naive_utc_now()
         db.commit()
 
         # Auto-fetch estimated value if address provided and no manual value given
@@ -266,10 +267,10 @@ def account_create(
         acct.balance_truth_source = "manual_mark"
         if val:
             acct.current_value = val
-            acct.value_as_of_date = datetime.now()
+            acct.value_as_of_date = naive_utc_now()
         elif acct.purchase_price and not acct.current_value:
             acct.current_value = acct.purchase_price
-            acct.value_as_of_date = datetime.now()
+            acct.value_as_of_date = naive_utc_now()
         db.commit()
 
     if acct_type == AccountType.MORTGAGE:
@@ -295,7 +296,7 @@ def account_create(
             acct.statement_balance_as_of = (
                 datetime.strptime(statement_balance_as_of.strip(), "%Y-%m-%d")
                 if statement_balance_as_of.strip()
-                else datetime.now()
+                else naive_utc_now()
             )
             if acct.balance_truth_source in (None, "transaction_sum"):
                 acct.balance_truth_source = "hybrid"
@@ -310,7 +311,7 @@ def account_create(
             acct.overdraft_limit = Decimal(overdraft_limit)
             acct.overdraft_as_of = (
                 datetime.strptime(overdraft_as_of.strip(), "%Y-%m-%d")
-                if overdraft_as_of.strip() else datetime.now()
+                if overdraft_as_of.strip() else naive_utc_now()
             )
             db.commit()
         except (ValueError, InvalidOperation):
@@ -386,7 +387,7 @@ def account_detail(
 
     # ── Monthly spend by category (last 12 months) ───────────────────
     from app.config import settings as _settings
-    since_12m = datetime.now() - timedelta(days=365)
+    since_12m = naive_utc_now() - timedelta(days=365)
 
     if _settings.db_backend == "postgresql":
         _ym = sa_func.to_char(Transaction.date, "YYYY-MM")
@@ -588,7 +589,7 @@ def account_detail(
             elif row.component == PaymentComponent.ESCROW.value:
                 payment_breakdown[txn_id]["escrow"] = float(row.comp_amount)
 
-        ytd_start = datetime(datetime.now().year, 1, 1)
+        ytd_start = datetime(naive_utc_now().year, 1, 1)
         interest_ytd = db.execute(
             _select2(_func2.sum(PaymentDecomposition.amount))
             .join(Transaction, PaymentDecomposition.transaction_id == Transaction.id)
@@ -627,7 +628,7 @@ def account_detail(
         "payment_breakdown": payment_breakdown,
         "interest_ytd": interest_ytd,
         "plan_it_plans": plan_it_plans,
-        "now": datetime.now(),
+        "now": naive_utc_now(),
     })
 
 
@@ -686,7 +687,7 @@ def account_update(
         currency=currency,
         is_asset=is_asset,
         current_value=val,
-        value_as_of_date=datetime.now() if val is not None else None,
+        value_as_of_date=naive_utc_now() if val is not None else None,
         notes=notes or None,
     )
     acct = update_account(db, account_id, data)
@@ -710,10 +711,10 @@ def account_update(
         acct.balance_truth_source = "manual_mark"
         if val:
             acct.current_value = val
-            acct.value_as_of_date = datetime.now()
+            acct.value_as_of_date = naive_utc_now()
         elif acct.purchase_price and not acct.current_value:
             acct.current_value = acct.purchase_price
-            acct.value_as_of_date = datetime.now()
+            acct.value_as_of_date = naive_utc_now()
         db.commit()
 
         # Re-fetch estimated value when address changes and no manual value set
@@ -723,10 +724,10 @@ def account_update(
         acct.balance_truth_source = "manual_mark"
         if val:
             acct.current_value = val
-            acct.value_as_of_date = datetime.now()
+            acct.value_as_of_date = naive_utc_now()
         elif acct.purchase_price and not acct.current_value:
             acct.current_value = acct.purchase_price
-            acct.value_as_of_date = datetime.now()
+            acct.value_as_of_date = naive_utc_now()
         db.commit()
 
     if acct_type == AccountType.MORTGAGE:
@@ -755,7 +756,7 @@ def account_update(
             acct.statement_balance_as_of = (
                 datetime.strptime(statement_balance_as_of.strip(), "%Y-%m-%d")
                 if statement_balance_as_of.strip()
-                else datetime.now()
+                else naive_utc_now()
             )
             if acct.balance_truth_source in (None, "transaction_sum"):
                 acct.balance_truth_source = "hybrid"
@@ -775,7 +776,7 @@ def account_update(
             acct.overdraft_limit = Decimal(overdraft_limit)
             acct.overdraft_as_of = (
                 datetime.strptime(overdraft_as_of.strip(), "%Y-%m-%d")
-                if overdraft_as_of.strip() else datetime.now()
+                if overdraft_as_of.strip() else naive_utc_now()
             )
             db.commit()
         except (ValueError, InvalidOperation):
@@ -848,7 +849,7 @@ def apply_valuation(
 
     val = AssetValuation(
         account_id=acct.id,
-        date=datetime.now(),
+        date=naive_utc_now(),
         value=value,
         currency=acct.currency,
         source=source,
@@ -856,7 +857,7 @@ def apply_valuation(
     )
     db.add(val)
     acct.current_value = value
-    acct.value_as_of_date = datetime.now()
+    acct.value_as_of_date = naive_utc_now()
     acct.balance_truth_source = "manual_mark"
     db.commit()
 
@@ -916,7 +917,7 @@ def _try_fetch_property_value(db: Session, acct) -> None:
 
     val = AssetValuation(
         account_id=acct.id,
-        date=datetime.now(),
+        date=naive_utc_now(),
         value=result.value,
         currency=acct.currency,
         source=result.source,
@@ -924,6 +925,6 @@ def _try_fetch_property_value(db: Session, acct) -> None:
     )
     db.add(val)
     acct.current_value = result.value
-    acct.value_as_of_date = datetime.now()
+    acct.value_as_of_date = naive_utc_now()
     acct.balance_truth_source = "manual_mark"
     db.commit()

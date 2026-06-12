@@ -6,6 +6,7 @@ This enforces the principle that raw rows are not truth.
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from app.services.clock import naive_utc_now
 from decimal import Decimal
 
 from sqlalchemy import and_, case, func, select
@@ -40,7 +41,7 @@ def compute_spend_summary(
     months: int = 3,
     account_id: int | None = None,
 ) -> SpendSummary:
-    since = datetime.now() - timedelta(days=months * 30)
+    since = naive_utc_now() - timedelta(days=months * 30)
 
     base_filter = and_(
         TransactionSplit.counts_as_true_spend.is_(True),

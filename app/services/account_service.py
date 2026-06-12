@@ -6,6 +6,7 @@ signature is preserved as a thin wrapper for backward compatibility.
 """
 from dataclasses import dataclass, field
 from datetime import datetime
+from app.services.clock import naive_utc_now
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -129,7 +130,7 @@ def get_account_balance_rich(
 
     base_ccy = target_currency or settings.base_currency
     result = AccountBalanceResult(currency=base_ccy)
-    now = datetime.now()
+    now = naive_utc_now()
 
     truth_source = (
         account.balance_truth_source
@@ -430,7 +431,7 @@ def get_many_account_balances_rich(
     from app.services.fx_service import convert_amount
 
     base_ccy = target_currency or settings.base_currency
-    now = datetime.now()
+    now = naive_utc_now()
 
     if accounts is None:
         accounts = list_accounts(db)
@@ -829,7 +830,7 @@ def get_many_account_balances_series(
         return {}
 
     base_ccy = target_currency or settings.base_currency
-    now = datetime.now()
+    now = naive_utc_now()
     acct_ids = [a.id for a in accounts]
     sorted_dates = sorted(snapshot_dates)
 

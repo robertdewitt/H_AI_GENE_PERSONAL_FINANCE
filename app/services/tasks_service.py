@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from app.services.clock import naive_utc_now
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -32,7 +33,7 @@ def get_tasks(db: Session) -> list[Task]:
     from app.services.duplicate_detector import find_duplicate_groups
 
     tasks: list[Task] = []
-    now = datetime.now()
+    now = naive_utc_now()
     cutoff = now - timedelta(days=STALE_DAYS)
 
     # ── 1. Stale accounts (no statement update in 30+ days) ──────────────────

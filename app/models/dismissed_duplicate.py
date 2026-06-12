@@ -18,4 +18,7 @@ class DismissedDuplicate(Base):
     account_id: Mapped[int] = mapped_column(nullable=False, index=True)
     txn_date: Mapped[str] = mapped_column(nullable=False)   # stored as YYYY-MM-DD string
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
-    dismissed_at: Mapped[datetime] = mapped_column(default=datetime.now, nullable=False)
+    dismissed_at: Mapped[datetime] = mapped_column(
+        default=lambda: __import__("app.services.clock", fromlist=["naive_utc_now"]).naive_utc_now(),
+        nullable=False,
+    )
