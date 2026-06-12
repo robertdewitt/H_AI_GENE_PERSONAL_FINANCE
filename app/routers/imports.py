@@ -1,3 +1,4 @@
+import logging
 import shutil
 from pathlib import Path
 
@@ -5,6 +6,8 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+log = logging.getLogger(__name__)
 
 from app.config import settings
 from app.database import get_db
@@ -203,12 +206,22 @@ def confirm_import(
     # Auto-categorize the newly imported transactions
     cat_stats = categorize_batch(db, limit=batch.row_count + 100)
 
-    # Match against scheduled payments and advance next_due_dates
+    # Match against scheduled payments and advance next_due_dates.
+    # Best-effort — a matching failure must not block the import, but it
+    # also must not be silent: log it and surface a warning so the user
+    # can investigate why the post-import banner doesn't show matches.
+    extraction_warnings: list[str] = []
     try:
         from app.services.scheduled_matcher import match_batch
         match_batch(db, batch.id)
-    except Exception:
-        pass  # matching is best-effort
+    except Exception as exc:
+        log.warning(
+            "scheduled_matcher.match_batch failed for batch %s: %s",
+            batch.id, exc, exc_info=True,
+        )
+        extraction_warnings.append(
+            f"Scheduled-payment matching failed: {exc}"
+        )
 
     # For mortgage PDFs, also extract and save loan metadata (balance, rate, payment)
     if account and account.account_type == AccountType.MORTGAGE and filepath.lower().endswith(".pdf"):
@@ -403,26 +416,41 @@ def confirm_import(
 
                             db.commit()
 
-        except Exception:
-            pass  # metadata extraction is best-effort
+        except Exception as exc:
+            log.warning(
+                "extract_mortgage_metadata failed for %s: %s",
+                filepath, exc, exc_info=True,
+            )
+            extraction_warnings.append(
+                f"Mortgage metadata could not be extracted: {exc}"
+            )
 
     # ── Overdraft facility: pull from any UK bank statement PDF ──
     if account and filepath.lower().endswith(".pdf"):
+        from app.services.pdf_import import extract_overdraft_facility
+        from datetime import datetime as _dt
+        from decimal import Decimal as _Dec
+        od = None
         try:
-            from app.services.pdf_import import extract_overdraft_facility
-            from datetime import datetime as _dt
-            from decimal import Decimal as _Dec
             od = extract_overdraft_facility(filepath)
-            if od and od.get("overdraft_limit"):
-                account.overdraft_limit = _Dec(str(od["overdraft_limit"]))
-                stmt_date = od.get("statement_date")
-                account.overdraft_as_of = (
-                    _dt.combine(stmt_date, _dt.min.time())
-                    if stmt_date is not None else _dt.now()
-                )
-                db.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning(
+                "extract_overdraft_facility failed for %s: %s",
+                filepath, exc, exc_info=True,
+            )
+            extraction_warnings.append(
+                f"Overdraft facility could not be read from this PDF: {exc}"
+            )
+        # Persist outside the try so a write failure surfaces normally
+        # (and so no db.commit() is hidden inside a swallowed except).
+        if od and od.get("overdraft_limit"):
+            account.overdraft_limit = _Dec(str(od["overdraft_limit"]))
+            stmt_date = od.get("statement_date")
+            account.overdraft_as_of = (
+                _dt.combine(stmt_date, _dt.min.time())
+                if stmt_date is not None else _dt.now()
+            )
+            db.commit()
 
     # ── Credit-card statement: extract balance, snapshot, scheduled payment,
     #    and sanity-check the imported transactions against the statement deltas ──
@@ -602,9 +630,14 @@ def confirm_import(
         f"&duplicates={dupes}"
         f"&categorized={cat_stats['rules'] + cat_stats['keywords'] + cat_stats['llm']}"
     )
+    import urllib.parse as _u
     if stmt_warning:
-        import urllib.parse as _u
         url += f"&stmt_warning={_u.quote(stmt_warning)}"
+    # Surface every best-effort failure that lost data the user expected
+    # (mortgage metadata, overdraft, scheduled matching, etc.) so partial
+    # successes are never silent.
+    for warning in extraction_warnings:
+        url += f"&warning={_u.quote(warning)}"
     return RedirectResponse(url=url, status_code=303)
 
 

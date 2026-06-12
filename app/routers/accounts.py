@@ -281,8 +281,11 @@ def account_create(
         if monthly_payment.strip():
             try:
                 acct.monthly_payment = Decimal(monthly_payment)
-            except Exception:
-                pass
+            except (ValueError, InvalidOperation) as exc:
+                log.warning(
+                    "account_form: monthly_payment parse failed (%r): %s",
+                    monthly_payment, exc,
+                )
         db.commit()
 
     stmt_err: str | None = None
@@ -737,8 +740,11 @@ def account_update(
         if monthly_payment.strip():
             try:
                 acct.monthly_payment = Decimal(monthly_payment)
-            except Exception:
-                pass
+            except (ValueError, InvalidOperation) as exc:
+                log.warning(
+                    "account_form: monthly_payment parse failed (%r): %s",
+                    monthly_payment, exc,
+                )
         elif not monthly_payment.strip():
             acct.monthly_payment = None
         db.commit()

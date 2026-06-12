@@ -99,12 +99,24 @@ def settings_save(
         forecast_moving_avg_months=_opt_int(forecast_moving_avg_months),
     )
 
-    # Ensure current FX rates exist for the chosen display currency
+    # Ensure current FX rates exist for the chosen display currency.
+    # This is best-effort (network may be offline) but we log the failure
+    # so the user can investigate why their currency conversions look stale.
+    fx_warning = ""
     if display_currency.upper() != "USD":
         try:
             from app.services.fx_rate_fetcher import sync_current_rates
             sync_current_rates(db, base="USD", quotes=[display_currency.upper()])
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "settings: FX rate sync to %s failed: %s",
+                display_currency, exc, exc_info=True,
+            )
+            fx_warning = f"FX rate sync failed: {exc}"
 
-    return RedirectResponse(url="/settings?saved=1", status_code=303)
+    redirect_url = "/settings?saved=1"
+    if fx_warning:
+        import urllib.parse as _u
+        redirect_url += f"&fx_warning={_u.quote(fx_warning)}"
+    return RedirectResponse(url=redirect_url, status_code=303)

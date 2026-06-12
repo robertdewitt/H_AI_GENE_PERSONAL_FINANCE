@@ -23,6 +23,22 @@
     mismatch on this account.
 </article>
 {% endif %}
+{% set extraction_warnings = request.query_params.getlist("warning") if request else [] %}
+{% if extraction_warnings %}
+<article style="margin-bottom:1rem;padding:0.75rem 1rem;border-left:4px solid #f59e0b;background:color-mix(in srgb,#f59e0b 8%,transparent)">
+    <strong>Import completed with warnings:</strong>
+    <ul style="margin:0.4rem 0 0 1.2rem">
+        {% for w in extraction_warnings %}
+        <li>{{ w }}</li>
+        {% endfor %}
+    </ul>
+    <p style="margin-top:0.4rem;font-size:0.85rem;color:var(--pico-muted-color)">
+        Best-effort extractions (mortgage metadata, overdraft facility,
+        scheduled-payment matching) failed for this import. Transactions
+        were still recorded.
+    </p>
+</article>
+{% endif %}
 <hgroup>
     <h1>{{ account.name }}</h1>
     <p>{{ account.display_type }}{% if account.institution %} &mdash; {{ account.institution }}{% endif %}
