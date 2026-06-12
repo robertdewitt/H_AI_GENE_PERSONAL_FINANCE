@@ -800,6 +800,381 @@ def get_many_account_balances_rich(
     return results
 
 
+def get_many_account_balances_series(
+    db: Session,
+    accounts: list[Account] | None = None,
+    snapshot_dates: list[datetime] | None = None,
+    target_currency: str | None = None,
+) -> dict[datetime, dict[int, AccountBalanceResult]]:
+    """Compute per-account balances at multiple snapshot dates in bounded SQL.
+
+    Returns ``{snapshot_date: {account_id: AccountBalanceResult}}``.
+
+    Implementation: pre-loads every input the truth-source dispatch needs
+    (raw transactions, valuations, liability snapshots, currency rates) in
+    a fixed number of queries, then answers every (account, date) cell
+    from the in-memory tables. This keeps the cost flat at ~5-8 SQL
+    statements regardless of how many months are requested.
+
+    Falls back to per-date :func:`get_many_account_balances_rich` when no
+    dates are supplied or there are no accounts.
+    """
+    from app.models.asset_valuation import AssetValuation
+    from app.models.currency_rate import CurrencyRate
+    from app.models.snapshots import LiabilityBalanceSnapshot
+
+    if accounts is None:
+        accounts = list_accounts(db)
+    if not accounts or not snapshot_dates:
+        return {}
+
+    base_ccy = target_currency or settings.base_currency
+    now = datetime.now()
+    acct_ids = [a.id for a in accounts]
+    sorted_dates = sorted(snapshot_dates)
+
+    # ── 1) Transactions (used for TRANSACTION_SUM, HYBRID, latest_balance_after) ──
+    # One scan, grouped per-account in Python so we can answer any snapshot date.
+    txn_rows = db.execute(
+        select(
+            Transaction.account_id,
+            Transaction.date,
+            Transaction.amount,
+            Transaction.balance_after,
+            Transaction.id,
+        )
+        .where(Transaction.account_id.in_(acct_ids))
+        .order_by(Transaction.account_id, Transaction.date, Transaction.id)
+    ).all()
+
+    txns_by_account: dict[int, list[tuple]] = {}
+    for row in txn_rows:
+        txns_by_account.setdefault(row.account_id, []).append(
+            (row.date, Decimal(str(row.amount or 0)),
+             Decimal(str(row.balance_after)) if row.balance_after is not None else None,
+             row.id)
+        )
+
+    # ── 2) Latest AssetValuation per (account, snapshot_date) ──
+    val_rows = db.execute(
+        select(
+            AssetValuation.account_id,
+            AssetValuation.date,
+            AssetValuation.value,
+            AssetValuation.currency,
+        )
+        .where(AssetValuation.account_id.in_(acct_ids))
+        .order_by(AssetValuation.account_id, AssetValuation.date)
+    ).all()
+    vals_by_account: dict[int, list[tuple]] = {}
+    for r in val_rows:
+        vals_by_account.setdefault(r.account_id, []).append(
+            (r.date, Decimal(str(r.value or 0)), r.currency)
+        )
+
+    # ── 3) Latest LiabilityBalanceSnapshot per (account, snapshot_date) ──
+    snap_rows = db.execute(
+        select(
+            LiabilityBalanceSnapshot.account_id,
+            LiabilityBalanceSnapshot.as_of_date,
+            LiabilityBalanceSnapshot.value_native,
+        )
+        .where(LiabilityBalanceSnapshot.account_id.in_(acct_ids))
+        .order_by(LiabilityBalanceSnapshot.account_id, LiabilityBalanceSnapshot.as_of_date)
+    ).all()
+    snaps_by_account: dict[int, list[tuple]] = {}
+    for r in snap_rows:
+        snaps_by_account.setdefault(r.account_id, []).append(
+            (r.as_of_date, Decimal(str(r.value_native or 0)))
+        )
+
+    # ── 4) FX rates (one fetch per non-base currency we'll need) ──
+    non_base_ccys = {a.currency for a in accounts if a.currency and a.currency != base_ccy}
+    non_base_ccys |= {
+        ccy for plist in vals_by_account.values() for _, _, ccy in plist
+        if ccy and ccy != base_ccy
+    }
+    fx_history: dict[str, list[tuple[datetime, float]]] = {}
+    if non_base_ccys:
+        rate_rows = db.execute(
+            select(
+                CurrencyRate.base_currency, CurrencyRate.quote_currency,
+                CurrencyRate.rate, CurrencyRate.date,
+            )
+            .where(
+                ((CurrencyRate.base_currency.in_(non_base_ccys))
+                 & (CurrencyRate.quote_currency == base_ccy))
+                | ((CurrencyRate.base_currency == base_ccy)
+                   & (CurrencyRate.quote_currency.in_(non_base_ccys)))
+            )
+            .order_by(CurrencyRate.date)
+        ).all()
+        for r in rate_rows:
+            # Forward direction: ccy → base. Inverse: invert the rate.
+            if r.base_currency == base_ccy:
+                ccy = r.quote_currency
+                rate = (1.0 / r.rate) if r.rate else 0.0
+            else:
+                ccy = r.base_currency
+                rate = float(r.rate or 0.0)
+            fx_history.setdefault(ccy, []).append((r.date, rate))
+
+    def _fx_rate_at(ccy: str, when: datetime) -> tuple[float, datetime] | None:
+        rows = fx_history.get(ccy)
+        if not rows:
+            return None
+        last: tuple[datetime, float] | None = None
+        for rate_date, rate in rows:
+            if rate_date <= when:
+                last = (rate_date, rate)
+            else:
+                break
+        if last is None:
+            # Fall back to earliest rate if no on-or-before sample exists.
+            rate_date, rate = rows[0]
+            return (rate, rate_date)
+        rate_date, rate = last
+        return (rate, rate_date)
+
+    def _txn_sum_at(account_id: int, when: datetime) -> Decimal:
+        total = Decimal("0.00")
+        for d, amt, _bal_after, _tid in txns_by_account.get(account_id, ()):
+            if d <= when:
+                total += amt
+            else:
+                break
+        return total
+
+    def _latest_bal_after_at(account_id: int, when: datetime) -> tuple[Decimal, datetime] | None:
+        result: tuple[Decimal, datetime] | None = None
+        for d, _amt, bal_after, _tid in txns_by_account.get(account_id, ()):
+            if d > when:
+                break
+            if bal_after is not None:
+                result = (bal_after, d)
+        return result
+
+    def _latest_val_at(account_id: int, when: datetime) -> tuple[datetime, Decimal, str] | None:
+        result = None
+        for d, v, c in vals_by_account.get(account_id, ()):
+            if d > when:
+                break
+            result = (d, v, c)
+        return result
+
+    def _latest_snap_at(account_id: int, when: datetime) -> tuple[Decimal, datetime] | None:
+        result = None
+        for d, v in snaps_by_account.get(account_id, ()):
+            if d > when:
+                break
+            result = (v, d)
+        return result
+
+    # ── Compose per-date results ──
+    out: dict[datetime, dict[int, AccountBalanceResult]] = {}
+
+    for snapshot_date in sorted_dates:
+        per_acct: dict[int, AccountBalanceResult] = {}
+        for acct in accounts:
+            truth_source = (
+                acct.balance_truth_source
+                or BalanceTruthSource.TRANSACTION_SUM.value
+            )
+            result: AccountBalanceResult
+
+            if truth_source in (
+                BalanceTruthSource.TRANSACTION_SUM.value,
+                BalanceTruthSource.HYBRID.value,
+            ):
+                bal_after = _latest_bal_after_at(acct.id, snapshot_date)
+                if bal_after is not None:
+                    val, val_date = bal_after
+                    result = AccountBalanceResult(
+                        value=val,
+                        balance_as_of=val_date,
+                        balance_source_used="latest_balance_after",
+                        balance_confidence=0.92,
+                        balance_stale=False,
+                        currency=acct.currency,
+                    )
+                elif (
+                    truth_source == BalanceTruthSource.HYBRID.value
+                    and acct.statement_balance is not None
+                    and acct.statement_balance_as_of is not None
+                ):
+                    stmt_bal = Decimal(str(acct.statement_balance))
+                    stmt_date = acct.statement_balance_as_of
+                    # Delta = txns in (stmt_date, snapshot_date]
+                    delta = Decimal("0.00")
+                    for d, amt, _b, _tid in txns_by_account.get(acct.id, ()):
+                        if d <= stmt_date:
+                            continue
+                        if d > snapshot_date:
+                            break
+                        delta += amt
+                    stale = (snapshot_date - stmt_date).days > 45
+                    result = AccountBalanceResult(
+                        value=stmt_bal + delta,
+                        balance_as_of=snapshot_date,
+                        balance_source_used="statement_anchored",
+                        balance_confidence=0.9 if not stale else 0.6,
+                        balance_stale=stale,
+                        currency=acct.currency,
+                    )
+                else:
+                    balance = _txn_sum_at(acct.id, snapshot_date)
+                    if balance == Decimal("0.00") and acct.current_value is not None:
+                        balance = Decimal(str(acct.current_value))
+                    result = AccountBalanceResult(
+                        value=balance,
+                        balance_as_of=snapshot_date,
+                        balance_source_used=truth_source,
+                        balance_confidence=0.8 if balance != Decimal("0.00") else 0.3,
+                        balance_stale=False,
+                        currency=acct.currency,
+                    )
+
+            elif truth_source == BalanceTruthSource.LATEST_STATEMENT.value:
+                snap = _latest_snap_at(acct.id, snapshot_date)
+                if snap is not None:
+                    snap_val, snap_date = snap
+                    stale = (snapshot_date - snap_date).days > 45
+                    result = AccountBalanceResult(
+                        value=snap_val,
+                        balance_as_of=snap_date,
+                        balance_source_used=BalanceTruthSource.LATEST_STATEMENT.value,
+                        balance_confidence=0.95 if not stale else 0.5,
+                        balance_stale=stale,
+                        currency=acct.currency,
+                    )
+                else:
+                    balance = (
+                        Decimal(str(acct.statement_balance))
+                        if acct.statement_balance is not None
+                        else (Decimal(str(acct.current_value))
+                              if acct.current_value is not None else Decimal("0.00"))
+                    )
+                    stmt_date = acct.statement_balance_as_of
+                    stale = bool(stmt_date and (snapshot_date - stmt_date).days > 45)
+                    result = AccountBalanceResult(
+                        value=balance,
+                        balance_as_of=stmt_date or snapshot_date,
+                        balance_source_used=BalanceTruthSource.LATEST_STATEMENT.value,
+                        balance_confidence=0.9 if not stale else 0.5,
+                        balance_stale=stale,
+                        currency=acct.currency,
+                    )
+
+            elif truth_source == BalanceTruthSource.LIABILITY_BALANCE.value:
+                source = acct.liability_balance_source or "statement_balance"
+                if source == "imported_principal_balance" and acct.original_principal_balance:
+                    balance = Decimal(str(acct.original_principal_balance))
+                elif acct.statement_balance is not None:
+                    balance = Decimal(str(acct.statement_balance))
+                else:
+                    balance = (
+                        Decimal(str(acct.current_value))
+                        if acct.current_value is not None else Decimal("0.00")
+                    )
+                stmt_date = acct.statement_balance_as_of
+                stale = bool(acct.liability_balance_stale) or bool(
+                    stmt_date and (snapshot_date - stmt_date).days > 45
+                )
+                result = AccountBalanceResult(
+                    value=balance,
+                    balance_as_of=stmt_date or snapshot_date,
+                    balance_source_used=BalanceTruthSource.LIABILITY_BALANCE.value,
+                    balance_confidence=0.85 if not stale else 0.4,
+                    balance_stale=stale,
+                    currency=acct.currency,
+                )
+
+            elif truth_source == BalanceTruthSource.MANUAL_MARK.value:
+                # For time-series, prefer a dated valuation if one exists.
+                val = _latest_val_at(acct.id, snapshot_date)
+                if val is not None:
+                    val_date, val_value, val_ccy = val
+                    stale = (snapshot_date - val_date).days > 90
+                    result = AccountBalanceResult(
+                        value=val_value,
+                        balance_as_of=val_date,
+                        balance_source_used=BalanceTruthSource.LATEST_VALUATION.value,
+                        balance_confidence=0.85 if not stale else 0.4,
+                        balance_stale=stale,
+                        currency=val_ccy or acct.currency,
+                    )
+                else:
+                    stale = bool(
+                        acct.value_as_of_date
+                        and (snapshot_date - acct.value_as_of_date).days > 90
+                    ) or acct.value_as_of_date is None
+                    result = AccountBalanceResult(
+                        value=Decimal(str(acct.current_value)) if acct.current_value is not None else Decimal("0.00"),
+                        balance_as_of=acct.value_as_of_date or snapshot_date,
+                        balance_source_used=BalanceTruthSource.MANUAL_MARK.value,
+                        balance_confidence=0.5 if not stale else 0.2,
+                        balance_stale=stale,
+                        currency=acct.currency,
+                    )
+
+            elif truth_source == BalanceTruthSource.LATEST_VALUATION.value:
+                val = _latest_val_at(acct.id, snapshot_date)
+                if val is not None:
+                    val_date, val_value, val_ccy = val
+                    stale = (snapshot_date - val_date).days > 90
+                    result = AccountBalanceResult(
+                        value=val_value,
+                        balance_as_of=val_date,
+                        balance_source_used=BalanceTruthSource.LATEST_VALUATION.value,
+                        balance_confidence=0.85 if not stale else 0.4,
+                        balance_stale=stale,
+                        currency=val_ccy or acct.currency,
+                    )
+                else:
+                    result = AccountBalanceResult(
+                        value=Decimal(str(acct.current_value)) if acct.current_value is not None else Decimal("0.00"),
+                        balance_as_of=acct.value_as_of_date or snapshot_date,
+                        balance_source_used=BalanceTruthSource.MANUAL_MARK.value,
+                        balance_confidence=0.3,
+                        balance_stale=True,
+                        currency=acct.currency,
+                    )
+            else:
+                result = AccountBalanceResult(
+                    value=Decimal(str(acct.current_value)) if acct.current_value is not None else Decimal("0.00"),
+                    balance_as_of=snapshot_date,
+                    balance_source_used=truth_source,
+                    balance_confidence=0.3,
+                    balance_stale=True,
+                    currency=acct.currency,
+                )
+
+            # ── FX conversion to base_ccy (uses on-or-before rate) ──
+            effective_ccy = result.currency or acct.currency
+            if effective_ccy and effective_ccy != base_ccy and result.value != Decimal("0.00"):
+                fx = _fx_rate_at(effective_ccy, snapshot_date)
+                if fx is not None:
+                    rate, rate_date = fx
+                    result.value = result.value * Decimal(str(rate))
+                    result.fx = FxMetadata(
+                        fx_pair=f"{effective_ccy}/{base_ccy}",
+                        fx_rate_date=rate_date,
+                        fx_stale=(snapshot_date - rate_date).days > 7,
+                    )
+                else:
+                    result.fx = FxMetadata(
+                        fx_pair=f"{effective_ccy}/{base_ccy}",
+                        fx_stale=True,
+                    )
+
+            result.currency = base_ccy
+            per_acct[acct.id] = result
+
+        out[snapshot_date] = per_acct
+
+    return out
+
+
 def get_accounts_grouped(
     db: Session,
     target_currency: str | None = None,

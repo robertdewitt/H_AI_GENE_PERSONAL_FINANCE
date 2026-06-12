@@ -20,7 +20,10 @@ from app.models.snapshots import (
     HouseholdSnapshot,
     LiabilityBalanceSnapshot,
 )
-from app.services.account_service import get_account_balance_rich
+from app.services.account_service import (
+    get_account_balance_rich,
+    get_many_account_balances_rich,
+)
 
 log = logging.getLogger(__name__)
 
@@ -48,11 +51,28 @@ def compute_household_snapshot(
     stale_count = 0
     low_conf_count = 0
 
-    for acct in accounts:
-        result = get_account_balance_rich(
-            db, acct.id, as_of_date=now, target_currency=base_ccy,
+    # Batch all balances at the snapshot date so this stays bounded in SQL
+    # statements rather than O(accounts). When the caller asked for a
+    # historical snapshot we route through the series helper for a single
+    # date so truth-source dispatch is consistent with time-travelled data.
+    if as_of_date is None or as_of_date == now:
+        balances = get_many_account_balances_rich(
+            db, accounts=accounts, target_currency=base_ccy,
         )
+    else:
+        from app.services.account_service import get_many_account_balances_series
+        series = get_many_account_balances_series(
+            db, accounts=accounts, snapshot_dates=[now], target_currency=base_ccy,
+        )
+        balances = series.get(now, {})
 
+    for acct in accounts:
+        result = balances.get(
+            acct.id,
+            get_account_balance_rich(
+                db, acct.id, as_of_date=now, target_currency=base_ccy,
+            ),
+        )
         source = SnapshotSource.COMPUTED.value
         if result.balance_stale:
             source = SnapshotSource.STALE_CARRYFORWARD.value
@@ -110,8 +130,11 @@ def compute_startup_state(db: Session) -> StartupStateResult:
     result = StartupStateResult()
 
     accounts = db.execute(select(Account)).scalars().all()
+    balances = get_many_account_balances_rich(
+        db, accounts=accounts, target_currency=settings.base_currency,
+    )
     for acct in accounts:
-        bal = get_account_balance_rich(db, acct.id, target_currency=settings.base_currency)
+        bal = balances[acct.id]
         result.accounts_refreshed += 1
         if bal.balance_stale:
             result.stale_accounts += 1
