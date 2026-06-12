@@ -12,6 +12,8 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    ForeignKey,
+    Integer,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -61,6 +63,9 @@ class Account(Base):
     __tablename__ = "accounts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True,
+    )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     account_type: Mapped[AccountType] = mapped_column(
         Enum(AccountType), nullable=False

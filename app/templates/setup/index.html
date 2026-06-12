@@ -1,0 +1,50 @@
+{# Minimal layout — no app nav since the user isn't authenticated yet. #}
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>First-time setup — Financial Hygiene</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+</head>
+<body>
+<main class="container" style="max-width:560px;margin-top:3rem">
+    <hgroup>
+        <h1>Welcome</h1>
+        <p>
+            {% if has_existing_data %}
+            We found existing financial data in this database. Register
+            below to claim it. The app makes a timestamped backup before
+            any writes and verifies every row was attributed to you.
+            {% else %}
+            Create the first user. This will be the administrator.
+            {% endif %}
+        </p>
+    </hgroup>
+
+    {% if error %}
+    <article style="border-left:4px solid #dc2626;padding:0.75rem 1rem;margin-bottom:1rem">
+        <strong>Setup error:</strong> {{ error }}
+    </article>
+    {% endif %}
+
+    <form method="post" action="/setup">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" required autocomplete="username">
+
+        <label for="display_name">Display name</label>
+        <input type="text" id="display_name" name="display_name" required>
+
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required
+               autocomplete="new-password" minlength="10">
+        <small>You'll be prompted to enrol a passkey next so future logins
+        use Touch ID / Windows Hello / your phone biometrics.</small>
+
+        <button type="submit">
+            {% if has_existing_data %}Claim existing data{% else %}Create administrator{% endif %}
+        </button>
+    </form>
+</main>
+</body>
+</html>

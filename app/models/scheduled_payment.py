@@ -16,6 +16,8 @@ from decimal import Decimal
 from sqlalchemy import (
     Boolean, Date, DateTime, Float, ForeignKey,
     Integer, Numeric, String, Text, func,
+    ForeignKey,
+    Integer,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -26,6 +28,9 @@ class ScheduledPayment(Base):
     __tablename__ = "scheduled_payments"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True,
+    )
 
     # ── What ─────────────────────────────────────────────────────────────
     description: Mapped[str] = mapped_column(String(300), nullable=False)

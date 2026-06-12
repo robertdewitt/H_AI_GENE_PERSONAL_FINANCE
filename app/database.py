@@ -150,6 +150,21 @@ def init_db():
         _col("deleted_transactions", "transfer_dismissed",         "BOOLEAN")
         _col("deleted_transactions", "financial_document_id",      "INTEGER")
 
+        # ── Multi-user auth (Phase 2) ───────────────────────────────
+        # Add nullable user_id to every top-level owned table. The /setup
+        # claim flow backfills these for the first user; the integrity
+        # check there asserts no NULL user_id remains.
+        for table in (
+            "accounts", "categories", "category_rules", "import_batches",
+            "rental_properties", "asset_valuations",
+            "scheduled_payments", "plan_it_plans",
+            "account_balance_snapshots", "asset_valuation_snapshots",
+            "liability_balance_snapshots", "household_snapshots",
+            "financial_documents", "property_pnl_snapshots",
+            "user_profile",
+        ):
+            _col(table, "user_id", "INTEGER")
+
         # ── Indexes (CREATE INDEX IF NOT EXISTS works on both backends) ──
         _indexes = [
             ("ix_txn_account_date",   "transactions (account_id, date)"),

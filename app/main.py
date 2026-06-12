@@ -15,7 +15,7 @@ from app.routers import (
     accounts, api, transactions, imports, transfers, net_worth,
     paychecks, valuations, fx, categories, portfolio,
 )
-from app.routers import app_settings, tasks, scheduled_payments
+from app.routers import app_settings, tasks, scheduled_payments, setup
 from app.services.net_worth_service import compute_net_worth, compute_net_worth_series
 from app.templating import templates
 
@@ -51,6 +51,43 @@ app.include_router(portfolio.router)
 app.include_router(tasks.router)
 app.include_router(scheduled_payments.router)
 app.include_router(api.router)
+app.include_router(setup.router)
+
+
+# ── First-run setup middleware ───────────────────────────────────────
+# When the database has zero users, every non-setup HTML route is forced
+# to /setup so the owner registers and (if pre-auth data exists) claims it.
+# /api/v1/* and /static/* bypass this gate so agents/tests can still probe
+# the server while the owner is registering.
+@app.middleware("http")
+async def force_setup_when_no_users(request: Request, call_next):
+    path = request.url.path
+    if (
+        path.startswith("/setup")
+        or path.startswith("/static")
+        or path.startswith("/api/")
+        or path == "/favicon.ico"
+    ):
+        return await call_next(request)
+
+    # Cheap one-shot query — defaults to "no users" only if a real
+    # exception occurs (fresh DB without the users table yet).
+    from sqlalchemy.orm import sessionmaker
+    from app.database import engine
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+    try:
+        if setup.needs_setup(db):
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url="/setup", status_code=303)
+    except Exception:
+        # users table likely doesn't exist yet — init_db has run by now in
+        # lifespan, so this should never happen in practice. Don't block.
+        pass
+    finally:
+        db.close()
+
+    return await call_next(request)
 
 
 @app.get("/", response_class=HTMLResponse)

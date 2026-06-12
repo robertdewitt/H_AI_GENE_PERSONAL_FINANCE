@@ -17,6 +17,8 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    ForeignKey,
+    Integer,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -27,6 +29,9 @@ class FinancialDocument(Base):
     __tablename__ = "financial_documents"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True,
+    )
     document_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     account_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("accounts.id"), nullable=False, index=True,
@@ -93,6 +98,9 @@ class PropertyPnLSnapshot(Base):
     __tablename__ = "property_pnl_snapshots"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True,
+    )
     rental_property_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("rental_properties.id"), nullable=False, index=True,
     )

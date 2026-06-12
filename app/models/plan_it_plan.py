@@ -8,7 +8,7 @@ the latest snapshot.
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, func, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -18,6 +18,9 @@ class PlanItPlan(Base):
     __tablename__ = "plan_it_plans"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True,
+    )
     account_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("accounts.id"), nullable=False, index=True
     )

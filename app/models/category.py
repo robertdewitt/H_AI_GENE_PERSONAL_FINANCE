@@ -9,6 +9,8 @@ from sqlalchemy import (
     Integer,
     String,
     func,
+    ForeignKey,
+    Integer,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -26,6 +28,9 @@ class Category(Base):
     __tablename__ = "categories"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True,
+    )
     name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
     parent_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("categories.id")

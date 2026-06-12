@@ -7,7 +7,7 @@ stale data for live precision.
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Numeric, String, func, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -17,6 +17,9 @@ class AccountBalanceSnapshot(Base):
     __tablename__ = "account_balance_snapshots"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True,
+    )
     account_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("accounts.id"), nullable=False, index=True,
     )
@@ -35,6 +38,9 @@ class AssetValuationSnapshot(Base):
     __tablename__ = "asset_valuation_snapshots"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True,
+    )
     account_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("accounts.id"), nullable=False, index=True,
     )
@@ -53,6 +59,9 @@ class LiabilityBalanceSnapshot(Base):
     __tablename__ = "liability_balance_snapshots"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True,
+    )
     account_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("accounts.id"), nullable=False, index=True,
     )
@@ -71,6 +80,9 @@ class HouseholdSnapshot(Base):
     __tablename__ = "household_snapshots"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True,
+    )
     as_of_date: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     total_assets_base: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     total_liabilities_base: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)

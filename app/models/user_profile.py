@@ -1,9 +1,11 @@
-"""Singleton user profile — always id=1.
+"""Per-user profile.
 
 Stores display preferences, personal context used by AI tax planning,
-and API keys for third-party integrations.
+API keys for third-party integrations, and the recurring/forecast
+detection knobs. Prior to multi-user support this was a singleton
+(``id=1``); now each user has one row keyed by ``user_id``.
 """
-from sqlalchemy import Boolean, Float, Integer, String
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -22,8 +24,14 @@ FORECAST_MOVING_AVG_MONTHS_DEFAULT    = 6
 
 class UserProfile(Base):
     __tablename__ = "user_profile"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_user_profile_user_id"),
+    )
 
-    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True,
+    )
 
     # Display
     display_currency: Mapped[str] = mapped_column(String(10), default="USD", nullable=False)

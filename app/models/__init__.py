@@ -30,6 +30,10 @@ from app.models.deleted_transaction import DeletedTransaction
 from app.models.dismissed_duplicate import DismissedDuplicate
 from app.models.scheduled_payment import ScheduledPayment
 from app.models.plan_it_plan import PlanItPlan
+from app.models.user import User
+from app.models.webauthn_credential import WebAuthnCredential
+from app.models.api_token import ApiToken
+from app.models.session import Session as AuthSession
 
 __all__ = [
     "Account",
@@ -63,4 +67,8 @@ __all__ = [
     "DismissedDuplicate",
     "ScheduledPayment",
     "PlanItPlan",
+    "User",
+    "WebAuthnCredential",
+    "ApiToken",
+    "AuthSession",
 ]
