@@ -230,7 +230,7 @@ def confirm_import(
             meta = extract_mortgage_metadata(filepath)
             if meta:
                 from datetime import datetime as _dt
-from app.services.clock import naive_utc_now
+                from app.services.clock import naive_utc_now
                 from decimal import Decimal as _Dec
                 from app.models.snapshots import LiabilityBalanceSnapshot
 

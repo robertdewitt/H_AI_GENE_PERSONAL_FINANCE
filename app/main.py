@@ -162,7 +162,7 @@ def _bootstrap_fx_rates():
 
     def _sync():
         from datetime import datetime, timedelta
-from app.services.clock import naive_utc_now
+        from app.services.clock import naive_utc_now
 
         from sqlalchemy import func as sa_func
 

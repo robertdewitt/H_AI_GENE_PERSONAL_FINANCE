@@ -24,6 +24,13 @@ from app.services.account_service import (
     get_many_account_balances_rich,
     list_accounts,
 )
+from app.models.user import User
+from app.services.auth import get_current_user
+from app.services.scoping import (
+    owned_accounts,
+    owned_account_ids,
+    owned_transaction_query,
+)
 from app.services.data_quality import assess_quality
 from app.services.net_worth_service import compute_net_worth, compute_net_worth_series
 from app.services.spend_analysis import compute_spend_summary
@@ -43,16 +50,27 @@ from app.models.instrument import Instrument
 from app.services.auto_reconciliation import create_suggested_transfer_groups
 from app.services.attribution import attribute_nw_change
 
-router = APIRouter(prefix="/api/v1", tags=["api"])
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["api"],
+    # Router-level dep — every endpoint requires authentication. Endpoints
+    # that *use* the user object further inject it explicitly to drive the
+    # scoping helpers; endpoints that don't (e.g. /instruments lookups)
+    # still get 401-on-anonymous from this line.
+    dependencies=[Depends(get_current_user)],
+)
 
 
 # ── Accounts ─────────────────────────────────────────────────────────
 
 
 @router.get("/accounts")
-def api_accounts(db: Session = Depends(get_db)):
+def api_accounts(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """All accounts with current balances in both native and base currency."""
-    accounts = list_accounts(db)
+    accounts = owned_accounts(db, user)
     base = settings.base_currency
 
     # Batch balance computation — one GROUP BY instead of N queries
@@ -102,10 +120,13 @@ def api_transactions(
     limit: int = Query(200, ge=1, le=5000),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Filtered transactions as structured JSON."""
-    q = select(Transaction)
+    q = owned_transaction_query(user)
     if account_id:
+        # Even when the caller pins an account_id, the join guarantees it
+        # must be one of *their* accounts — there's no leak here.
         q = q.where(Transaction.account_id == account_id)
     if category_id:
         q = q.where(Transaction.category_id == category_id)
