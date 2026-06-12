@@ -34,18 +34,25 @@ async def detect_account_endpoint(
     import tempfile, os
     from app.services.account_detector import detect_account
 
-    ext = Path(file.filename).suffix.lower()
+    from app.services.upload_safety import sanitize_filename, UnsafeFilenameError
+    try:
+        safe_name = sanitize_filename(file.filename)
+    except UnsafeFilenameError:
+        return {"account_id": None, "confidence": 0, "reason": "invalid filename"}
+    ext = Path(safe_name).suffix.lower()
     if ext not in (".csv", ".xls", ".xlsx", ".pdf"):
         return {"account_id": None, "confidence": 0, "reason": "unsupported type"}
 
-    # Write to a temp file so the detector can read it
+    # Write to a temp file so the detector can read it (NamedTemporaryFile's
+    # OS-generated path is already inside the system temp dir — no client
+    # data influences where it lands).
     with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
         shutil.copyfileobj(file.file, tmp)
         tmp_path = tmp.name
 
     try:
         accounts = db.execute(select(Account).order_by(Account.name)).scalars().all()
-        account_id, confidence, reason = detect_account(tmp_path, file.filename, accounts)
+        account_id, confidence, reason = detect_account(tmp_path, safe_name, accounts)
     finally:
         os.unlink(tmp_path)
 
@@ -73,15 +80,21 @@ async def upload_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    ext = Path(file.filename).suffix.lower()
+    from app.services.upload_safety import safe_upload_dest, UnsafeFilenameError
+    try:
+        dest = safe_upload_dest(settings.upload_dir, file.filename)
+    except UnsafeFilenameError:
+        return templates.TemplateResponse(request, "imports/upload.html", {
+            "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+            "error": "Invalid filename. Try renaming the file and upload again.",
+        })
+    ext = dest.suffix.lower()
     if ext not in (".csv", ".xls", ".xlsx", ".pdf"):
         return templates.TemplateResponse(request, "imports/upload.html", {
             "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
             "error": f"Unsupported file type '{ext}'. Please upload a CSV, XLS, XLSX, or PDF.",
         })
 
-    upload_dir = Path(settings.upload_dir)
-    dest = upload_dir / file.filename
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
 

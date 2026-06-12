@@ -56,8 +56,14 @@ async def paycheck_upload(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    upload_dir = Path(settings.upload_dir)
-    dest = upload_dir / file.filename
+    from app.services.upload_safety import safe_upload_dest, UnsafeFilenameError
+    try:
+        dest = safe_upload_dest(settings.upload_dir, file.filename)
+    except UnsafeFilenameError:
+        return templates.TemplateResponse(request, "paychecks/upload.html", {
+            "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+            "error": "Invalid filename. Try renaming the file and upload again.",
+        })
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
