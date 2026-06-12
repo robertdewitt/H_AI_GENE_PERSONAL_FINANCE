@@ -422,6 +422,64 @@ def extract_cc_metadata(filepath: str) -> dict | None:
     return result if result else None
 
 
+def extract_overdraft_facility(filepath: str) -> dict | None:
+    """Best-effort overdraft-facility extractor for UK bank statement PDFs.
+
+    Recognises the common phrasings used by Investec, Lloyds, NatWest, etc.:
+      "Arranged Overdraft", "Agreed Overdraft", "Overdraft Limit",
+      "Overdraft Facility", "Authorised Overdraft Limit".
+
+    Returns {"overdraft_limit": float, "statement_date": date | None} or None.
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        return None
+
+    try:
+        with pdfplumber.open(filepath) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages[:6])
+    except Exception:
+        return None
+
+    # Money on the same line as the label, with optional symbol and commas.
+    # Anchor on common label phrasings and avoid grabbing the next account
+    # balance that lives below.
+    pat = re.compile(
+        r"(?:arranged|agreed|authorised|authorized|overdraft)\s*"
+        r"(?:overdraft\s*)?(?:limit|facility)?[:\s]*"
+        r"([\$£€¥]?\s?[\d,]+\.\d{2})",
+        re.I,
+    )
+    m = pat.search(text)
+    if not m:
+        return None
+    amount = _parse_signed_amount(m.group(1))
+    if amount is None or amount <= 0:
+        return None
+
+    out: dict = {"overdraft_limit": amount}
+
+    # Try to grab a statement-period end date for the as_of timestamp.
+    m_date = re.search(
+        r"(?:statement\s*(?:date|period)|to|generated\s*on)\s*[:\s]*"
+        r"(\d{1,2})\s*([A-Za-z]{3,9})\s*(\d{2,4})",
+        text, re.I,
+    )
+    if m_date:
+        d, mon, yr = m_date.group(1), m_date.group(2), m_date.group(3)
+        for fmt in ("%d %b %Y", "%d %B %Y", "%d %b %y", "%d %B %y"):
+            try:
+                out["statement_date"] = datetime.strptime(
+                    f"{d} {mon} {yr}", fmt
+                ).date()
+                break
+            except ValueError:
+                pass
+
+    return out
+
+
 # ── Plan-It instalment plan extractor (Amex BA) ────────────────────────────
 
 # A plan starts with a "MonDD YYYY" date prefix. The full record spans 3 lines

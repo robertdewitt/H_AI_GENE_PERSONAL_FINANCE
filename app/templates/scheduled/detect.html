@@ -50,6 +50,7 @@
             {# Hidden fields always sent so server can zip them #}
             <input type="hidden" name="descriptions" value="{{ s.description }}">
             <input type="hidden" name="amounts"      value="{{ s.amount }}">
+            <input type="hidden" name="amount_types" value="{{ s.amount_type|default('fixed') }}">
             <input type="hidden" name="currencies"   value="{{ s.currency }}">
             <input type="hidden" name="account_ids"  value="{{ s.account_id }}">
             <input type="hidden" name="frequencies"  value="{{ s.frequency }}">
@@ -62,6 +63,11 @@
                 <span style="color:#dc2626">&minus;{{ sym }}{{ "%.2f"|format(s.amount|float|abs) }}</span>
             {% else %}
                 <span style="color:#16a34a">+{{ sym }}{{ "%.2f"|format(s.amount|float) }}</span>
+            {% endif %}
+            {% if s.amount_type == "variable" %}
+            <div style="font-size:0.7rem;color:var(--pico-muted-color);font-weight:normal;margin-top:0.15rem">
+                6-mo avg · varies
+            </div>
             {% endif %}
         </td>
         <td style="text-transform:capitalize;font-size:0.9rem">{{ s.frequency }}</td>

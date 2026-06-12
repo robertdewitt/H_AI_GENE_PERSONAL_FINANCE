@@ -63,6 +63,61 @@ def _advance_date(d: date, frequency: str, day_of_month: int | None = None) -> d
     return d  # once — no advance
 
 
+def _trailing_avg_amount(
+    db: "Session",
+    payment,
+    fallback: Decimal,
+    months: int = 6,
+) -> Decimal:
+    """Mean of matching transactions over the last ``months`` months.
+
+    Match criteria match scheduled_matcher's: same account, description
+    similarity ≥ 0.40, amount sign matching the scheduled amount's sign.
+    Falls back to ``fallback`` (the stored payment amount) if fewer than 2
+    matching transactions are found — too few to average reliably.
+    """
+    from datetime import timedelta
+    from difflib import SequenceMatcher
+    from sqlalchemy import select
+    from app.models.transaction import Transaction
+    from app.services.recurring_detector import _normalize
+
+    cutoff = date.today() - timedelta(days=int(months * 30.5))
+    txns = db.execute(
+        select(Transaction)
+        .where(
+            Transaction.account_id == payment.account_id,
+            Transaction.date >= cutoff,
+            Transaction.is_transfer.is_(False),
+        )
+    ).scalars().all()
+    if not txns:
+        return fallback
+
+    norm_target = _normalize(payment.description or "")
+    pmt_sign = 1 if (payment.amount or 0) >= 0 else -1
+
+    amounts: list[float] = []
+    for t in txns:
+        amt = float(t.amount or 0)
+        # Same sign as the scheduled payment (avoid mixing refunds + charges)
+        if amt == 0 or (1 if amt > 0 else -1) != pmt_sign:
+            continue
+        desc = t.description or ""
+        # Prefer normalized exact match; fall back to sequence ratio so a
+        # statement-styled description ("AMEX PAYMENT THANK YOU") still
+        # matches a slightly different one ("AMEX Payment - THANK YOU").
+        if _normalize(desc) == norm_target:
+            amounts.append(amt)
+        elif SequenceMatcher(None, desc.lower(), (payment.description or "").lower()).ratio() >= 0.6:
+            amounts.append(amt)
+
+    if len(amounts) < 2:
+        return fallback
+    mean = sum(amounts) / len(amounts)
+    return Decimal(str(round(mean, 2)))
+
+
 def _get_account_balance(db: "Session", account_id: int) -> Decimal:
     """Best available current balance for the account.
 
@@ -113,6 +168,16 @@ def build_forecast(db: "Session", months: int = 3) -> ForecastResult:
         acct_name = acct.name if acct else f"Account {pmt.account_id}"
         currency  = pmt.currency or (acct.currency if acct else "USD")
 
+        # For variable-amount streams (salary, credit-card bills) the stored
+        # amount is just an anchor — project using a 6-month trailing mean of
+        # actual matching transactions, with the stored amount as fallback.
+        if (pmt.amount_type or "fixed") == "variable":
+            forecast_amount = _trailing_avg_amount(
+                db, pmt, fallback=pmt.amount, months=6,
+            )
+        else:
+            forecast_amount = pmt.amount
+
         # Walk from next_due_date forward, emitting one event per period
         d = pmt.next_due_date
         while d <= end_date:
@@ -123,7 +188,7 @@ def build_forecast(db: "Session", months: int = 3) -> ForecastResult:
                 account_id=pmt.account_id,
                 account_name=acct_name,
                 description=pmt.description,
-                amount=pmt.amount,
+                amount=forecast_amount,
                 currency=currency,
                 scheduled_payment_id=pmt.id,
                 frequency=pmt.frequency,

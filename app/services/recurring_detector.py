@@ -30,10 +30,14 @@ _FREQ_BUCKETS = [
 
 _MIN_OCCURRENCES   = 3    # need at least this many to infer a pattern
 _MIN_CONFIDENCE    = 0.50
-_MIN_AMT_CONSISTENCY = 0.70  # reject buckets with highly variable amounts
-                              # (prevents collapsing distinct merchants whose
-                              # descriptions only differ by stripped digits, e.g.
-                              # multiple Amazon orders at different totals)
+_MIN_AMT_CONSISTENCY = 0.30  # below this the amounts are too erratic to be
+                              # the same merchant; above this we still emit
+                              # a suggestion but tag it as `variable` so the
+                              # forecast uses a moving average instead of a
+                              # frozen median (e.g. salary, credit-card bills)
+_FIXED_AMT_CONSISTENCY = 0.85  # at/above this the amount is effectively fixed
+_STALE_DAYS = 120  # ~4 months — drop suggestions for merchants we haven't
+                    # seen recently, they've usually been cancelled
 
 
 def _normalize(description: str) -> str:
@@ -133,6 +137,8 @@ def detect_recurring_payments(db: "Session") -> list[dict]:
         a.id: a for a in db.execute(select(Account)).scalars().all()
     }
 
+    today = date.today()
+
     # Bucket: (account_id, normalized_desc) → list of (date, amount, currency)
     buckets: dict[tuple, list] = defaultdict(list)
     for txn in txns:
@@ -158,15 +164,44 @@ def detect_recurring_payments(db: "Session") -> list[dict]:
 
         freq, regularity = result
         amt_score = _amount_consistency(amounts)
-        confidence = round(regularity * amt_score, 3)
+        # For variable-amount streams (salary, credit-card bills) the rhythm
+        # is the signal — confidence is regularity alone, with a small penalty
+        # so they rank below clean fixed payments.
+        if amt_score >= _FIXED_AMT_CONSISTENCY:
+            confidence = round(regularity * amt_score, 3)
+            amount_type = "fixed"
+        else:
+            confidence = round(regularity * 0.85, 3)
+            amount_type = "variable"
 
         if amt_score < _MIN_AMT_CONSISTENCY:
-            continue  # amounts too variable — likely distinct merchants in one bucket
+            continue  # amounts too erratic to call it the same merchant
         if confidence < _MIN_CONFIDENCE:
             continue
 
         last_date  = dates[-1]
-        median_amt = Decimal(str(round(statistics.median([float(a) for a in amounts]), 2)))
+
+        # Stale guard — drop suggestions for merchants we haven't seen for
+        # more than ~4 months. They've usually been cancelled and shouldn't
+        # show up as "upcoming" payments.
+        if (today - last_date).days > _STALE_DAYS:
+            continue
+
+        if amount_type == "variable":
+            # 6-month trailing mean — the same number the forecast will use
+            # so the user sees the right expected amount at confirmation time.
+            cutoff = today - timedelta(days=183)
+            recent = [float(a) for d, a in zip(dates, amounts) if d >= cutoff]
+            avg_amt = (
+                statistics.mean(recent) if recent
+                else statistics.mean([float(a) for a in amounts])
+            )
+            display_amt = Decimal(str(round(avg_amt, 2)))
+        else:
+            display_amt = Decimal(str(round(
+                statistics.median([float(a) for a in amounts]), 2
+            )))
+
         dom        = last_date.day if freq in ("monthly", "quarterly", "annually") else None
         currency   = entries[-1][2] or (accounts[acct_id].currency if acct_id in accounts else "USD")
 
@@ -176,7 +211,8 @@ def detect_recurring_payments(db: "Session") -> list[dict]:
             "account_name":  acct.name if acct else f"Account {acct_id}",
             "description":   entries[-1][0].strftime("%Y-%m-%d"),  # placeholder
             "raw_description": _first_description(db, acct_id, norm_desc),
-            "amount":        median_amt,
+            "amount":        display_amt,
+            "amount_type":   amount_type,
             "currency":      currency,
             "frequency":     freq,
             "next_due_date": _next_due(last_date, freq, dom).isoformat(),

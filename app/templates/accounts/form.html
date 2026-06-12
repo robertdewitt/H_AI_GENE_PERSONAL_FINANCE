@@ -119,6 +119,28 @@
         </div>
     </div>
 
+    <div style="background:var(--pico-muted-border-color,#f3f4f6);padding:1rem;border-radius:8px;margin:1rem 0">
+        <h4 style="margin-bottom:0.25rem">Overdraft Facility</h4>
+        <p style="font-size:0.85rem;color:var(--pico-muted-color);margin-bottom:0.75rem">
+            Agreed overdraft limit. Surfaced on the account page so you can see the headroom
+            (limit minus what's currently drawn) at a glance.
+        </p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+            <div>
+                <label for="overdraft_limit">Overdraft Limit</label>
+                <input type="number" id="overdraft_limit" name="overdraft_limit" step="0.01" min="0"
+                       value="{{ account.overdraft_limit if account and account.overdraft_limit is not none else '' }}"
+                       placeholder="e.g., 50000">
+                <small>Stored as a positive number — the agreed facility size.</small>
+            </div>
+            <div>
+                <label for="overdraft_as_of">As of Date</label>
+                <input type="date" id="overdraft_as_of" name="overdraft_as_of"
+                       value="{{ account.overdraft_as_of.strftime('%Y-%m-%d') if account and account.overdraft_as_of else '' }}">
+            </div>
+        </div>
+    </div>
+
     <label for="notes">Notes</label>
     <textarea id="notes" name="notes" rows="3"
               placeholder="Optional notes about this account">{{ account.notes if account and account.notes else '' }}</textarea>

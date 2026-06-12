@@ -101,6 +101,11 @@ class Account(Base):
     plan_it_balance: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     plan_it_as_of: Mapped[datetime | None] = mapped_column(DateTime)
 
+    # Overdraft facility (Investec, UK banks). overdraft_limit is the agreed
+    # facility; the running balance below zero is what's currently drawn.
+    overdraft_limit: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    overdraft_as_of: Mapped[datetime | None] = mapped_column(DateTime)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )

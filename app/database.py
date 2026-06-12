@@ -113,6 +113,8 @@ def init_db():
         _col("accounts", "liability_balance_stale",    "BOOLEAN")
         _col("accounts", "plan_it_balance",            "REAL")
         _col("accounts", "plan_it_as_of",              "DATETIME")
+        _col("accounts", "overdraft_limit",            "REAL")
+        _col("accounts", "overdraft_as_of",            "DATETIME")
 
         # ── Real estate / physical asset fields ──────────────
         _col("accounts", "property_address",          "VARCHAR(500)")

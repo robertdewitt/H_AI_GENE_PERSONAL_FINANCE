@@ -393,6 +393,24 @@ def confirm_import(
         except Exception:
             pass  # metadata extraction is best-effort
 
+    # ── Overdraft facility: pull from any UK bank statement PDF ──
+    if account and filepath.lower().endswith(".pdf"):
+        try:
+            from app.services.pdf_import import extract_overdraft_facility
+            from datetime import datetime as _dt
+            from decimal import Decimal as _Dec
+            od = extract_overdraft_facility(filepath)
+            if od and od.get("overdraft_limit"):
+                account.overdraft_limit = _Dec(str(od["overdraft_limit"]))
+                stmt_date = od.get("statement_date")
+                account.overdraft_as_of = (
+                    _dt.combine(stmt_date, _dt.min.time())
+                    if stmt_date is not None else _dt.now()
+                )
+                db.commit()
+        except Exception:
+            pass
+
     # ── Credit-card statement: extract balance, snapshot, scheduled payment,
     #    and sanity-check the imported transactions against the statement deltas ──
     stmt_warning: str | None = None

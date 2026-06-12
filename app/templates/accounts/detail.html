@@ -65,6 +65,26 @@
         </div>
     </div>
     {% endif %}
+    {% if account.overdraft_limit is not none and account.overdraft_limit > 0 %}
+    {# Headroom = limit - drawn (drawn is |balance| when balance is negative) #}
+    {% set drawn = (-balance) if balance < 0 else 0 %}
+    {% set headroom = account.overdraft_limit|float - drawn|float %}
+    {% set used_pct = (drawn|float / account.overdraft_limit|float * 100) if account.overdraft_limit else 0 %}
+    <div class="summary-card">
+        <div class="label">Overdraft Headroom</div>
+        <div class="value {% if headroom < 0 %}negative{% elif used_pct >= 80 %}negative{% else %}positive{% endif %}" style="font-size:1.4rem">
+            {{ account.currency_symbol }}{{ "{:,.2f}".format(headroom) }}
+        </div>
+        <div style="font-size:0.8rem;color:var(--pico-muted-color);margin-top:0.25rem">
+            {{ account.currency_symbol }}{{ "{:,.2f}".format(drawn) }} drawn of
+            {{ account.currency_symbol }}{{ "{:,.2f}".format(account.overdraft_limit) }} limit
+            ({{ "%.0f"|format(used_pct) }}% used){% if account.overdraft_as_of %} · as of {{ account.overdraft_as_of.strftime("%b %d, %Y") }}{% endif %}
+        </div>
+        <div style="background:var(--pico-muted-border-color);height:5px;border-radius:3px;margin-top:0.4rem;overflow:hidden">
+            <div style="background:{% if used_pct >= 100 %}#dc2626{% elif used_pct >= 80 %}#f59e0b{% else %}#16a34a{% endif %};height:5px;width:{{ [used_pct, 100]|min }}%"></div>
+        </div>
+    </div>
+    {% endif %}
     <div class="summary-card">
         <div class="label">Type</div>
         <div class="value" style="font-size:1.1rem">{{ account.type_group }}</div>

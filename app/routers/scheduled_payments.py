@@ -201,15 +201,21 @@ def detect_confirm(
     db: Session = Depends(get_db),
     descriptions: list[str] = Form(default=[]),
     amounts: list[str] = Form(default=[]),
+    amount_types: list[str] = Form(default=[]),
     currencies: list[str] = Form(default=[]),
     account_ids: list[str] = Form(default=[]),
     category_ids: list[str] = Form(default=[]),
     frequencies: list[str] = Form(default=[]),
     next_due_dates: list[str] = Form(default=[]),
 ):
+    # Pad amount_types so older clients (no hidden field) still work.
+    if len(amount_types) < len(descriptions):
+        amount_types = list(amount_types) + ["fixed"] * (
+            len(descriptions) - len(amount_types)
+        )
     added = 0
-    for desc, amt, cur, acct, cat, freq, ndd in zip(
-        descriptions, amounts, currencies, account_ids,
+    for desc, amt, at, cur, acct, cat, freq, ndd in zip(
+        descriptions, amounts, amount_types, currencies, account_ids,
         category_ids, frequencies, next_due_dates,
     ):
         if not desc.strip():
@@ -217,7 +223,7 @@ def detect_confirm(
         db.add(ScheduledPayment(
             description=desc.strip(),
             amount=Decimal(amt),
-            amount_type="estimated",
+            amount_type=at.strip() or "fixed",
             currency=cur,
             account_id=int(acct),
             category_id=int(cat) if cat.strip() else None,

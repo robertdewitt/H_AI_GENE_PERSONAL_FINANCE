@@ -210,6 +210,8 @@ def account_create(
     monthly_payment: str = Form(""),
     statement_balance: str = Form(""),
     statement_balance_as_of: str = Form(""),
+    overdraft_limit: str = Form(""),
+    overdraft_as_of: str = Form(""),
     db: Session = Depends(get_db),
 ):
     acct_type = AccountType(account_type)
@@ -299,6 +301,17 @@ def account_create(
             db.rollback()
             stmt_err = f"Could not parse statement balance: {exc}"
             log.warning("account_form: statement_balance parse failed: %s", exc)
+
+    if overdraft_limit.strip():
+        try:
+            acct.overdraft_limit = Decimal(overdraft_limit)
+            acct.overdraft_as_of = (
+                datetime.strptime(overdraft_as_of.strip(), "%Y-%m-%d")
+                if overdraft_as_of.strip() else datetime.now()
+            )
+            db.commit()
+        except (ValueError, InvalidOperation):
+            db.rollback()
 
     redirect = "/accounts"
     if stmt_err:
@@ -654,6 +667,8 @@ def account_update(
     monthly_payment: str = Form(""),
     statement_balance: str = Form(""),
     statement_balance_as_of: str = Form(""),
+    overdraft_limit: str = Form(""),
+    overdraft_as_of: str = Form(""),
     db: Session = Depends(get_db),
 ):
     acct_type = AccountType(account_type)
@@ -747,6 +762,21 @@ def account_update(
         acct.statement_balance_as_of = None
         if acct.balance_truth_source == "hybrid":
             acct.balance_truth_source = "transaction_sum"
+        db.commit()
+
+    if overdraft_limit.strip():
+        try:
+            acct.overdraft_limit = Decimal(overdraft_limit)
+            acct.overdraft_as_of = (
+                datetime.strptime(overdraft_as_of.strip(), "%Y-%m-%d")
+                if overdraft_as_of.strip() else datetime.now()
+            )
+            db.commit()
+        except (ValueError, InvalidOperation):
+            db.rollback()
+    elif acct.overdraft_limit is not None and not overdraft_limit.strip():
+        acct.overdraft_limit = None
+        acct.overdraft_as_of = None
         db.commit()
 
     return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)
