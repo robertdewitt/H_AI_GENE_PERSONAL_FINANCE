@@ -148,6 +148,67 @@
     </details>
     {% endfor %}
 
+    <details open style="margin-top:1.5rem">
+        <summary><h2 style="display:inline">Recurring &amp; Forecast Tuning</h2></summary>
+        <p style="color:var(--pico-muted-color);font-size:0.9rem">
+            Controls for how the recurring-payment detector and cash-flow forecast behave.
+            Defaults work well for most accounts; tighten the consistency floors if you're
+            seeing false positives, loosen the stale-days window if you've imported gappy history.
+        </p>
+
+        <h3 style="margin-top:1rem;font-size:1.05rem">Recurring detection</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+            <div>
+                <label for="recurring_stale_days">Stale cut-off (days)</label>
+                <input type="number" id="recurring_stale_days" name="recurring_stale_days"
+                       min="14" max="3650" step="1"
+                       value="{{ profile.recurring_stale_days or 120 }}">
+                <small>Drop suggestions whose last occurrence is older than this. Default <strong>120</strong> (~4 months).</small>
+            </div>
+            <div>
+                <label for="recurring_min_occurrences">Minimum occurrences</label>
+                <input type="number" id="recurring_min_occurrences" name="recurring_min_occurrences"
+                       min="2" max="20" step="1"
+                       value="{{ profile.recurring_min_occurrences or 3 }}">
+                <small>How many times the merchant must appear to be considered a pattern. Default <strong>3</strong>.</small>
+            </div>
+            <div>
+                <label for="recurring_min_confidence">Minimum confidence</label>
+                <input type="number" id="recurring_min_confidence" name="recurring_min_confidence"
+                       min="0" max="1" step="0.01"
+                       value="{{ "%.2f"|format(profile.recurring_min_confidence if profile.recurring_min_confidence is not none else 0.50) }}">
+                <small>(regularity × amount-consistency or × 0.85 for variable). Default <strong>0.50</strong>.</small>
+            </div>
+            <div>
+                <label for="recurring_min_amt_consistency">Min amount consistency</label>
+                <input type="number" id="recurring_min_amt_consistency" name="recurring_min_amt_consistency"
+                       min="0" max="1" step="0.01"
+                       value="{{ "%.2f"|format(profile.recurring_min_amt_consistency if profile.recurring_min_amt_consistency is not none else 0.30) }}">
+                <small>Below this, the merchant's amounts are too erratic to count as one stream. Default <strong>0.30</strong>.</small>
+            </div>
+            <div>
+                <label for="recurring_fixed_amt_consistency">Fixed-vs-variable threshold</label>
+                <input type="number" id="recurring_fixed_amt_consistency" name="recurring_fixed_amt_consistency"
+                       min="0" max="1" step="0.01"
+                       value="{{ "%.2f"|format(profile.recurring_fixed_amt_consistency if profile.recurring_fixed_amt_consistency is not none else 0.85) }}">
+                <small>At/above this the amount is treated as fixed; below it the forecast uses a moving average. Default <strong>0.85</strong>.</small>
+            </div>
+            <div></div>
+        </div>
+
+        <h3 style="margin-top:1.25rem;font-size:1.05rem">Forecast</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+            <div>
+                <label for="forecast_moving_avg_months">Moving-average window (months)</label>
+                <input type="number" id="forecast_moving_avg_months" name="forecast_moving_avg_months"
+                       min="1" max="36" step="1"
+                       value="{{ profile.forecast_moving_avg_months or 6 }}">
+                <small>For variable-amount scheduled payments, project using the mean of the last N months of matching transactions. Default <strong>6</strong>.</small>
+            </div>
+            <div></div>
+        </div>
+    </details>
+
     <div class="btn-group" style="margin-top:1.5rem">
         <button type="submit">Save Settings</button>
     </div>

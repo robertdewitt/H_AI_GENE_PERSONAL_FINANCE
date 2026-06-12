@@ -126,6 +126,12 @@ def init_db():
         _col("user_profile", "rentcast_api_key",      "VARCHAR(200)")
         _col("user_profile", "property_data_api_key", "VARCHAR(200)")
         _col("user_profile", "domain_api_key",         "VARCHAR(200)")
+        _col("user_profile", "recurring_stale_days",            "INTEGER", "120")
+        _col("user_profile", "recurring_min_occurrences",       "INTEGER", "3")
+        _col("user_profile", "recurring_min_confidence",        "REAL",    "0.5")
+        _col("user_profile", "recurring_min_amt_consistency",   "REAL",    "0.3")
+        _col("user_profile", "recurring_fixed_amt_consistency", "REAL",    "0.85")
+        _col("user_profile", "forecast_moving_avg_months",      "INTEGER", "6")
 
         # ── v2 recon columns ─────────────────────────────────
         _col("reconciliation_groups", "reconciliation_confidence", "REAL")

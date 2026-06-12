@@ -67,7 +67,7 @@ def _trailing_avg_amount(
     db: "Session",
     payment,
     fallback: Decimal,
-    months: int = 6,
+    months: int | None = None,
 ) -> Decimal:
     """Mean of matching transactions over the last ``months`` months.
 
@@ -81,6 +81,14 @@ def _trailing_avg_amount(
     from sqlalchemy import select
     from app.models.transaction import Transaction
     from app.services.recurring_detector import _normalize
+
+    if months is None:
+        from app.services.user_profile_service import get_profile
+        from app.models.user_profile import FORECAST_MOVING_AVG_MONTHS_DEFAULT
+        months = (
+            get_profile(db).forecast_moving_avg_months
+            or FORECAST_MOVING_AVG_MONTHS_DEFAULT
+        )
 
     cutoff = date.today() - timedelta(days=int(months * 30.5))
     txns = db.execute(
@@ -173,7 +181,7 @@ def build_forecast(db: "Session", months: int = 3) -> ForecastResult:
         # actual matching transactions, with the stored amount as fallback.
         if (pmt.amount_type or "fixed") == "variable":
             forecast_amount = _trailing_avg_amount(
-                db, pmt, fallback=pmt.amount, months=6,
+                db, pmt, fallback=pmt.amount,
             )
         else:
             forecast_amount = pmt.amount

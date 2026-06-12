@@ -48,6 +48,20 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
     })
 
 
+def _opt_int(s: str) -> int | None:
+    try:
+        return int(s) if s.strip() else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_float(s: str) -> float | None:
+    try:
+        return float(s) if s.strip() else None
+    except (TypeError, ValueError):
+        return None
+
+
 @router.post("")
 def settings_save(
     request: Request,
@@ -59,6 +73,12 @@ def settings_save(
     rentcast_api_key: str = Form(""),
     property_data_api_key: str = Form(""),
     domain_api_key: str = Form(""),
+    recurring_stale_days: str = Form(""),
+    recurring_min_occurrences: str = Form(""),
+    recurring_min_confidence: str = Form(""),
+    recurring_min_amt_consistency: str = Form(""),
+    recurring_fixed_amt_consistency: str = Form(""),
+    forecast_moving_avg_months: str = Form(""),
     db: Session = Depends(get_db),
 ):
     update_profile(
@@ -71,6 +91,12 @@ def settings_save(
         rentcast_api_key=rentcast_api_key or None,
         property_data_api_key=property_data_api_key or None,
         domain_api_key=domain_api_key or None,
+        recurring_stale_days=_opt_int(recurring_stale_days),
+        recurring_min_occurrences=_opt_int(recurring_min_occurrences),
+        recurring_min_confidence=_opt_float(recurring_min_confidence),
+        recurring_min_amt_consistency=_opt_float(recurring_min_amt_consistency),
+        recurring_fixed_amt_consistency=_opt_float(recurring_fixed_amt_consistency),
+        forecast_moving_avg_months=_opt_int(forecast_moving_avg_months),
     )
 
     # Ensure current FX rates exist for the chosen display currency

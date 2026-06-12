@@ -24,6 +24,12 @@ def update_profile(
     rentcast_api_key: str | None = None,
     property_data_api_key: str | None = None,
     domain_api_key: str | None = None,
+    recurring_stale_days: int | None = None,
+    recurring_min_occurrences: int | None = None,
+    recurring_min_confidence: float | None = None,
+    recurring_min_amt_consistency: float | None = None,
+    recurring_fixed_amt_consistency: float | None = None,
+    forecast_moving_avg_months: int | None = None,
 ) -> UserProfile:
     profile = get_profile(db)
     profile.display_currency = display_currency.upper().strip() or "USD"
@@ -40,6 +46,21 @@ def update_profile(
         profile.property_data_api_key = property_data_api_key.strip()
     if domain_api_key is not None and domain_api_key.strip():
         profile.domain_api_key = domain_api_key.strip()
+
+    # Tuning knobs — None means "leave unchanged". Callers that want to reset
+    # to defaults can pass the default value explicitly.
+    if recurring_stale_days is not None:
+        profile.recurring_stale_days = recurring_stale_days
+    if recurring_min_occurrences is not None:
+        profile.recurring_min_occurrences = recurring_min_occurrences
+    if recurring_min_confidence is not None:
+        profile.recurring_min_confidence = recurring_min_confidence
+    if recurring_min_amt_consistency is not None:
+        profile.recurring_min_amt_consistency = recurring_min_amt_consistency
+    if recurring_fixed_amt_consistency is not None:
+        profile.recurring_fixed_amt_consistency = recurring_fixed_amt_consistency
+    if forecast_moving_avg_months is not None:
+        profile.forecast_moving_avg_months = forecast_moving_avg_months
 
     db.commit()
     db.refresh(profile)

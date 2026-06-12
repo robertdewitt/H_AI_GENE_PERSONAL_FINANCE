@@ -28,16 +28,33 @@ _FREQ_BUCKETS = [
     ("annually",   365, 20),
 ]
 
-_MIN_OCCURRENCES   = 3    # need at least this many to infer a pattern
-_MIN_CONFIDENCE    = 0.50
-_MIN_AMT_CONSISTENCY = 0.30  # below this the amounts are too erratic to be
-                              # the same merchant; above this we still emit
-                              # a suggestion but tag it as `variable` so the
-                              # forecast uses a moving average instead of a
-                              # frozen median (e.g. salary, credit-card bills)
-_FIXED_AMT_CONSISTENCY = 0.85  # at/above this the amount is effectively fixed
-_STALE_DAYS = 120  # ~4 months — drop suggestions for merchants we haven't
-                    # seen recently, they've usually been cancelled
+## Defaults — these used to be hard-coded constants. They're now overridden
+## per-user via UserProfile (see _load_tuning). The module-level values stay
+## as the fallback when no profile column is set yet.
+from app.models.user_profile import (
+    RECURRING_STALE_DAYS_DEFAULT          as _STALE_DAYS,
+    RECURRING_MIN_OCCURRENCES_DEFAULT     as _MIN_OCCURRENCES,
+    RECURRING_MIN_CONFIDENCE_DEFAULT      as _MIN_CONFIDENCE,
+    RECURRING_MIN_AMT_CONSISTENCY_DEFAULT as _MIN_AMT_CONSISTENCY,
+    RECURRING_FIXED_AMT_CONSISTENCY_DEFAULT as _FIXED_AMT_CONSISTENCY,
+)
+
+
+def _load_tuning(db: "Session") -> dict:
+    """Read the recurring-detection knobs from the UserProfile row.
+
+    Each field falls back to the module-level default when the column is
+    unset, so the detector keeps working on a fresh database.
+    """
+    from app.services.user_profile_service import get_profile
+    p = get_profile(db)
+    return {
+        "stale_days":           p.recurring_stale_days or _STALE_DAYS,
+        "min_occurrences":      p.recurring_min_occurrences or _MIN_OCCURRENCES,
+        "min_confidence":       p.recurring_min_confidence if p.recurring_min_confidence is not None else _MIN_CONFIDENCE,
+        "min_amt_consistency":  p.recurring_min_amt_consistency if p.recurring_min_amt_consistency is not None else _MIN_AMT_CONSISTENCY,
+        "fixed_amt_consistency": p.recurring_fixed_amt_consistency if p.recurring_fixed_amt_consistency is not None else _FIXED_AMT_CONSISTENCY,
+    }
 
 
 def _normalize(description: str) -> str:
@@ -137,6 +154,13 @@ def detect_recurring_payments(db: "Session") -> list[dict]:
         a.id: a for a in db.execute(select(Account)).scalars().all()
     }
 
+    tuning = _load_tuning(db)
+    min_occurrences       = tuning["min_occurrences"]
+    min_confidence        = tuning["min_confidence"]
+    min_amt_consistency   = tuning["min_amt_consistency"]
+    fixed_amt_consistency = tuning["fixed_amt_consistency"]
+    stale_days            = tuning["stale_days"]
+
     today = date.today()
 
     # Bucket: (account_id, normalized_desc) → list of (date, amount, currency)
@@ -150,7 +174,7 @@ def detect_recurring_payments(db: "Session") -> list[dict]:
 
     suggestions = []
     for (acct_id, norm_desc), entries in buckets.items():
-        if len(entries) < _MIN_OCCURRENCES:
+        if len(entries) < min_occurrences:
             continue
 
         entries.sort(key=lambda x: x[0])
@@ -167,30 +191,35 @@ def detect_recurring_payments(db: "Session") -> list[dict]:
         # For variable-amount streams (salary, credit-card bills) the rhythm
         # is the signal — confidence is regularity alone, with a small penalty
         # so they rank below clean fixed payments.
-        if amt_score >= _FIXED_AMT_CONSISTENCY:
+        if amt_score >= fixed_amt_consistency:
             confidence = round(regularity * amt_score, 3)
             amount_type = "fixed"
         else:
             confidence = round(regularity * 0.85, 3)
             amount_type = "variable"
 
-        if amt_score < _MIN_AMT_CONSISTENCY:
+        if amt_score < min_amt_consistency:
             continue  # amounts too erratic to call it the same merchant
-        if confidence < _MIN_CONFIDENCE:
+        if confidence < min_confidence:
             continue
 
         last_date  = dates[-1]
 
         # Stale guard — drop suggestions for merchants we haven't seen for
-        # more than ~4 months. They've usually been cancelled and shouldn't
-        # show up as "upcoming" payments.
-        if (today - last_date).days > _STALE_DAYS:
+        # more than the configured window. They're usually cancelled.
+        if (today - last_date).days > stale_days:
             continue
 
         if amount_type == "variable":
-            # 6-month trailing mean — the same number the forecast will use
-            # so the user sees the right expected amount at confirmation time.
-            cutoff = today - timedelta(days=183)
+            # Trailing mean over the same window the forecast will use, so
+            # the user sees the expected amount at confirmation time.
+            from app.services.user_profile_service import get_profile
+            from app.models.user_profile import FORECAST_MOVING_AVG_MONTHS_DEFAULT
+            mov_avg_months = (
+                get_profile(db).forecast_moving_avg_months
+                or FORECAST_MOVING_AVG_MONTHS_DEFAULT
+            )
+            cutoff = today - timedelta(days=int(mov_avg_months * 30.5))
             recent = [float(a) for d, a in zip(dates, amounts) if d >= cutoff]
             avg_amt = (
                 statistics.mean(recent) if recent
