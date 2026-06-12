@@ -228,3 +228,24 @@ table {
 .app-version-footer {
     margin-top: 0.25rem;
 }
+
+/* ── Top nav ──────────────────────────────────────────────────────────── */
+.app-nav summary {
+    cursor: pointer;
+}
+/* Highlight the dropdown summary when the current page lives inside it. */
+.app-nav .dropdown.section-active > summary {
+    color: var(--pico-primary);
+    font-weight: 600;
+}
+/* Highlight the current page link inside any dropdown (and the flat ones). */
+.app-nav a[aria-current="page"] {
+    color: var(--pico-primary);
+    font-weight: 600;
+}
+.app-nav .dropdown ul a[aria-current="page"]::after {
+    content: " ●";
+    font-size: 0.7em;
+    vertical-align: middle;
+    color: var(--pico-primary);
+}

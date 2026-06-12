@@ -9,30 +9,71 @@
     <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
-    <nav class="container-fluid">
+    {# Active-path helpers — a section is "active" when the current URL starts
+       with any of its prefixes; an individual link is "active" when the path
+       matches exactly. The aria-current attribute on the <a> doubles as a
+       styling hook (see CSS below). #}
+    {% set path = request.url.path if request else "/" %}
+    {% set MONEY_PATHS    = ["/accounts", "/transactions", "/transfers", "/scheduled"] %}
+    {% set INSIGHTS_PATHS = ["/net-worth", "/portfolio"] %}
+    {% set DATA_PATHS     = ["/import", "/paychecks", "/valuations", "/categories",
+                              "/transactions/duplicates", "/transactions/recover"] %}
+    {% set GEAR_PATHS     = ["/fx", "/settings"] %}
+    {% macro nav_link(href, label) %}
+        <a href="{{ href }}"{% if path == href or path.startswith(href + "/") %} aria-current="page"{% endif %}>{{ label }}</a>
+    {% endmacro %}
+    {% macro section_active(prefixes) %}{% for p in prefixes %}{% if path == p or path.startswith(p + "/") %}1{% endif %}{% endfor %}{% endmacro %}
+
+    <nav class="container-fluid app-nav">
         <ul>
-            <li><a href="/" class="brand"><strong>Financial Hygiene</strong></a></li>
+            <li><a href="/" class="brand"{% if path == "/" %} aria-current="page"{% endif %}><strong>Financial Hygiene</strong></a></li>
         </ul>
         <ul>
-            <li><a href="/tasks">Tasks</a></li>
-            <li><a href="/accounts">Accounts</a></li>
-            <li><a href="/transactions">Transactions</a></li>
-            <li><a href="/import">Import</a></li>
-            <li><a href="/transfers">Transfers</a></li>
-            <li><a href="/scheduled">Scheduled</a></li>
-            <li><a href="/net-worth">Net Worth</a></li>
-            <li><a href="/portfolio">Portfolio</a></li>
-            <li><a href="/categories">Categories</a></li>
+            <li>{{ nav_link("/tasks", "Tasks") }}</li>
+
             <li>
-                <details class="dropdown">
-                    <summary>More</summary>
+                <details class="dropdown{% if section_active(MONEY_PATHS) %} section-active{% endif %}">
+                    <summary>Money</summary>
                     <ul dir="rtl">
-                        <li><a href="/transactions/duplicates">Duplicates</a></li>
-                        <li><a href="/transactions/recover">Recover Deleted</a></li>
-                        <li><a href="/paychecks">Paychecks</a></li>
-                        <li><a href="/valuations">Asset Valuations</a></li>
-                        <li><a href="/fx">FX Rates</a></li>
-                        <li><a href="/settings">Settings</a></li>
+                        <li>{{ nav_link("/accounts",     "Accounts") }}</li>
+                        <li>{{ nav_link("/transactions", "Transactions") }}</li>
+                        <li>{{ nav_link("/transfers",    "Transfers") }}</li>
+                        <li>{{ nav_link("/scheduled",    "Scheduled") }}</li>
+                        <li>{{ nav_link("/scheduled/forecast", "Forecast") }}</li>
+                    </ul>
+                </details>
+            </li>
+
+            <li>
+                <details class="dropdown{% if section_active(INSIGHTS_PATHS) %} section-active{% endif %}">
+                    <summary>Insights</summary>
+                    <ul dir="rtl">
+                        <li>{{ nav_link("/net-worth", "Net Worth") }}</li>
+                        <li>{{ nav_link("/portfolio", "Portfolio") }}</li>
+                    </ul>
+                </details>
+            </li>
+
+            <li>
+                <details class="dropdown{% if section_active(DATA_PATHS) %} section-active{% endif %}">
+                    <summary>Data</summary>
+                    <ul dir="rtl">
+                        <li>{{ nav_link("/import",                  "Import") }}</li>
+                        <li>{{ nav_link("/paychecks",               "Paychecks") }}</li>
+                        <li>{{ nav_link("/valuations",              "Asset Valuations") }}</li>
+                        <li>{{ nav_link("/categories",              "Categories") }}</li>
+                        <li>{{ nav_link("/transactions/duplicates", "Duplicates") }}</li>
+                        <li>{{ nav_link("/transactions/recover",    "Recover Deleted") }}</li>
+                    </ul>
+                </details>
+            </li>
+
+            <li>
+                <details class="dropdown{% if section_active(GEAR_PATHS) %} section-active{% endif %}" title="Configuration">
+                    <summary aria-label="Settings">&#9881;</summary>
+                    <ul dir="rtl">
+                        <li>{{ nav_link("/fx",       "FX Rates") }}</li>
+                        <li>{{ nav_link("/settings", "Settings") }}</li>
                     </ul>
                 </details>
             </li>
