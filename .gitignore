@@ -25,3 +25,9 @@ uploads/*
 *.swp
 *.swo
 *~
+
+# Local DB backups (never push my personal data)
+data/*.bak
+
+# Per-machine Claude Code CLI permission overrides
+.claude/settings.local.json
