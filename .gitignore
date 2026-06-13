@@ -31,3 +31,6 @@ data/*.bak
 
 # Per-machine Claude Code CLI permission overrides
 .claude/settings.local.json
+
+# Pre-claim DB backups — contain personal financial data
+data/backups/

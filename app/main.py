@@ -15,7 +15,7 @@ from app.routers import (
     accounts, api, transactions, imports, transfers, net_worth,
     paychecks, valuations, fx, categories, portfolio,
 )
-from app.routers import app_settings, tasks, scheduled_payments, setup
+from app.routers import app_settings, tasks, scheduled_payments, setup, auth_routes
 from app.services.net_worth_service import compute_net_worth, compute_net_worth_series
 from app.templating import templates
 
@@ -52,37 +52,41 @@ app.include_router(tasks.router)
 app.include_router(scheduled_payments.router)
 app.include_router(api.router)
 app.include_router(setup.router)
+app.include_router(auth_routes.router)
 
 
-# ── First-run setup middleware ───────────────────────────────────────
-# When the database has zero users, every non-setup HTML route is forced
-# to /setup so the owner registers and (if pre-auth data exists) claims it.
-# /api/v1/* and /static/* bypass this gate so agents/tests can still probe
-# the server while the owner is registering.
+# ── Auth gate middleware ─────────────────────────────────────────────
+# Phase 2.2: every HTML route requires either a /setup-first-run, a
+# valid session cookie, or a Bearer token. /login, /setup, /static, and
+# /api/* are exempt from the redirect (API routes handle their own 401
+# via the get_current_user dependency).
+_PUBLIC_PATHS = ("/setup", "/login", "/logout", "/static", "/api/", "/favicon.ico")
+
+
 @app.middleware("http")
-async def force_setup_when_no_users(request: Request, call_next):
+async def auth_gate(request: Request, call_next):
     path = request.url.path
-    if (
-        path.startswith("/setup")
-        or path.startswith("/static")
-        or path.startswith("/api/")
-        or path == "/favicon.ico"
-    ):
+    if any(path == p or path.startswith(p) for p in _PUBLIC_PATHS):
         return await call_next(request)
 
-    # Cheap one-shot query — defaults to "no users" only if a real
-    # exception occurs (fresh DB without the users table yet).
     from sqlalchemy.orm import sessionmaker
     from app.database import engine
+    from app.services.sessions import lookup_session
     SessionLocal = sessionmaker(bind=engine)
     db = SessionLocal()
     try:
         if setup.needs_setup(db):
             from fastapi.responses import RedirectResponse
             return RedirectResponse(url="/setup", status_code=303)
+        raw = request.cookies.get("session")
+        sess = lookup_session(db, raw) if raw else None
+        if sess is None:
+            from fastapi.responses import RedirectResponse
+            target = path + (f"?{request.url.query}" if request.url.query else "")
+            return RedirectResponse(
+                url=f"/login?return_to={target}", status_code=303,
+            )
     except Exception:
-        # users table likely doesn't exist yet — init_db has run by now in
-        # lifespan, so this should never happen in practice. Don't block.
         pass
     finally:
         db.close()

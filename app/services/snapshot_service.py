@@ -41,12 +41,16 @@ class StartupStateResult:
 def compute_household_snapshot(
     db: Session,
     as_of_date: datetime | None = None,
+    user_id: int | None = None,
 ) -> HouseholdSnapshot:
     """Compute and persist a full household balance-sheet snapshot."""
     now = as_of_date or naive_utc_now()
     base_ccy = settings.base_currency
 
-    accounts = db.execute(select(Account)).scalars().all()
+    _q = select(Account)
+    if user_id is not None:
+        _q = _q.where(Account.user_id == user_id)
+    accounts = db.execute(_q).scalars().all()
     total_assets = Decimal("0.00")
     total_liabilities = Decimal("0.00")
     stale_count = 0

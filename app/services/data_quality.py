@@ -60,6 +60,7 @@ class DataQualityReport:
 def assess_quality(
     db: Session,
     as_of_date: datetime | None = None,
+    user_id: int | None = None,
 ) -> DataQualityReport:
     """Produce a data-quality report for the entire ledger."""
     now = as_of_date or naive_utc_now()
@@ -68,7 +69,7 @@ def assess_quality(
     _check_uncategorized(db, report)
     _check_unclassified(db, report)
     _check_low_confidence(db, report)
-    _check_stale_balances(db, report, now)
+    _check_stale_balances(db, report, now, user_id=user_id)
     _check_unreconciled_transfers(db, report)
     _check_liability_health(db, report, now)
     _check_unsplit_transactions(db, report)
@@ -135,6 +136,7 @@ def _check_low_confidence(db: Session, report: DataQualityReport) -> None:
 
 def _check_stale_balances(
     db: Session, report: DataQualityReport, now: datetime,
+    user_id: int | None = None,
 ) -> None:
     """Check for stale account balances and FX rates.
 
@@ -145,7 +147,10 @@ def _check_stale_balances(
     from app.models.asset_valuation import AssetValuation
     from app.models.currency_rate import CurrencyRate
 
-    accounts = db.execute(select(Account)).scalars().all()
+    _q = select(Account)
+    if user_id is not None:
+        _q = _q.where(Account.user_id == user_id)
+    accounts = db.execute(_q).scalars().all()
     if not accounts:
         return
 

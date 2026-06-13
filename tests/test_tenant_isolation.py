@@ -215,3 +215,35 @@ def test_no_api_route_responds_200_to_anonymous(two_user_app):
             f"{path} returned 200 to an anonymous request — missing auth"
         )
     assert seen > 0, "No /api/v1/* GET routes were probed"
+
+
+def test_no_html_route_responds_200_to_anonymous(two_user_app):
+    """Same fail-closed guarantee for browser-facing routes.
+
+    Every HTML GET on app.routes that isn't on the public allow-list
+    (login, setup, logout, static, favicon) must redirect to /login or
+    return a non-200 status for an anonymous caller.
+    """
+    client, _ = two_user_app
+    public = ("/setup", "/login", "/logout", "/static", "/favicon.ico", "/api/")
+    seen = 0
+    for route in app.routes:
+        path = getattr(route, "path", "")
+        methods = getattr(route, "methods", set()) or set()
+        if "GET" not in methods:
+            continue
+        if any(path == p or path.startswith(p) for p in public):
+            continue
+        if "{" in path:
+            continue
+        seen += 1
+        resp = client.get(path, follow_redirects=False)
+        assert resp.status_code != 200, (
+            f"{path} returned 200 to anonymous browser — missing auth gate"
+        )
+        # 303 = redirect to /login (happy path). 401/403/422 also acceptable.
+        assert resp.status_code in (303, 401, 403, 422, 405, 404), (
+            f"{path} returned {resp.status_code} to anonymous — expected "
+            "303 (redirect to /login) or 4xx"
+        )
+    assert seen > 0, "No HTML GET routes were probed"

@@ -468,11 +468,15 @@ def run_monte_carlo(
     db: Session,
     horizon_months: int = 60,
     simulations: int    = 1000,
+    user_id: int | None = None,
 ) -> MonteCarloResult:
     """Run Monte Carlo net worth projection broken down by asset group."""
 
     now = naive_utc_now()
-    accounts: list[Account] = db.execute(select(Account)).scalars().all()
+    _q = select(Account)
+    if user_id is not None:
+        _q = _q.where(Account.user_id == user_id)
+    accounts: list[Account] = db.execute(_q).scalars().all()
 
     # ── Current balances per account ─────────────────────────────────────────
     current_balances: dict[int, float] = {}

@@ -74,16 +74,23 @@ def compute_net_worth(
     db: Session,
     as_of_date: datetime | None = None,
     target_currency: str | None = None,
+    user_id: int | None = None,
 ) -> NetWorthSnapshot:
     """Compute net worth snapshot at a given date, converted to target currency.
 
     When ``as_of_date`` is None the **current** net worth is computed using
     the full account balance (no date filter on transactions).
+
+    ``user_id`` scopes to a single user's accounts. None (legacy callers,
+    tests) walks every account — same behaviour as before multi-user.
     """
     snapshot_date = as_of_date or naive_utc_now()
     base_ccy = target_currency or settings.base_currency
 
-    accounts = db.execute(select(Account)).scalars().all()
+    q = select(Account)
+    if user_id is not None:
+        q = q.where(Account.user_id == user_id)
+    accounts = db.execute(q).scalars().all()
     if as_of_date is None:
         balances = get_many_account_balances_rich(
             db, accounts=accounts, target_currency=base_ccy,
@@ -104,6 +111,7 @@ def compute_net_worth_series(
     db: Session,
     months: int = 12,
     target_currency: str | None = None,
+    user_id: int | None = None,
 ) -> NetWorthTimeSeries:
     """Compute monthly net worth snapshots for the past N months.
 
@@ -130,7 +138,10 @@ def compute_net_worth_series(
         else:
             current = datetime(current.year, current.month + 1, 1)
 
-    accounts = db.execute(select(Account)).scalars().all()
+    q = select(Account)
+    if user_id is not None:
+        q = q.where(Account.user_id == user_id)
+    accounts = db.execute(q).scalars().all()
     series_balances = get_many_account_balances_series(
         db, accounts=accounts, snapshot_dates=snapshot_dates,
         target_currency=base_ccy,

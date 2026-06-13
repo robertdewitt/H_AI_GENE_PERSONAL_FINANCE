@@ -1,0 +1,36 @@
+{# Minimal layout — no app nav while signed out. #}
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign in — Financial Hygiene</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+</head>
+<body>
+<main class="container" style="max-width:420px;margin-top:4rem">
+    <hgroup>
+        <h1>Sign in</h1>
+        <p>Use the credentials you registered during setup. Passkey
+        sign-in arrives in the next release.</p>
+    </hgroup>
+
+    {% if error %}
+    <article style="border-left:4px solid #dc2626;padding:0.6rem 1rem;margin-bottom:1rem">
+        {{ error }}
+    </article>
+    {% endif %}
+
+    <form method="post" action="/login">
+        <input type="hidden" name="return_to" value="{{ return_to }}">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" required autocomplete="username">
+
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required autocomplete="current-password">
+
+        <button type="submit">Sign in</button>
+    </form>
+</main>
+</body>
+</html>

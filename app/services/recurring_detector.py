@@ -132,7 +132,7 @@ def _add_months(d: date, months: int, anchor_day: int | None = None) -> date:
     return date(year, month, day)
 
 
-def detect_recurring_payments(db: "Session") -> list[dict]:
+def detect_recurring_payments(db: "Session", user_id: int | None = None) -> list[dict]:
     """Scan all transaction history and return recurring payment suggestions.
 
     Each suggestion dict:
@@ -151,7 +151,7 @@ def detect_recurring_payments(db: "Session") -> list[dict]:
     ).scalars().all()
 
     accounts = {
-        a.id: a for a in db.execute(select(Account)).scalars().all()
+        a.id: a for a in db.execute(select(Account).where((Account.user_id == user_id) if user_id is not None else (Account.id == Account.id))).scalars().all()
     }
 
     tuning = _load_tuning(db)

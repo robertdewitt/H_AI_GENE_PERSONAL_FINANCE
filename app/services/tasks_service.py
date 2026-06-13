@@ -25,7 +25,7 @@ class Task:
     severity: str = "warning"   # "warning" | "info"
 
 
-def get_tasks(db: Session) -> list[Task]:
+def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
     from app.models.account import Account
     from app.models.transaction import Transaction
     from app.models.transfer_link import TransferLink
@@ -45,7 +45,10 @@ def get_tasks(db: Session) -> list[Task]:
         AccountType.BROKERAGE,
     }
 
-    accounts = db.execute(select(Account)).scalars().all()
+    _q = select(Account)
+    if user_id is not None:
+        _q = _q.where(Account.user_id == user_id)
+    accounts = db.execute(_q).scalars().all()
     stale_accounts: list[Account] = []
     for acct in accounts:
         if acct.account_type not in transactional_types:

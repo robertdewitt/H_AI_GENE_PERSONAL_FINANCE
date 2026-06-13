@@ -52,14 +52,28 @@ class AccountBalanceResult:
     fx: FxMetadata = field(default_factory=FxMetadata)
 
 
-def list_accounts(db: Session) -> list[Account]:
-    return db.execute(
-        select(Account).order_by(Account.account_type, Account.name)
-    ).scalars().all()
+def list_accounts(db: Session, user_id: int | None = None) -> list[Account]:
+    """Return all accounts. If ``user_id`` is supplied the result is
+    scoped to that user — passing it is the right thing for any request-
+    handling code path. ``user_id=None`` is preserved for tests and a
+    handful of admin/maintenance paths that genuinely need a full scan.
+    """
+    q = select(Account).order_by(Account.account_type, Account.name)
+    if user_id is not None:
+        q = q.where(Account.user_id == user_id)
+    return db.execute(q).scalars().all()
 
 
-def get_account(db: Session, account_id: int) -> Account | None:
-    return db.get(Account, account_id)
+def get_account(db: Session, account_id: int, user_id: int | None = None) -> Account | None:
+    """Return the account by id. When ``user_id`` is supplied the lookup
+    refuses to return an account owned by anyone else — caller gets None
+    just as it would for a missing row, so no existence leak."""
+    acct = db.get(Account, account_id)
+    if acct is None:
+        return None
+    if user_id is not None and acct.user_id != user_id:
+        return None
+    return acct
 
 
 def create_account(db: Session, data: AccountCreate) -> Account:
