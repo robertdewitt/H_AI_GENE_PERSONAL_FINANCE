@@ -116,7 +116,7 @@
             <div>
                 <label for="rentcast_api_key">Rentcast API Key (optional)</label>
                 <input type="password" id="rentcast_api_key" name="rentcast_api_key"
-                       placeholder="{% if profile.rentcast_api_key %}••••••••••••{% else %}Leave blank for anonymous free tier{% endif %}"
+                       placeholder="{% if profile.rentcast_api_key %}{{ profile.rentcast_api_key | mask_secret }}{% else %}Leave blank for anonymous free tier{% endif %}"
                        autocomplete="off">
                 <small>Leave blank to keep existing key. Free tier works without a key (50 lookups/month).</small>
             </div>
@@ -127,7 +127,7 @@
             <div>
                 <label for="property_data_api_key">PropertyData API Key (optional)</label>
                 <input type="password" id="property_data_api_key" name="property_data_api_key"
-                       placeholder="{% if profile.property_data_api_key %}••••••••••••{% else %}Add key for live AVM estimates{% endif %}"
+                       placeholder="{% if profile.property_data_api_key %}{{ profile.property_data_api_key | mask_secret }}{% else %}Add key for live AVM estimates{% endif %}"
                        autocomplete="off">
                 <small>Without a key, the HM Land Registry last-sold price is used as a baseline.</small>
             </div>
@@ -138,7 +138,7 @@
             <div>
                 <label for="domain_api_key">Domain.com.au API Key</label>
                 <input type="password" id="domain_api_key" name="domain_api_key"
-                       placeholder="{% if profile.domain_api_key %}••••••••••••{% else %}Required for AU property estimates{% endif %}"
+                       placeholder="{% if profile.domain_api_key %}{{ profile.domain_api_key | mask_secret }}{% else %}Required for AU property estimates{% endif %}"
                        autocomplete="off">
                 <small>Register for a free developer key at developer.domain.com.au.</small>
             </div>

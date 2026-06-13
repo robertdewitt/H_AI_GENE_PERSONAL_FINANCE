@@ -58,3 +58,9 @@ def _currency_symbol(code: str | None) -> str:
 
 templates.env.filters["currency_symbol"] = _currency_symbol
 templates.env.globals["currency_symbol"] = _currency_symbol
+
+
+# ── Mask a secret for display: "••••••wxyz" — shows the last few chars
+# so the user knows it's set, without leaking the whole thing on screen.
+from app.services.secret_box import mask as _mask_secret
+templates.env.filters["mask_secret"] = _mask_secret

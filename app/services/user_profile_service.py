@@ -1,7 +1,30 @@
-"""Singleton UserProfile — always row id=1."""
+"""Singleton UserProfile — always row id=1.
+
+Third-party API keys (rentcast / property_data / domain) are stored
+encrypted-at-rest and decrypted transparently on read via
+:func:`get_profile`. Writes go through :func:`update_profile` which
+encrypts before commit. Direct ORM mutation bypasses encryption — don't
+do that.
+"""
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import attributes as _attrs
 
 from app.models.user_profile import UserProfile
+from app.services.secret_box import decrypt as _decrypt, encrypt as _encrypt, is_encrypted as _is_enc
+
+
+_ENCRYPTED_FIELDS = ("rentcast_api_key", "property_data_api_key", "domain_api_key")
+
+
+def _decrypt_in_place(profile: UserProfile) -> UserProfile:
+    """Mark each encrypted column's plaintext as the already-saved value
+    so the ORM doesn't think the row is dirty after we substitute.
+    """
+    for f in _ENCRYPTED_FIELDS:
+        stored = getattr(profile, f, None)
+        if _is_enc(stored):
+            _attrs.set_committed_value(profile, f, _decrypt(stored))
+    return profile
 
 
 def get_profile(db: Session) -> UserProfile:
@@ -11,7 +34,27 @@ def get_profile(db: Session) -> UserProfile:
         db.add(profile)
         db.commit()
         db.refresh(profile)
-    return profile
+    return _decrypt_in_place(profile)
+
+
+def encrypt_all_plaintext_api_keys(db: Session) -> int:
+    """One-shot migration: encrypt any API-key columns still in plaintext.
+
+    Returns the number of rows touched. Safe to call on every startup —
+    rows that are already encrypted are skipped.
+    """
+    profile = db.get(UserProfile, 1)
+    if profile is None:
+        return 0
+    changed = 0
+    for f in _ENCRYPTED_FIELDS:
+        stored = getattr(profile, f, None)
+        if stored and not _is_enc(stored):
+            setattr(profile, f, _encrypt(stored))
+            changed += 1
+    if changed:
+        db.commit()
+    return changed
 
 
 def update_profile(
@@ -39,13 +82,13 @@ def update_profile(
     profile.spouse_nationality = spouse_nationality if has_spouse else None
 
     # Only overwrite API keys if a non-empty value was submitted
-    # (empty submission = keep existing key)
+    # (empty submission = keep existing key). Encrypt before persisting.
     if rentcast_api_key is not None and rentcast_api_key.strip():
-        profile.rentcast_api_key = rentcast_api_key.strip()
+        profile.rentcast_api_key = _encrypt(rentcast_api_key.strip())
     if property_data_api_key is not None and property_data_api_key.strip():
-        profile.property_data_api_key = property_data_api_key.strip()
+        profile.property_data_api_key = _encrypt(property_data_api_key.strip())
     if domain_api_key is not None and domain_api_key.strip():
-        profile.domain_api_key = domain_api_key.strip()
+        profile.domain_api_key = _encrypt(domain_api_key.strip())
 
     # Tuning knobs — None means "leave unchanged". Callers that want to reset
     # to defaults can pass the default value explicitly.
@@ -64,4 +107,4 @@ def update_profile(
 
     db.commit()
     db.refresh(profile)
-    return profile
+    return _decrypt_in_place(profile)

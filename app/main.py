@@ -28,7 +28,34 @@ async def lifespan(app: FastAPI):
     init_db()
     _seed_categories()
     _bootstrap_fx_rates()
+    _encrypt_legacy_secrets()
     yield
+
+
+def _encrypt_legacy_secrets() -> None:
+    """One-shot at-rest migration: encrypt any UserProfile API-key columns
+    that are still in plaintext from before P2.4. Idempotent — rows that
+    are already encrypted are skipped.
+    """
+    from sqlalchemy.orm import sessionmaker
+    from app.database import engine
+    from app.services.user_profile_service import encrypt_all_plaintext_api_keys
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+    try:
+        n = encrypt_all_plaintext_api_keys(db)
+        if n:
+            import logging
+            logging.getLogger(__name__).info(
+                "encrypted %d UserProfile API key column(s) at rest", n,
+            )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "secret-at-rest migration skipped: %s", exc,
+        )
+    finally:
+        db.close()
 
 
 app = FastAPI(
