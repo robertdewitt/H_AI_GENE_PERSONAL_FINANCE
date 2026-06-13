@@ -120,6 +120,57 @@ python run.py
 - App: [http://127.0.0.1:8000](http://127.0.0.1:8000)
 - API docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
+On the first visit every page redirects to **/setup**, where you register
+an admin account (username + display name + password ≥ 10 chars). On
+submit the app:
+
+1. Writes a timestamped backup to `data/backups/pre_auth_<UTC>.db`,
+2. Creates your user and attributes every existing row in one transaction,
+3. Runs an integrity check (row counts unchanged, no NULL `user_id`),
+4. Logs you in via a session cookie.
+
+If the backup or integrity check fails, the transaction rolls back and
+the database is left in its pre-claim state. Subsequent users (created
+via `/register`, admin-only) follow the same flow without the claim step.
+
+### Sign-in
+
+The default sign-in is **WebAuthn (passkeys)** — Touch ID, Windows Hello,
+or your phone's biometric — with a password fallback. Add a passkey from
+**Settings → Security & passkeys** once you're signed in.
+
+WebAuthn requires a **secure context**. `http://localhost` /
+`http://127.0.0.1` qualify; any other origin needs HTTPS. For LAN or
+remote deployments set the relying-party identity via env:
+
+| Variable | Example | Purpose |
+|---|---|---|
+| `RP_ID` | `finance.example.com` | Hostname the browser sees (no scheme/port) |
+| `RP_ORIGIN` | `https://finance.example.com` | Full origin sent in WebAuthn ceremonies |
+| `RP_NAME` | `Finance — Home` | Label shown by the OS biometric prompt |
+
+### API tokens for agents
+
+LLM agents (and any non-browser caller) talk to `/api/v1/*` with a Bearer
+token. Mint one from **Settings → Security & passkeys → API tokens** —
+the value is shown exactly once; only the SHA-256 hash is stored.
+
+```bash
+TOKEN="paste-the-once-shown-token-here"
+curl -H "Authorization: Bearer $TOKEN" \
+     http://127.0.0.1:8000/api/v1/agent/context
+```
+
+Revoking a token from the same page invalidates it immediately.
+
+### Secrets at rest
+
+Third-party API keys (Rentcast, PropertyData, Domain) are encrypted in
+the database with Fernet, keyed by `SECRET_KEY`. The first launch
+auto-generates a `SECRET_KEY` into `./.env` if one isn't present and
+warns you to back it up — losing that file renders every encrypted
+column unreadable.
+
 ### Optional: Ollama for categorization
 
 ```bash
@@ -131,6 +182,20 @@ ollama pull llama3.2
 ```bash
 DB_BACKEND=postgresql
 DATABASE_URL=postgresql://user:password@localhost:5432/financial_hygiene
+```
+
+### Schema migrations (Alembic)
+
+`init_db()` still applies idempotent additive migrations on every
+startup so a fresh SQLite database is usable without ceremony. Alembic
+is the source of truth going forward:
+
+```bash
+# Apply pending migrations
+alembic upgrade head
+
+# Generate a new revision after editing models
+alembic revision --autogenerate -m "what changed"
 ```
 
 ## Workflow
@@ -176,9 +241,40 @@ tests/
 - **Pandas** for imports
 - Optional **Ollama**; **yfinance** / **Frankfurter** for FX
 
-## Scale
+## Performance
 
-Composite indexes, SQLite WAL, batch imports (`IMPORT_BATCH_SIZE`), PostgreSQL pooling optional—suited for **large** transaction volumes.
+The hot paths that an interactive UI hits — net-worth dashboard, time
+series, balance sheet — go through batched balance helpers
+(`get_many_account_balances_rich` / `_series` in
+`app/services/account_service.py`). A 24-month net-worth series across
+~15 accounts issues **< 10 SQL statements** total; doubling the window
+does not (anywhere close to) double the SQL count. There's a regression
+test (`tests/test_net_worth_series_queries.py`) that fails-closed if
+that property ever regresses.
+
+Other things that survive scale: composite indexes on
+`(account_id, date)` etc., SQLite WAL, batched imports keyed by
+`IMPORT_BATCH_SIZE`, optional PostgreSQL pooling.
+
+## Multi-user model
+
+* Each user owns their data via a `user_id` column on every top-level
+  table (accounts, categories, import batches, snapshots, scheduled
+  payments, plans, user profile, …).
+* Transactions and other "reachable via account" rows inherit ownership
+  from their account — queries always join through `Account` to enforce
+  isolation.
+* `app/services/scoping.py` provides the canonical helpers
+  (`owned_accounts`, `owned_transaction_query`,
+  `get_owned_account_or_404`). Routers and services use these instead
+  of hand-rolling `WHERE user_id = …`.
+* A route-walking isolation test (`tests/test_tenant_isolation.py`)
+  iterates over every registered route and asserts anonymous callers
+  cannot reach `/api/v1/*` and HTML routes cannot bypass the auth
+  redirect — new endpoints fail closed automatically.
+* Uploads live under `uploads/<user_id>/`. Every confirm endpoint
+  verifies the supplied filepath sits inside the current user's
+  directory before reading it.
 
 ## Tests
 

@@ -92,11 +92,62 @@ Raw imported rows are **not** truth. The truth layer adds:
 
 ### Schema Migrations
 
-There is no Alembic migration workflow in active use. Schema changes are applied via `init_db()` in `app/database.py`:
+Both Alembic and `init_db()` operate side by side:
 
-- New tables: use `Base.metadata.create_all` (all models must be imported in `app/models/__init__.py`)
-- New columns on existing tables: add a `_sqlite_add_column_if_missing(conn, table, column, type, default)` call in `init_db()`
-- All changes must be additive and idempotent
+- **Alembic** is the source of truth going forward — `alembic upgrade head`
+  applies pending revisions, `alembic revision --autogenerate -m "…"` after
+  editing models generates the next one. Baseline lives in
+  `alembic/versions/`.
+- **`init_db()`** in `app/database.py` still runs on every startup so a
+  fresh SQLite database is usable without running Alembic. New columns on
+  existing tables go through `_col(table, column, type, default)` (the
+  helper around `_add_column_if_missing`); new tables flow through
+  `Base.metadata.create_all`. All `init_db` changes must be additive and
+  idempotent — Alembic owns destructive / structural changes.
+
+### Multi-user auth (`app/services/`)
+
+- `auth.py` — `get_current_user` FastAPI dependency. Resolves either the
+  `session` cookie or `Authorization: Bearer <token>` (API tokens); HTML
+  routes 303 to `/login`, API routes 401. `require_admin` is the
+  admin-only variant for `/register`.
+- `sessions.py` — server-side session create / lookup / revoke. Cookie
+  carries a 256-bit random token; only the SHA-256 hash is persisted.
+  Idle expiry 7 days, absolute 30.
+- `webauthn_service.py` + `app/routers/webauthn.py` — passkey ceremonies
+  (registration + authentication). Pending challenges stored in a
+  5-minute TTL in-memory dict (swap to Redis for multi-worker).
+- `scoping.py` — `owned_accounts`, `owned_account_ids`,
+  `get_owned_account_or_404`, `owned_transaction_query` and friends.
+  Every router / service entry point that touches owned tables goes
+  through these instead of `select(Account)` directly. The route-walking
+  test in `tests/test_tenant_isolation.py` fails closed if a new route
+  forgets.
+- `setup_claim.py` — first-run flow: backup → user create → claim all
+  existing rows under the new user_id → integrity check → commit. Used
+  by `app/routers/setup.py`.
+- `rate_limit.py` — sliding-window limiter; `/login` is 10 attempts /
+  15 minutes per `(ip, username)`.
+- `secret_box.py` — Fernet encrypt/decrypt at rest. Fernet key is
+  HKDF-derived from `SECRET_KEY` (generated into `./.env` on first
+  launch if missing). `get_profile()` decrypts the encrypted columns
+  in-place via `attributes.set_committed_value` so callers see plaintext
+  but the DB stores `fernet:…`. The `mask_secret` Jinja filter renders
+  the trailing four chars only for display.
+- `upload_safety.py` — `safe_upload_dest(upload_dir, name, user_id=...)`
+  places uploads under `uploads/<user_id>/` and `assert_user_owns_path`
+  is the guard every confirm endpoint runs before opening a
+  form-supplied filepath.
+
+### Owned-tables convention
+
+Top-level owned tables (`accounts`, `categories`, `category_rules`,
+`import_batches`, `rental_properties`, `asset_valuations`, scheduled
+payments, plan_it_plans, all `*_snapshots`, `financial_documents`,
+`property_pnl_snapshots`, `user_profile`) carry a nullable `user_id` FK.
+Reachable-via-account tables (`transactions`, `transaction_splits`,
+`transfer_links`, `reconciliation_*`, `payment_decompositions`) do NOT
+denormalize `user_id` — they join through `Account` for isolation.
 
 ### Configuration (`app/config.py`)
 
@@ -109,6 +160,10 @@ Key settings via env or `.env` file:
 | `BASE_CURRENCY` | `USD` | Base currency for FX conversions |
 | `IMPORT_BATCH_SIZE` | `5000` | Rows flushed per batch during imports |
 | `DATE_DAYFIRST` | `True` | DD/MM (True) vs MM/DD (False) default |
+| `RP_ID` | `localhost` | WebAuthn relying-party id (hostname, no scheme) |
+| `RP_ORIGIN` | `http://localhost:8000` | WebAuthn origin sent in ceremonies |
+| `RP_NAME` | `Financial Hygiene` | Label shown by the OS biometric prompt |
+| `SECRET_KEY` | _auto-generated_ | HKDF seed for at-rest encryption — back up `.env` |
 
 ### Structured Financial Documents
 
@@ -121,3 +176,14 @@ Payslips and rental statements are first-class documents — not inferred from b
 ### Tests
 
 Tests use an in-memory SQLite database — no fixtures file needed. The `db` pytest fixture in each test file creates a fresh `Base.metadata.create_all` session. See `tests/test_truth_engine.py` for the pattern.
+
+Important regression suites worth keeping green:
+
+| File | What it guards |
+|---|---|
+| `test_net_worth_series_queries.py` | `compute_net_worth_series(months=24)` must issue < 10 SQL statements |
+| `test_upload_safety.py` | Path traversal blocked; per-user dirs; ownership guard rejects peers |
+| `test_setup_claim.py` | First-run claim backs up, attributes every row, integrity check passes, net worth unchanged |
+| `test_tenant_isolation.py` | Anonymous can't reach `/api/v1/*`; cross-user access yields empty/404; route-walks every registered endpoint |
+| `test_secret_box.py` | Fernet round-trip; mask reveals last 4 chars only; wrong key returns None instead of raising |
+| `test_recurring_forecast_knobs.py` | UserProfile knobs (stale_days, moving_avg_months, etc.) influence detection on the next call — no caching |
