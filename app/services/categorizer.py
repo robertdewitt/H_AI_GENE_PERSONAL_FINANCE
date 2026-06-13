@@ -235,6 +235,7 @@ def learn_from_correction(
     db: Session,
     description: str,
     category_id: int,
+    user_id: int | None = None,
 ) -> tuple[CategoryRule, int]:
     """Store a user's category correction as a learned rule AND retroactively
     update all existing transactions whose description matches.
@@ -243,14 +244,26 @@ def learn_from_correction(
     1. Exact match on the original description (case-insensitive)
     2. Fuzzy match via the extracted pattern (handles whitespace differences)
 
+    The rule is attributed to ``user_id`` so each user gets their own
+    independent rule set. When not supplied we fall back to the category's
+    owning user — categories are per-user, so this is unambiguous.
+
     Returns (rule, count_updated).
     """
     pattern = _extract_pattern(description)
+
+    if user_id is None:
+        # Derive from the category we're attaching the rule to so a missing
+        # user_id never silently creates a NULL-owned rule again.
+        from app.models.category import Category as _Cat
+        cat = db.get(_Cat, category_id)
+        user_id = cat.user_id if cat is not None else None
 
     existing = db.execute(
         select(CategoryRule).where(
             CategoryRule.pattern == pattern,
             CategoryRule.category_id == category_id,
+            CategoryRule.user_id == user_id,
         )
     ).scalar_one_or_none()
 
@@ -260,6 +273,7 @@ def learn_from_correction(
         existing = CategoryRule(
             pattern=pattern,
             category_id=category_id,
+            user_id=user_id,
             source="user_correction",
         )
         db.add(existing)
