@@ -56,10 +56,11 @@ async def paycheck_upload(
     account_id: int = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    user = Depends(__import__("app.services.auth", fromlist=["get_current_user"]).get_current_user),
 ):
     from app.services.upload_safety import safe_upload_dest, UnsafeFilenameError
     try:
-        dest = safe_upload_dest(settings.upload_dir, file.filename)
+        dest = safe_upload_dest(settings.upload_dir, file.filename, user_id=user.id)
     except UnsafeFilenameError:
         return templates.TemplateResponse(request, "paychecks/upload.html", {
             "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),

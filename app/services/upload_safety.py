@@ -44,17 +44,37 @@ def sanitize_filename(raw: str | None) -> str:
     return base
 
 
-def safe_upload_dest(upload_dir: str | Path, client_filename: str | None) -> Path:
-    """Produce a unique destination path strictly inside ``upload_dir``.
+def user_upload_dir(upload_dir: str | Path, user_id: int) -> Path:
+    """Return the per-user subdirectory under ``upload_dir``.
+
+    Creating the directory is idempotent. ``user_id`` is stringified so
+    the same filesystem layout works on PostgreSQL deployments where
+    ``id`` types vary.
+    """
+    base = Path(upload_dir).resolve() / str(int(user_id))
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def safe_upload_dest(
+    upload_dir: str | Path,
+    client_filename: str | None,
+    user_id: int | None = None,
+) -> Path:
+    """Produce a unique destination path strictly inside the upload root
+    (or, when ``user_id`` is given, inside ``upload_dir/<user_id>/``).
 
     Prefixes the sanitised basename with a UTC timestamp + short UUID so
     concurrent uploads with identical names don't overwrite each other,
     and so a malicious filename can't replace an unrelated file via a
-    race. Verifies the final resolved path is inside ``upload_dir``.
+    race. Verifies the final resolved path is inside its directory.
     """
     base = sanitize_filename(client_filename)
-    dir_path = Path(upload_dir).resolve()
-    dir_path.mkdir(parents=True, exist_ok=True)
+    if user_id is not None:
+        dir_path = user_upload_dir(upload_dir, user_id)
+    else:
+        dir_path = Path(upload_dir).resolve()
+        dir_path.mkdir(parents=True, exist_ok=True)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     short = uuid.uuid4().hex[:8]
@@ -70,3 +90,29 @@ def safe_upload_dest(upload_dir: str | Path, client_filename: str | None) -> Pat
         ) from exc
 
     return dest
+
+
+def assert_user_owns_path(
+    upload_dir: str | Path,
+    user_id: int,
+    filepath: str | Path,
+) -> Path:
+    """Resolve ``filepath`` and verify it's strictly inside the user's
+    upload directory. Raises ``UnsafeFilenameError`` otherwise.
+
+    This is the guard for routes that take a client-supplied filepath
+    (Form field after the upload step) — without it a user could pass
+    another user's freshly-uploaded path to the confirm endpoint and
+    trigger an import of someone else's data.
+    """
+    user_root = user_upload_dir(upload_dir, user_id)
+    candidate = Path(filepath).resolve()
+    try:
+        candidate.relative_to(user_root)
+    except ValueError as exc:
+        raise UnsafeFilenameError(
+            f"filepath {candidate!s} is not inside {user_root!s}"
+        ) from exc
+    if not candidate.exists():
+        raise UnsafeFilenameError(f"filepath {candidate!s} does not exist")
+    return candidate

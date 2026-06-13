@@ -2,7 +2,9 @@ import logging
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+
+from app.services.auth import get_current_user
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -82,10 +84,11 @@ async def upload_file(
     account_id: int = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    user = Depends(get_current_user),
 ):
     from app.services.upload_safety import safe_upload_dest, UnsafeFilenameError
     try:
-        dest = safe_upload_dest(settings.upload_dir, file.filename)
+        dest = safe_upload_dest(settings.upload_dir, file.filename, user_id=user.id)
     except UnsafeFilenameError:
         return templates.TemplateResponse(request, "imports/upload.html", {
             "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
@@ -168,7 +171,17 @@ def confirm_import(
     col_currency: str = Form(""),
     date_format: str = Form("auto"),
     db: Session = Depends(get_db),
+    user = Depends(get_current_user),
 ):
+    # Filepath came from a hidden form field — verify it's a real file
+    # inside *this* user's upload directory before we open it. Without
+    # this check a logged-in attacker could pass any other user's recent
+    # upload path and trigger an import into their own account.
+    from app.services.upload_safety import assert_user_owns_path, UnsafeFilenameError
+    try:
+        assert_user_owns_path(settings.upload_dir, user.id, filepath)
+    except UnsafeFilenameError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     mapping: dict[str, str] = {
         "date": col_date,
         "description": col_description,
@@ -648,7 +661,14 @@ def ibkr_confirm(
     account_id: int = Form(...),
     filepath: str = Form(...),
     db: Session = Depends(get_db),
+    user = Depends(get_current_user),
 ):
+    from app.services.upload_safety import assert_user_owns_path, UnsafeFilenameError
+    try:
+        assert_user_owns_path(settings.upload_dir, user.id, filepath)
+    except UnsafeFilenameError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
     try:
         parsed = parse_ibkr_csv(filepath)
         stats = apply_ibkr_statement(db, account_id, parsed)
@@ -675,7 +695,14 @@ def revolut_confirm(
     filepath: str = Form(...),
     sections: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
+    user = Depends(get_current_user),
 ):
+    from app.services.upload_safety import assert_user_owns_path, UnsafeFilenameError
+    try:
+        assert_user_owns_path(settings.upload_dir, user.id, filepath)
+    except UnsafeFilenameError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
     from decimal import Decimal
     from app.models.transaction import Transaction
     from app.models.import_batch import ImportBatch
