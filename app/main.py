@@ -15,7 +15,10 @@ from app.routers import (
     accounts, api, transactions, imports, transfers, net_worth,
     paychecks, valuations, fx, categories, portfolio,
 )
-from app.routers import app_settings, tasks, scheduled_payments, setup, auth_routes
+from app.routers import (
+    app_settings, tasks, scheduled_payments, setup, auth_routes,
+    webauthn as webauthn_router, security as security_router,
+)
 from app.services.net_worth_service import compute_net_worth, compute_net_worth_series
 from app.templating import templates
 
@@ -53,6 +56,8 @@ app.include_router(scheduled_payments.router)
 app.include_router(api.router)
 app.include_router(setup.router)
 app.include_router(auth_routes.router)
+app.include_router(webauthn_router.router)
+app.include_router(security_router.router)
 
 
 # ── Auth gate middleware ─────────────────────────────────────────────
@@ -60,7 +65,13 @@ app.include_router(auth_routes.router)
 # valid session cookie, or a Bearer token. /login, /setup, /static, and
 # /api/* are exempt from the redirect (API routes handle their own 401
 # via the get_current_user dependency).
-_PUBLIC_PATHS = ("/setup", "/login", "/logout", "/static", "/api/", "/favicon.ico")
+_PUBLIC_PATHS = (
+    "/setup", "/login", "/logout", "/static", "/api/", "/favicon.ico",
+    # WebAuthn login ceremony must be reachable for unauthenticated callers
+    # (the user is *trying* to sign in). Registration ceremony is gated by
+    # get_current_user inside the router and stays protected.
+    "/auth/webauthn/login/options", "/auth/webauthn/login/verify",
+)
 
 
 @app.middleware("http")

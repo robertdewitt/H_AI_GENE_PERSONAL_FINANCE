@@ -21,16 +21,87 @@
     </article>
     {% endif %}
 
-    <form method="post" action="/login">
+    <form id="loginForm" method="post" action="/login">
         <input type="hidden" name="return_to" value="{{ return_to }}">
         <label for="username">Username</label>
         <input type="text" id="username" name="username" required autocomplete="username">
 
-        <label for="password">Password</label>
-        <input type="password" id="password" name="password" required autocomplete="current-password">
+        <button type="button" id="passkeyBtn" style="margin-bottom:0.4rem;display:none;width:100%">
+            🔑 Sign in with a passkey
+        </button>
 
-        <button type="submit">Sign in</button>
+        <details>
+            <summary style="cursor:pointer">Sign in with a password</summary>
+            <label for="password" style="margin-top:0.4rem">Password</label>
+            <input type="password" id="password" name="password" autocomplete="current-password">
+            <button type="submit">Sign in</button>
+        </details>
     </form>
+
+<script>
+function b64urlToBytes(s) {
+    const pad = "=".repeat((4 - s.length % 4) % 4);
+    const bin = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
+    return Uint8Array.from(bin, c => c.charCodeAt(0));
+}
+function bytesToB64url(bytes) {
+    let bin = "";
+    new Uint8Array(bytes).forEach(b => bin += String.fromCharCode(b));
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+if (window.PublicKeyCredential) {
+    document.getElementById("passkeyBtn").style.display = "inline-block";
+}
+
+document.getElementById("passkeyBtn")?.addEventListener("click", async () => {
+    const username = document.getElementById("username").value.trim();
+    if (!username) { alert("Username required"); return; }
+
+    const optsResp = await fetch("/auth/webauthn/login/options", {
+        method: "POST",
+        body: new URLSearchParams({ username }),
+    });
+    if (!optsResp.ok) {
+        alert("Could not start passkey sign-in"); return;
+    }
+    const opts = await optsResp.json();
+    opts.challenge = b64urlToBytes(opts.challenge);
+    if (opts.allowCredentials) {
+        opts.allowCredentials.forEach(c => { c.id = b64urlToBytes(c.id); });
+    }
+
+    let cred;
+    try {
+        cred = await navigator.credentials.get({ publicKey: opts });
+    } catch (e) {
+        alert("Passkey sign-in cancelled: " + e.message); return;
+    }
+
+    const verifyResp = await fetch("/auth/webauthn/login/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            username,
+            return_to: {{ return_to | tojson }},
+            id:    cred.id,
+            rawId: bytesToB64url(cred.rawId),
+            type:  cred.type,
+            response: {
+                clientDataJSON:    bytesToB64url(cred.response.clientDataJSON),
+                authenticatorData: bytesToB64url(cred.response.authenticatorData),
+                signature:         bytesToB64url(cred.response.signature),
+                userHandle:        cred.response.userHandle ? bytesToB64url(cred.response.userHandle) : null,
+            },
+        }),
+    });
+    if (!verifyResp.ok) {
+        alert("Sign-in failed"); return;
+    }
+    const data = await verifyResp.json();
+    window.location.href = data.redirect || "/";
+});
+</script>
 </main>
 </body>
 </html>

@@ -18,7 +18,7 @@
     {% set INSIGHTS_PATHS = ["/net-worth", "/portfolio"] %}
     {% set DATA_PATHS     = ["/import", "/paychecks", "/valuations", "/categories",
                               "/transactions/duplicates", "/transactions/recover"] %}
-    {% set GEAR_PATHS     = ["/fx", "/settings"] %}
+    {% set GEAR_PATHS     = ["/fx", "/settings", "/settings/security"] %}
     {% macro nav_link(href, label) %}
         <a href="{{ href }}"{% if path == href or path.startswith(href + "/") %} aria-current="page"{% endif %}>{{ label }}</a>
     {% endmacro %}
@@ -72,8 +72,17 @@
                 <details class="dropdown{% if section_active(GEAR_PATHS) %} section-active{% endif %}" title="Configuration">
                     <summary aria-label="Settings">&#9881;</summary>
                     <ul dir="rtl">
-                        <li>{{ nav_link("/fx",       "FX Rates") }}</li>
-                        <li>{{ nav_link("/settings", "Settings") }}</li>
+                        <li>{{ nav_link("/fx",                "FX Rates") }}</li>
+                        <li>{{ nav_link("/settings",          "Settings") }}</li>
+                        <li>{{ nav_link("/settings/security", "Security &amp; passkeys") }}</li>
+                        <li style="border-top:1px solid var(--pico-muted-border-color);margin-top:0.25rem;padding-top:0.25rem">
+                            <form method="post" action="/logout" style="margin:0">
+                                <button type="submit" class="outline secondary"
+                                        style="border:none;background:transparent;padding:0.25rem 0.5rem;width:100%;text-align:left;color:inherit">
+                                    Sign out
+                                </button>
+                            </form>
+                        </li>
                     </ul>
                 </details>
             </li>

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.user import User
+from app.services.rate_limit import login_limiter
 from app.services.sessions import create_session, revoke_session
 from app.templating import templates
 
@@ -42,6 +43,17 @@ def login_submit(
 ):
     from argon2 import PasswordHasher
     from argon2.exceptions import VerifyMismatchError, InvalidHashError
+
+    # Rate limit: 10 attempts per 15 minutes per (IP, username) — both
+    # axes so one user's typo doesn't lock the whole network out.
+    client_ip = (request.client.host if request.client else "unknown")
+    rate_key = f"{client_ip}:{username.strip().lower()}"
+    if not login_limiter.hit(rate_key):
+        import urllib.parse as _u
+        return RedirectResponse(
+            url=f"/login?error={_u.quote('Too many attempts — try again later')}&return_to={_u.quote(return_to)}",
+            status_code=303,
+        )
 
     user = db.execute(
         select(User).where(User.username == username.strip()).limit(1)

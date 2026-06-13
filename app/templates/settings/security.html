@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}Security &mdash; Financial Hygiene{% endblock %}
+{% block content %}
+
+<hgroup>
+    <h1>Security</h1>
+    <p>Sign-in methods, API tokens for agents, and password.</p>
+</hgroup>
+
+{% if flash %}
+<article style="border-left:4px solid #16a34a;padding:0.5rem 1rem;margin-bottom:1rem">{{ flash }}</article>
+{% endif %}
+{% if error %}
+<article style="border-left:4px solid #dc2626;padding:0.5rem 1rem;margin-bottom:1rem">{{ error }}</article>
+{% endif %}
+
+{% if new_token %}
+<article style="border-left:4px solid #2563eb;padding:0.75rem 1rem;margin-bottom:1rem">
+    <strong>New API token (copy now — you won't see it again):</strong>
+    <pre style="background:#f3f4f6;padding:0.5rem 0.75rem;overflow-x:auto;margin:0.4rem 0 0 0"><code>{{ new_token }}</code></pre>
+    <small>Use as <code>Authorization: Bearer {{ new_token }}</code> against <code>/api/v1/*</code>.</small>
+</article>
+{% endif %}
+
+<h2>Passkeys</h2>
+<p style="color:var(--pico-muted-color);font-size:0.9rem">
+    Touch ID, Windows Hello, or your phone's biometrics. Register one per
+    device you sign in from. Removing the last passkey is blocked unless you
+    have a password set.
+</p>
+
+<button type="button" onclick="enrolPasskey()">Add a passkey</button>
+
+<table style="margin-top:1rem">
+    <thead>
+        <tr><th>Label</th><th>Added</th><th>Last used</th><th></th></tr>
+    </thead>
+    <tbody>
+    {% for p in passkeys %}
+    <tr>
+        <td>{{ p.label or "Passkey" }}</td>
+        <td>{{ p.created_at.strftime("%b %d, %Y") }}</td>
+        <td>{{ p.last_used_at.strftime("%b %d, %Y") if p.last_used_at else "never" }}</td>
+        <td>
+            <form method="post" action="/settings/security/passkey/{{ p.id }}/delete" style="margin:0">
+                <button type="submit" class="outline secondary" style="padding:0.2rem 0.6rem;margin:0">Remove</button>
+            </form>
+        </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" style="color:var(--pico-muted-color)">No passkeys registered yet.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<h2 style="margin-top:2rem">API tokens</h2>
+<p style="color:var(--pico-muted-color);font-size:0.9rem">
+    For agents/automation against <code>/api/v1/*</code>. Tokens are shown
+    once at creation, never again.
+</p>
+
+<form method="post" action="/settings/security/api-token/new" style="display:flex;gap:0.6rem;align-items:end">
+    <div style="flex:1">
+        <label for="label">Label</label>
+        <input type="text" id="label" name="label" placeholder="e.g. Claude agent" required>
+    </div>
+    <button type="submit">Mint token</button>
+</form>
+
+<table style="margin-top:1rem">
+    <thead>
+        <tr><th>Label</th><th>Created</th><th>Last used</th><th></th></tr>
+    </thead>
+    <tbody>
+    {% for t in tokens %}
+    <tr>
+        <td>{{ t.label }}</td>
+        <td>{{ t.created_at.strftime("%b %d, %Y") }}</td>
+        <td>{{ t.last_used_at.strftime("%b %d, %Y") if t.last_used_at else "never" }}</td>
+        <td>
+            <form method="post" action="/settings/security/api-token/{{ t.id }}/revoke" style="margin:0">
+                <button type="submit" class="outline secondary" style="padding:0.2rem 0.6rem;margin:0">Revoke</button>
+            </form>
+        </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" style="color:var(--pico-muted-color)">No active tokens.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<h2 style="margin-top:2rem">Password</h2>
+<form method="post" action="/settings/security/password" style="max-width:420px">
+    <label for="current_password">Current password</label>
+    <input type="password" id="current_password" name="current_password" required autocomplete="current-password">
+
+    <label for="new_password">New password</label>
+    <input type="password" id="new_password" name="new_password" required minlength="10" autocomplete="new-password">
+
+    <button type="submit">Change password</button>
+    <small>Changing your password signs out all sessions including this one.</small>
+</form>
+
+{% block scripts %}
+<script>
+// ── WebAuthn helpers ────────────────────────────────────────────────────
+function b64urlToBytes(s) {
+    const pad = "=".repeat((4 - s.length % 4) % 4);
+    const bin = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
+    return Uint8Array.from(bin, c => c.charCodeAt(0));
+}
+function bytesToB64url(bytes) {
+    let bin = "";
+    new Uint8Array(bytes).forEach(b => bin += String.fromCharCode(b));
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function enrolPasskey() {
+    if (!window.PublicKeyCredential) {
+        alert("WebAuthn is not supported in this browser.");
+        return;
+    }
+
+    const optsResp = await fetch("/auth/webauthn/register/options", {
+        method: "POST",
+    });
+    if (!optsResp.ok) {
+        alert("Could not request a registration challenge: " + optsResp.status);
+        return;
+    }
+    const opts = await optsResp.json();
+
+    // Convert the JSON-safe fields back to ArrayBuffers.
+    opts.challenge = b64urlToBytes(opts.challenge);
+    opts.user.id   = b64urlToBytes(opts.user.id);
+    if (opts.excludeCredentials) {
+        opts.excludeCredentials.forEach(c => { c.id = b64urlToBytes(c.id); });
+    }
+
+    let cred;
+    try {
+        cred = await navigator.credentials.create({ publicKey: opts });
+    } catch (e) {
+        alert("Passkey registration cancelled: " + e.message);
+        return;
+    }
+
+    const label = prompt("Label this passkey (e.g. 'MacBook Touch ID')", "Passkey");
+    const verifyResp = await fetch("/auth/webauthn/register/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            label: label || "Passkey",
+            id:    cred.id,
+            rawId: bytesToB64url(cred.rawId),
+            type:  cred.type,
+            response: {
+                attestationObject: bytesToB64url(cred.response.attestationObject),
+                clientDataJSON:    bytesToB64url(cred.response.clientDataJSON),
+            },
+        }),
+    });
+
+    if (!verifyResp.ok) {
+        const msg = await verifyResp.text();
+        alert("Registration verification failed: " + msg);
+        return;
+    }
+    location.reload();
+}
+</script>
+{% endblock %}
+{% endblock %}
