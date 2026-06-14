@@ -77,15 +77,38 @@ def _b64url_decode(value: str) -> bytes:
 # ── Registration ──────────────────────────────────────────────────────
 
 
+def _rp_id_from_origin(origin: str | None) -> str:
+    """Pick the WebAuthn rp_id from the request origin.
+
+    A passkey is bound to a specific hostname, and the browser refuses to
+    create or use one whose rp_id doesn't match the page it's on. We
+    therefore prefer the live request's hostname over any setting:
+
+    * ``http://localhost:8000`` → ``localhost``
+    * ``http://127.0.0.1:8000`` → ``127.0.0.1``
+    * ``https://finance.example.com`` → ``finance.example.com``
+
+    Falls back to ``settings.rp_id`` when no origin was passed (e.g. in
+    test code calling these helpers directly).
+    """
+    if not origin:
+        return settings.rp_id
+    from urllib.parse import urlparse
+    host = (urlparse(origin).hostname or "").strip()
+    return host or settings.rp_id
+
+
 def begin_registration(
     user_id: int,
     username: str,
     display_name: str,
     existing_credential_ids: list[bytes],
+    origin: str | None = None,
 ) -> dict:
     """Generate registration options for navigator.credentials.create()."""
+    rp_id = _rp_id_from_origin(origin)
     opts = generate_registration_options(
-        rp_id=settings.rp_id,
+        rp_id=rp_id,
         rp_name=settings.rp_name,
         user_id=str(user_id).encode("utf-8"),
         user_name=username,
@@ -110,6 +133,7 @@ def begin_registration(
 def finish_registration(
     user_id: int,
     credential_json: dict,
+    origin: str | None = None,
 ) -> dict:
     """Verify a navigator.credentials.create() response and return the
     fields needed to persist a WebAuthnCredential row.
@@ -118,11 +142,13 @@ def finish_registration(
     if challenge is None:
         raise ValueError("No pending registration challenge for this user")
 
+    rp_id = _rp_id_from_origin(origin)
+    expected_origin = origin or settings.rp_origin
     verification = verify_registration_response(
         credential=credential_json,
         expected_challenge=challenge,
-        expected_origin=settings.rp_origin,
-        expected_rp_id=settings.rp_id,
+        expected_origin=expected_origin,
+        expected_rp_id=rp_id,
     )
     return {
         "credential_id": verification.credential_id,
@@ -137,6 +163,7 @@ def finish_registration(
 def begin_authentication(
     username_key: str,
     allow_credential_ids: list[bytes],
+    origin: str | None = None,
 ) -> dict:
     """Generate authentication options keyed by ``username_key``.
 
@@ -145,8 +172,9 @@ def begin_authentication(
     which usernames exist, so the caller is expected to mint the same
     options regardless of whether the user is known.
     """
+    rp_id = _rp_id_from_origin(origin)
     opts = generate_authentication_options(
-        rp_id=settings.rp_id,
+        rp_id=rp_id,
         allow_credentials=[
             PublicKeyCredentialDescriptor(id=cid) for cid in allow_credential_ids
         ],
@@ -162,6 +190,7 @@ def finish_authentication(
     credential_json: dict,
     stored_public_key: bytes,
     stored_sign_count: int,
+    origin: str | None = None,
 ) -> int:
     """Verify a navigator.credentials.get() response.
 
@@ -173,11 +202,13 @@ def finish_authentication(
     if challenge is None:
         raise ValueError("No pending authentication challenge for this user")
 
+    rp_id = _rp_id_from_origin(origin)
+    expected_origin = origin or settings.rp_origin
     verification = verify_authentication_response(
         credential=credential_json,
         expected_challenge=challenge,
-        expected_origin=settings.rp_origin,
-        expected_rp_id=settings.rp_id,
+        expected_origin=expected_origin,
+        expected_rp_id=rp_id,
         credential_public_key=stored_public_key,
         credential_current_sign_count=stored_sign_count,
     )

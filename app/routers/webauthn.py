@@ -41,8 +41,19 @@ router = APIRouter(prefix="/auth/webauthn", tags=["auth"])
 # ── Registration (authenticated) ──────────────────────────────────────
 
 
+def _request_origin(request: Request) -> str:
+    """Reconstruct the origin the browser is actually using.
+
+    WebAuthn refuses to accept a credential whose rp_id doesn't match the
+    page's effective hostname. The request.url Starlette exposes carries
+    the right scheme + host + port because of TrustedHost/ProxyHeaders.
+    """
+    return f"{request.url.scheme}://{request.url.netloc}"
+
+
 @router.post("/register/options")
 def webauthn_register_options(
+    request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -55,11 +66,13 @@ def webauthn_register_options(
         username=user.username,
         display_name=user.display_name,
         existing_credential_ids=list(existing),
+        origin=_request_origin(request),
     ))
 
 
 @router.post("/register/verify")
 def webauthn_register_verify(
+    request: Request,
     body: dict[str, Any] = Body(...),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -72,7 +85,7 @@ def webauthn_register_verify(
     """
     label = body.pop("label", "Passkey") or "Passkey"
     try:
-        verified = finish_registration(user.id, body)
+        verified = finish_registration(user.id, body, origin=_request_origin(request))
     except Exception as exc:
         log.warning("WebAuthn registration verify failed: %s", exc)
         raise HTTPException(
@@ -98,6 +111,7 @@ def webauthn_register_verify(
 
 @router.post("/login/options")
 def webauthn_login_options(
+    request: Request,
     username: str = Form(...),
     db: Session = Depends(get_db),
 ):
@@ -121,11 +135,13 @@ def webauthn_login_options(
     return JSONResponse(begin_authentication(
         username_key=username.strip(),
         allow_credential_ids=cred_ids,
+        origin=_request_origin(request),
     ))
 
 
 @router.post("/login/verify")
 def webauthn_login_verify(
+    request: Request,
     body: dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
 ):
@@ -180,6 +196,7 @@ def webauthn_login_verify(
             credential_json=payload,
             stored_public_key=cred.public_key,
             stored_sign_count=cred.sign_count,
+            origin=_request_origin(request),
         )
     except Exception as exc:
         log.warning("WebAuthn login verify failed: %s", exc)
