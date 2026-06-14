@@ -30,6 +30,11 @@
             🔑 Sign in with a passkey
         </button>
 
+        <article id="passkeyHostWarning" style="display:none;border-left:4px solid #f59e0b;padding:0.5rem 0.75rem;margin:0 0 0.6rem 0;font-size:0.85rem">
+            Passkeys won't work on an IP address —
+            switch to <a id="localhostLink" href="#">http://localhost:…</a>.
+        </article>
+
         <details>
             <summary style="cursor:pointer">Sign in with a password</summary>
             <label for="password" style="margin-top:0.4rem">Password</label>
@@ -53,6 +58,27 @@ function bytesToB64url(bytes) {
 if (window.PublicKeyCredential) {
     document.getElementById("passkeyBtn").style.display = "inline-block";
 }
+
+// Warn (and hide the button) when the page is on an IP address —
+// browsers refuse IP-as-rp_id, so passkeys can't work here.
+(function () {
+    const host = location.hostname;
+    const isIp = /^\d+\.\d+\.\d+\.\d+$/.test(host) || host === "[::1]";
+    if (isIp) {
+        const btn = document.getElementById("passkeyBtn");
+        const banner = document.getElementById("passkeyHostWarning");
+        if (btn) btn.style.display = "none";
+        if (banner) banner.style.display = "block";
+        const link = document.getElementById("localhostLink");
+        if (link) {
+            const target = location.protocol + "//localhost" +
+                           (location.port ? ":" + location.port : "") +
+                           location.pathname + location.search;
+            link.href = target;
+            link.textContent = target;
+        }
+    }
+})();
 
 document.getElementById("passkeyBtn")?.addEventListener("click", async () => {
     const username = document.getElementById("username").value.trim();

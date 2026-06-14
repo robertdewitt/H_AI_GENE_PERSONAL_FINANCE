@@ -29,7 +29,16 @@
     have a password set.
 </p>
 
-<button type="button" onclick="enrolPasskey()">Add a passkey</button>
+{# Detect the IP-as-RP-ID problem and tell the user before they click. #}
+<article id="passkeyHostWarning"
+         style="display:none;border-left:4px solid #f59e0b;padding:0.6rem 1rem;margin-bottom:1rem">
+    <strong>Passkeys won't work on this URL.</strong>
+    Browsers refuse IP addresses as WebAuthn relying-party IDs.
+    Visit <a id="localhostLink" href="#">http://localhost:8000/settings/security</a>
+    (the literal hostname) instead.
+</article>
+
+<button type="button" id="addPasskeyBtn" onclick="enrolPasskey()">Add a passkey</button>
 
 <table style="margin-top:1rem">
     <thead>
@@ -114,6 +123,30 @@ function bytesToB64url(bytes) {
     new Uint8Array(bytes).forEach(b => bin += String.fromCharCode(b));
     return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
+
+// Show the IP-vs-localhost warning when applicable and disable the
+// enrol button so the user doesn't fight a doomed ceremony.
+(function () {
+    const host = location.hostname;
+    const isIp = /^\d+\.\d+\.\d+\.\d+$/.test(host) || host === "[::1]";
+    if (isIp) {
+        const banner = document.getElementById("passkeyHostWarning");
+        if (banner) banner.style.display = "block";
+        const link = document.getElementById("localhostLink");
+        if (link) {
+            const target = location.protocol + "//localhost" +
+                           (location.port ? ":" + location.port : "") +
+                           location.pathname + location.search;
+            link.href = target;
+            link.textContent = target;
+        }
+        const btn = document.getElementById("addPasskeyBtn");
+        if (btn) {
+            btn.disabled = true;
+            btn.title = "Switch to http://localhost:… to enrol a passkey.";
+        }
+    }
+})();
 
 async function enrolPasskey() {
     if (!window.PublicKeyCredential) {
