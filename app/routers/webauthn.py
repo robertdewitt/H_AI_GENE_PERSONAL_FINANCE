@@ -60,13 +60,19 @@ def webauthn_register_options(
 
 @router.post("/register/verify")
 def webauthn_register_verify(
-    payload: dict[str, Any] = Body(...),
-    label: str = Body("Passkey"),
+    body: dict[str, Any] = Body(...),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """Verify a navigator.credentials.create() response.
+
+    The browser sends a single flat JSON: {label, id, rawId, type, response: {...}}.
+    We split the credential payload from the label so py_webauthn sees the
+    shape it expects.
+    """
+    label = body.pop("label", "Passkey") or "Passkey"
     try:
-        verified = finish_registration(user.id, payload)
+        verified = finish_registration(user.id, body)
     except Exception as exc:
         log.warning("WebAuthn registration verify failed: %s", exc)
         raise HTTPException(
@@ -79,7 +85,7 @@ def webauthn_register_verify(
         credential_id=verified["credential_id"],
         public_key=verified["public_key"],
         sign_count=verified["sign_count"],
-        label=label or "Passkey",
+        label=label,
     )
     db.add(cred)
     db.commit()
@@ -120,13 +126,26 @@ def webauthn_login_options(
 
 @router.post("/login/verify")
 def webauthn_login_verify(
-    payload: dict[str, Any] = Body(...),
-    username: str = Body(...),
-    return_to: str = Body("/"),
+    body: dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
 ):
+    """Verify navigator.credentials.get() and issue a session cookie.
+
+    Browser sends a single flat JSON with username + return_to + the WebAuthn
+    credential payload. We split out the wrapping fields and hand the rest
+    to py_webauthn.
+    """
+    username = (body.pop("username", "") or "").strip()
+    return_to = body.pop("return_to", "/") or "/"
+    payload = body
+
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Username required",
+        )
+
     user = db.execute(
-        select(User).where(User.username == username.strip()).limit(1)
+        select(User).where(User.username == username).limit(1)
     ).scalar_one_or_none()
     if user is None:
         raise HTTPException(
@@ -157,7 +176,7 @@ def webauthn_login_verify(
 
     try:
         new_count = finish_authentication(
-            username_key=username.strip(),
+            username_key=username,
             credential_json=payload,
             stored_public_key=cred.public_key,
             stored_sign_count=cred.sign_count,
