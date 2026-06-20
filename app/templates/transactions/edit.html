@@ -180,7 +180,33 @@
         tbody.appendChild(rowTemplate({ amount: isNaN(a) ? '' : a, category_id: defaultCatId, notes: '' }));
         serialize();
     });
-    document.getElementById('edit-txn-form').addEventListener('submit', serialize);
+
+    // Auto-sync the single default split when the user edits the amount.
+    // Common case: a transaction was imported with the wrong sign, the user
+    // edits Amount from -50 to +50, but the hidden splits_json still carries
+    // the old -50 and the server rejects the save with "splits don't sum".
+    // When there's exactly one split row, mirror the new amount onto it so
+    // the invariant stays satisfied without the user touching splits.
+    amountInput.addEventListener('input', () => {
+        const rows = tbody.querySelectorAll('tr');
+        if (rows.length === 1) {
+            const splitInput = rows[0].querySelector('.split-amt');
+            if (splitInput) {
+                splitInput.value = amountInput.value;
+            }
+        }
+        serialize();
+    });
+    document.getElementById('edit-txn-form').addEventListener('submit', () => {
+        // Belt-and-braces: snap the single split to the amount one more time
+        // at submit so any in-flight edits the input event missed still pass.
+        const rows = tbody.querySelectorAll('tr');
+        if (rows.length === 1) {
+            const splitInput = rows[0].querySelector('.split-amt');
+            if (splitInput) splitInput.value = amountInput.value;
+        }
+        serialize();
+    });
 
     render();
 })();
