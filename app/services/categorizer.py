@@ -259,16 +259,31 @@ def learn_from_correction(
         cat = db.get(_Cat, category_id)
         user_id = cat.user_id if cat is not None else None
 
-    existing = db.execute(
+    # A user's correction is authoritative for the pattern — one pattern
+    # maps to one category, full stop. Look up *every* rule for this
+    # (pattern, user) regardless of which category it currently points
+    # at, re-point the most useful one to the new category, and delete
+    # any leftover duplicates. The previous behaviour filtered the
+    # lookup by the new category_id, which meant a pre-existing rule
+    # pointing to a *wrong* category was never updated — just
+    # shadow-duplicated by a new correctly-pointed row, with the old
+    # row continuing to win on future imports (FREENOW bug).
+    existing_rules = db.execute(
         select(CategoryRule).where(
             CategoryRule.pattern == pattern,
-            CategoryRule.category_id == category_id,
             CategoryRule.user_id == user_id,
-        )
-    ).scalar_one_or_none()
+        ).order_by(CategoryRule.hit_count.desc(), CategoryRule.id.asc())
+    ).scalars().all()
 
-    if existing:
-        existing.hit_count += 1
+    if existing_rules:
+        # Preserve the strongest rule's hit_count history; re-point it
+        # at the new category, then delete any siblings.
+        existing = existing_rules[0]
+        existing.category_id = category_id
+        existing.source = "user_correction"
+        existing.hit_count = (existing.hit_count or 0) + 1
+        for stale in existing_rules[1:]:
+            db.delete(stale)
     else:
         existing = CategoryRule(
             pattern=pattern,
