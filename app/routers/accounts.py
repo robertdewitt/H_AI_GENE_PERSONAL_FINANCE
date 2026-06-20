@@ -117,6 +117,7 @@ def accounts_list(
     else:
         _ym = sa_func.strftime("%Y-%m", Transaction.date)
 
+    # Expenses: negative non-transfer transactions, grouped by month + category.
     monthly_rows = db.execute(
         sa_select(
             _ym.label("month"),
@@ -134,38 +135,79 @@ def accounts_list(
         .order_by("month", Category.name)
     ).all()
 
-    months_ordered = sorted({r.month for r in monthly_rows})
-    cat_totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0.00"))
-    spend_map: dict[str, dict[str, Decimal]] = defaultdict(
-        lambda: defaultdict(lambda: Decimal("0.00"))
-    )
-    for r in monthly_rows:
-        amt = abs(r.total or Decimal("0.00"))
-        spend_map[r.month][r.category] = amt
-        cat_totals[r.category] += amt
+    # Income: positive non-transfer transactions on *asset* accounts only.
+    # Excluding liability accounts (credit cards, loans) keeps a refund
+    # or balance-transfer credit out of the income totals — those aren't
+    # money the household actually earned.
+    from app.models.account import Account as _Acct
+    income_rows = db.execute(
+        sa_select(
+            _ym.label("month"),
+            Category.name.label("category"),
+            sa_func.sum(Transaction.amount).label("total"),
+        )
+        .join(Category, Transaction.category_id == Category.id)
+        .join(_Acct, _Acct.id == Transaction.account_id)
+        .where(
+            Transaction.amount > 0,
+            Transaction.is_transfer.is_(False),
+            _Acct.is_asset.is_(True),
+            sa_func.lower(Category.name) != "account transfer",
+            Transaction.date >= since,
+        )
+        .group_by("month", Category.name)
+        .order_by("month", Category.name)
+    ).all()
 
-    sorted_cats = sorted(cat_totals, key=lambda c: cat_totals[c], reverse=True)
+    months_ordered = sorted(
+        {r.month for r in monthly_rows} | {r.month for r in income_rows}
+    )
+
+    def _build_series(rows):
+        cat_totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0.00"))
+        per_month: dict[str, dict[str, Decimal]] = defaultdict(
+            lambda: defaultdict(lambda: Decimal("0.00"))
+        )
+        for r in rows:
+            amt = abs(r.total or Decimal("0.00"))
+            per_month[r.month][r.category] = amt
+            cat_totals[r.category] += amt
+        return per_month, cat_totals
+
+    spend_map, spend_totals  = _build_series(monthly_rows)
+    income_map, income_totals = _build_series(income_rows)
+    sorted_spend_cats  = sorted(spend_totals,  key=lambda c: spend_totals[c],  reverse=True)
+    sorted_income_cats = sorted(income_totals, key=lambda c: income_totals[c], reverse=True)
 
     _COLORS = [
         "#2563eb", "#16a34a", "#f59e0b", "#8b5cf6", "#ec4899",
         "#06b6d4", "#84cc16", "#f97316", "#ef4444", "#6366f1",
         "#14b8a6", "#d946ef", "#fb923c", "#a3e635", "#38bdf8", "#818cf8",
     ]
-    spend_labels = []
+    spend_labels: list[str] = []
     for m in months_ordered:
         try:
             spend_labels.append(datetime.strptime(m, "%Y-%m").strftime("%b %Y"))
         except ValueError:
             spend_labels.append(m)
+    # Income shares the same X axis so the bars line up month-for-month.
+    income_labels = spend_labels
 
-    spend_datasets = [
-        {
-            "label": cat,
-            "data": [round(float(spend_map[m].get(cat, Decimal("0.00"))), 2) for m in months_ordered],
-            "backgroundColor": _COLORS[i % len(_COLORS)],
-        }
-        for i, cat in enumerate(sorted_cats)
-    ]
+    def _datasets(per_month, sorted_cats):
+        return [
+            {
+                "label": cat,
+                "data": [
+                    round(float(per_month[m].get(cat, Decimal("0.00"))), 2)
+                    for m in months_ordered
+                ],
+                "backgroundColor": _COLORS[i % len(_COLORS)],
+            }
+            for i, cat in enumerate(sorted_cats)
+        ]
+
+    spend_datasets  = _datasets(spend_map,  sorted_spend_cats)
+    income_datasets = _datasets(income_map, sorted_income_cats)
 
     return templates.TemplateResponse(request, "accounts/list.html", {
         "groups": groups,
@@ -175,8 +217,10 @@ def accounts_list(
         "display_currency": display_ccy,
         "preset": preset,
         "presets": _SPEND_PRESETS,
-        "spend_labels": spend_labels,
+        "spend_labels":   spend_labels,
         "spend_datasets": spend_datasets,
+        "income_labels":   income_labels,
+        "income_datasets": income_datasets,
     })
 
 
