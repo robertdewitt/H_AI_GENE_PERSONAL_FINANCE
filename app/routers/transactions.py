@@ -384,7 +384,11 @@ def transaction_update(
     txn.category_id = new_cat_id
 
     if new_cat_id and new_cat_id != old_category_id:
-        learn_from_correction(db, description, new_cat_id)
+        # Teach the rule for future imports but leave any existing rows
+        # alone — the user came here to fix one transaction, not to
+        # retroactively re-write history. The bulk "apply rule to all"
+        # action below still propagates when the user asks for it.
+        learn_from_correction(db, description, new_cat_id, apply_to_history=False)
 
     if splits_json.strip() and lines is not None:
         val = replace_transaction_splits(db, txn_id, lines)

@@ -236,13 +236,22 @@ def learn_from_correction(
     description: str,
     category_id: int,
     user_id: int | None = None,
+    apply_to_history: bool = True,
 ) -> tuple[CategoryRule, int]:
-    """Store a user's category correction as a learned rule AND retroactively
-    update all existing transactions whose description matches.
+    """Store a user's category correction as a learned rule and, when
+    ``apply_to_history`` is True, retroactively update every existing
+    transaction whose description matches.
 
     Uses two strategies for retroactive updates:
     1. Exact match on the original description (case-insensitive)
     2. Fuzzy match via the extracted pattern (handles whitespace differences)
+
+    Set ``apply_to_history=False`` to scope the change to *this one
+    transaction* — the rule still updates so future imports route to the
+    new category, but no other rows are touched. That's the right
+    default for the single-transaction edit form, where the user often
+    only wants to correct the row in front of them. Bulk-categorise and
+    explicit "apply rule to history" actions keep the default of True.
 
     The rule is attributed to ``user_id`` so each user gets their own
     independent rule set. When not supplied we fall back to the category's
@@ -294,7 +303,9 @@ def learn_from_correction(
         db.add(existing)
     db.flush()
 
-    count = _apply_to_matching_transactions(db, description, pattern, category_id)
+    count = 0
+    if apply_to_history:
+        count = _apply_to_matching_transactions(db, description, pattern, category_id)
 
     return existing, count
 
