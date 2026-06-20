@@ -481,6 +481,19 @@ def confirm_import(
                 from datetime import datetime as _dt
                 from decimal import Decimal as _Dec
                 cc_meta = extract_cc_metadata(filepath) or {}
+                # Fall through to UK HP loan extraction when the file isn't
+                # a credit-card statement — covers Black Horse / Tesla
+                # Finance and similar lender PDFs the CC regex doesn't fit.
+                if not cc_meta.get("new_balance"):
+                    from app.services.pdf_import import extract_loan_metadata
+                    loan_meta = extract_loan_metadata(filepath) or {}
+                    for k in (
+                        "new_balance", "previous_balance",
+                        "statement_date", "interest_rate",
+                        "amount_of_credit",
+                    ):
+                        if k in loan_meta and loan_meta[k] is not None:
+                            cc_meta.setdefault(k, loan_meta[k])
                 new_bal  = cc_meta.get("new_balance")
                 prev_bal = cc_meta.get("previous_balance")
                 stmt_date = cc_meta.get("statement_date")
@@ -488,6 +501,8 @@ def confirm_import(
                 min_pay   = cc_meta.get("minimum_payment")
                 plan_due  = cc_meta.get("plan_it_due")
                 plan_out  = cc_meta.get("plan_it_outstanding")
+                loan_rate = cc_meta.get("interest_rate")
+                loan_principal = cc_meta.get("amount_of_credit")
 
                 # 1) Persist balance + snapshot whenever we can extract them.
                 if new_bal is not None:
@@ -498,6 +513,17 @@ def confirm_import(
                     account.statement_balance = new_bal
                     account.statement_balance_as_of = stmt_dt
                     account.balance_truth_source = "latest_statement"
+
+                    # Loan PDFs also report the original principal and APR.
+                    # Persist them so the account detail page can show the
+                    # term structure without the user re-entering it.
+                    if loan_rate is not None and account.interest_rate is None:
+                        account.interest_rate = loan_rate
+                    if (
+                        loan_principal is not None
+                        and account.original_principal_balance is None
+                    ):
+                        account.original_principal_balance = _Dec(str(loan_principal))
 
                     # Upsert a snapshot for this (account, as_of_date)
                     existing_snap = db.execute(

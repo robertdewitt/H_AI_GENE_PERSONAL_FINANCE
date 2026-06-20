@@ -51,6 +51,17 @@ def pdf_to_dataframe(filepath: str) -> pd.DataFrame:
                 log.info("Amex UK statement: %d transactions", len(df))
                 return df
 
+        # Attempt 1c: UK hire-purchase loan statement (Black Horse / Tesla
+        # finance). Single table per page, "OPENING BALANCE" + N direct-
+        # debit rows + "Balance as at <date>" footer. Table extraction
+        # collapses the columns into newline-joined strings; parse the
+        # text form directly.
+        if _is_uk_hp_loan_statement(full_text):
+            df = _parse_uk_hp_loan_transactions(full_text)
+            if df is not None and len(df) > 0:
+                log.info("UK HP loan statement: %d transactions", len(df))
+                return df
+
         # Attempt 2: proper table extraction
         df = _extract_tables(pdf)
         if df is not None and len(df) >= 2:
@@ -164,6 +175,76 @@ def _parse_amex_uk_transactions(text: str) -> pd.DataFrame | None:
 
 
 _CURRENCY_SYMBOLS = "$£€¥"
+
+
+# ── UK hire-purchase loan statement parser (Black Horse / Tesla finance) ────
+
+
+_UK_HP_TXN_RE = re.compile(
+    # 23/08/2024  DIRECT DEBIT PAYMENT  525.64CR
+    # 05/08/2024  OPENING BALANCE       38317.68
+    r"^(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(-?[\d,]+\.\d{2})(CR)?\s*$"
+)
+
+
+def _is_uk_hp_loan_statement(text: str) -> bool:
+    """Detect a UK hire-purchase / conditional-sale loan statement.
+
+    Anchors on the signature phrasing common to Black Horse-style PDFs
+    (the lender that finances Tesla UK / Lloyds Banking Group loans).
+    """
+    head = text[:5000].lower()
+    return (
+        ("hire purchase agreement" in head or "hirepurchaseagreement" in head)
+        and "amount of credit" in head.replace("amountofcredit", "amount of credit")
+    )
+
+
+def _parse_uk_hp_loan_transactions(text: str) -> "pd.DataFrame | None":
+    """Parse the transaction lines out of a UK HP loan statement.
+
+    Lines look like:
+        DD/MM/YYYY  DESCRIPTION  AMOUNT[CR]
+
+    ``CR`` means the row is a credit to the loan (a payment that reduces
+    the outstanding balance). In the liability-account sign convention
+    used elsewhere in the app, payments are stored as **negative**
+    amounts — so ``CR`` rows become ``-AMOUNT``.
+
+    Opening / closing balance rows are skipped: they're not customer
+    transactions, they're statement metadata. They're consumed instead
+    by :func:`extract_loan_metadata`.
+    """
+    rows: list[dict] = []
+    skip_phrases = ("opening balance", "balance as at", "balance b/f")
+
+    for line in text.splitlines():
+        line = line.strip()
+        m = _UK_HP_TXN_RE.match(line)
+        if not m:
+            continue
+        date_str, desc, amt_str, cr_flag = m.groups()
+        desc = desc.strip()
+        if desc.lower() in skip_phrases or "opening balance" in desc.lower():
+            continue
+        try:
+            dt = datetime.strptime(date_str, "%d/%m/%Y")
+        except ValueError:
+            continue
+        amount = _parse_signed_amount(amt_str)
+        if amount is None:
+            continue
+        if cr_flag:
+            amount = -amount  # CR = credit / payment in liability terms
+        rows.append({
+            "date": dt.strftime("%Y-%m-%d"),
+            "description": desc,
+            "amount": amount,
+        })
+
+    if not rows:
+        return None
+    return pd.DataFrame(rows)
 
 
 def _parse_signed_amount(raw: str) -> float | None:
@@ -421,6 +502,85 @@ def extract_cc_metadata(filepath: str) -> dict | None:
                     pass
 
     return result if result else None
+
+
+def extract_loan_metadata(filepath: str) -> dict | None:
+    """Pull the balance / period / agreement fields off a UK HP loan PDF.
+
+    Returns ``{"new_balance": float, "previous_balance": float | None,
+    "statement_date": date | None, "amount_of_credit": float | None,
+    "duration_months": int | None, "interest_rate": float | None,
+    "agreement_number": str | None}`` or ``None`` if the file doesn't
+    look like a loan statement.
+
+    Balances follow the liability sign convention: positive = amount
+    still owed.
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        return None
+
+    try:
+        with pdfplumber.open(filepath) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages[:3])
+    except Exception:
+        return None
+
+    if not _is_uk_hp_loan_statement(text):
+        return None
+
+    out: dict = {}
+
+    # Closing balance: "Balance as at 3rd August 2025 £32010.00"
+    m = re.search(
+        r"balance\s*as\s*at\s+([\d]{1,2}[a-zA-Z]{0,2}\s+[A-Za-z]+\s+\d{4})"
+        r"\s*£?\s*([\d,]+\.\d{2})",
+        text, re.I,
+    )
+    if m:
+        out["new_balance"] = _parse_signed_amount(m.group(2))
+        # Parse the "3rd August 2025" date — strip the ordinal suffix first.
+        raw_date = re.sub(r"(\d+)(st|nd|rd|th)", r"\1", m.group(1))
+        for fmt in ("%d %B %Y", "%d %b %Y"):
+            try:
+                out["statement_date"] = datetime.strptime(raw_date, fmt).date()
+                break
+            except ValueError:
+                pass
+
+    # Opening balance: line ending in "OPENING BALANCE <amount>"
+    m = re.search(
+        r"\d{2}/\d{2}/\d{4}\s+OPENING\s+BALANCE\s+([\d,]+\.\d{2})",
+        text, re.I,
+    )
+    if m:
+        out["previous_balance"] = _parse_signed_amount(m.group(1))
+
+    # Amount of Credit: original loan principal
+    m = re.search(r"amount\s*of\s*credit[^\d£-]{0,40}£?\s*([\d,]+\.\d{2})", text, re.I)
+    if m:
+        out["amount_of_credit"] = _parse_signed_amount(m.group(1))
+
+    # Duration / interest / agreement number — informational, surfaced
+    # so the user can sanity-check the import banner.
+    m = re.search(r"duration\s*of\s*your\s*agreement[^\d]{0,40}(\d{1,3})", text, re.I)
+    if m:
+        out["duration_months"] = int(m.group(1))
+
+    m = re.search(r"interest\s*rate\s*per\s*annum[^\d]{0,20}(\d+\.?\d*)\s*%", text, re.I)
+    if m:
+        out["interest_rate"] = float(m.group(1)) / 100.0
+
+    m = re.search(
+        r"hire\s*purchase\s*agreement\s*number\s*[:\s]*([\d]+)",
+        text.replace("HirePurchaseAgreementNumber", "Hire Purchase Agreement Number"),
+        re.I,
+    )
+    if m:
+        out["agreement_number"] = m.group(1)
+
+    return out if out else None
 
 
 def extract_overdraft_facility(filepath: str) -> dict | None:
