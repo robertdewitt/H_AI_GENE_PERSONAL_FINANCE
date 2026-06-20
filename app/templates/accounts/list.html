@@ -37,13 +37,44 @@
        class="{{ '' if preset == p else 'outline' }}">{{ label }}</a>
     {% endfor %}
 </div>
-<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:1.25rem;margin-bottom:2rem">
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:1.25rem;margin-bottom:1rem">
     {% if income_datasets %}
     <div>
         <h2 style="margin:0 0 0.5rem 0;font-size:1.15rem;color:#16a34a">Income by Category</h2>
         <div class="chart-container" style="height:340px">
             <canvas id="incomeChart"></canvas>
         </div>
+        <details open style="margin-top:0.75rem">
+            <summary style="cursor:pointer;font-size:0.9rem;color:var(--pico-muted-color)">
+                Period totals
+                &mdash; <strong style="color:#16a34a">+{{ sym }}{{ "{:,.2f}".format(income_total_period) }}</strong>
+            </summary>
+            <table class="striped" style="margin:0.5rem 0 0 0;font-size:0.88rem">
+                <thead>
+                    <tr>
+                        <th style="text-align:left">Category</th>
+                        <th style="text-align:right">Total</th>
+                        <th style="text-align:right;width:5rem">%</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for row in income_breakdown %}
+                    <tr>
+                        <td>{{ row.category }}</td>
+                        <td style="text-align:right;white-space:nowrap">{{ sym }}{{ "{:,.2f}".format(row.total) }}</td>
+                        <td style="text-align:right">{{ "{:.1f}".format(row.pct) }}%</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+                <tfoot>
+                    <tr style="font-weight:700">
+                        <td>Total</td>
+                        <td style="text-align:right;white-space:nowrap;color:#16a34a">+{{ sym }}{{ "{:,.2f}".format(income_total_period) }}</td>
+                        <td></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </details>
     </div>
     {% endif %}
     {% if spend_datasets %}
@@ -52,9 +83,52 @@
         <div class="chart-container" style="height:340px">
             <canvas id="spendChart"></canvas>
         </div>
+        <details open style="margin-top:0.75rem">
+            <summary style="cursor:pointer;font-size:0.9rem;color:var(--pico-muted-color)">
+                Period totals
+                &mdash; <strong style="color:#dc2626">&minus;{{ sym }}{{ "{:,.2f}".format(spend_total_period) }}</strong>
+            </summary>
+            <table class="striped" style="margin:0.5rem 0 0 0;font-size:0.88rem">
+                <thead>
+                    <tr>
+                        <th style="text-align:left">Category</th>
+                        <th style="text-align:right">Total</th>
+                        <th style="text-align:right;width:5rem">%</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for row in spend_breakdown %}
+                    <tr>
+                        <td>{{ row.category }}</td>
+                        <td style="text-align:right;white-space:nowrap">{{ sym }}{{ "{:,.2f}".format(row.total) }}</td>
+                        <td style="text-align:right">{{ "{:.1f}".format(row.pct) }}%</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+                <tfoot>
+                    <tr style="font-weight:700">
+                        <td>Total</td>
+                        <td style="text-align:right;white-space:nowrap;color:#dc2626">&minus;{{ sym }}{{ "{:,.2f}".format(spend_total_period) }}</td>
+                        <td></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </details>
     </div>
     {% endif %}
 </div>
+
+{# Net for the period across the two — gives a single number you can
+   eyeball to know whether income covered expenses in the window. #}
+{% if income_datasets or spend_datasets %}
+<p style="margin:0 0 2rem 0;font-size:0.95rem">
+    <strong>Net for selected period:</strong>
+    <span style="color:{{ '#16a34a' if net_period >= 0 else '#dc2626' }};font-weight:700">
+        {{ '+' if net_period >= 0 else '&minus;' | safe }}{{ sym }}{{ "{:,.2f}".format(net_period|abs) }}
+    </span>
+    <small style="color:var(--pico-muted-color)">(income minus expenses, transfers excluded)</small>
+</p>
+{% endif %}
 {% endif %}
 
 {% if groups %}

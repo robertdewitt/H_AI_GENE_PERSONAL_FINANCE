@@ -209,6 +209,25 @@ def accounts_list(
     spend_datasets  = _datasets(spend_map,  sorted_spend_cats)
     income_datasets = _datasets(income_map, sorted_income_cats)
 
+    # Per-category period totals for the summary tables under each chart.
+    def _category_breakdown(totals, sorted_cats):
+        grand = sum(totals.values(), Decimal("0.00"))
+        rows = [
+            {
+                "category": cat,
+                "total": round(totals[cat], 2),
+                "pct": (
+                    round(float(totals[cat] / grand * 100), 1)
+                    if grand else 0.0
+                ),
+            }
+            for cat in sorted_cats
+        ]
+        return rows, round(grand, 2)
+
+    spend_breakdown,  spend_total_period  = _category_breakdown(spend_totals,  sorted_spend_cats)
+    income_breakdown, income_total_period = _category_breakdown(income_totals, sorted_income_cats)
+
     return templates.TemplateResponse(request, "accounts/list.html", {
         "groups": groups,
         "total_assets": total_assets,
@@ -221,6 +240,11 @@ def accounts_list(
         "spend_datasets": spend_datasets,
         "income_labels":   income_labels,
         "income_datasets": income_datasets,
+        "spend_breakdown":      spend_breakdown,
+        "income_breakdown":     income_breakdown,
+        "spend_total_period":   spend_total_period,
+        "income_total_period":  income_total_period,
+        "net_period": income_total_period - spend_total_period,
     })
 
 
