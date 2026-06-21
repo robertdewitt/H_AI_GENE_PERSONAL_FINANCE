@@ -118,6 +118,19 @@ def accounts_list(
         _ym = sa_func.strftime("%Y-%m", Transaction.date)
 
     # Expenses: negative non-transfer transactions, grouped by month + category.
+    # Special-case: mortgage / loan payments often land categorised as
+    # "Account Transfer" (because they move money between owned entities)
+    # but they're cash that left the household for the period — include
+    # them if the description hits a mortgage/loan keyword so the totals
+    # match the user's real outflow.
+    from sqlalchemy import and_ as _and, or_ as _or
+    _LOAN_DESC_KEYWORDS = (
+        "mortgage", "mortgagemain", "mtg", "blackhorse", "black horse",
+    )
+    _loan_desc_filter = _or(*(
+        sa_func.lower(Transaction.description).like(f"%{kw}%")
+        for kw in _LOAN_DESC_KEYWORDS
+    ))
     monthly_rows = db.execute(
         sa_select(
             _ym.label("month"),
@@ -127,8 +140,16 @@ def accounts_list(
         .join(Category, Transaction.category_id == Category.id)
         .where(
             Transaction.amount < 0,
-            Transaction.is_transfer.is_(False),
-            sa_func.lower(Category.name) != "account transfer",
+            _or(
+                _and(
+                    Transaction.is_transfer.is_(False),
+                    sa_func.lower(Category.name) != "account transfer",
+                ),
+                # Money to a mortgage/loan counts as an expense outflow
+                # even when the category or is_transfer flag suggests
+                # otherwise.
+                _loan_desc_filter,
+            ),
             Transaction.date >= since,
         )
         .group_by("month", Category.name)
@@ -209,8 +230,27 @@ def accounts_list(
     spend_datasets  = _datasets(spend_map,  sorted_spend_cats)
     income_datasets = _datasets(income_map, sorted_income_cats)
 
+    # Classify expense categories as essential (non-discretionary) vs
+    # discretionary. Heuristic for now — applied to the category name.
+    # If the user wants a different split they can rename the category or
+    # we can later add an explicit Category.is_essential flag.
+    _ESSENTIAL_KEYWORDS = (
+        "rent", "mortgage", "loan", "council tax", "tax",
+        "insurance", "utility", "utilities", "electric", "gas bill",
+        "water", "sewage", "healthcare", "medical", "doctor", "dentist",
+        "prescription", "school", "education", "childcare", "daycare",
+        "internet", "phone bill", "broadband", "fuel", "petrol",
+        "transit", "transport", "groceries",
+    )
+
+    def _is_essential(category_name: str | None) -> bool:
+        if not category_name:
+            return False
+        cl = category_name.lower()
+        return any(kw in cl for kw in _ESSENTIAL_KEYWORDS)
+
     # Per-category period totals for the summary tables under each chart.
-    def _category_breakdown(totals, sorted_cats):
+    def _category_breakdown(totals, sorted_cats, mark_essential=False):
         grand = sum(totals.values(), Decimal("0.00"))
         rows = [
             {
@@ -220,13 +260,28 @@ def accounts_list(
                     round(float(totals[cat] / grand * 100), 1)
                     if grand else 0.0
                 ),
+                "essential": _is_essential(cat) if mark_essential else None,
             }
             for cat in sorted_cats
         ]
         return rows, round(grand, 2)
 
-    spend_breakdown,  spend_total_period  = _category_breakdown(spend_totals,  sorted_spend_cats)
-    income_breakdown, income_total_period = _category_breakdown(income_totals, sorted_income_cats)
+    spend_breakdown,  spend_total_period  = _category_breakdown(
+        spend_totals,  sorted_spend_cats, mark_essential=True,
+    )
+    income_breakdown, income_total_period = _category_breakdown(
+        income_totals, sorted_income_cats,
+    )
+
+    # Essential vs discretionary subtotals for the expense side.
+    essential_total = sum(
+        (row["total"] for row in spend_breakdown if row["essential"]),
+        Decimal("0.00"),
+    )
+    discretionary_total = sum(
+        (row["total"] for row in spend_breakdown if not row["essential"]),
+        Decimal("0.00"),
+    )
 
     return templates.TemplateResponse(request, "accounts/list.html", {
         "groups": groups,
@@ -244,6 +299,8 @@ def accounts_list(
         "income_breakdown":     income_breakdown,
         "spend_total_period":   spend_total_period,
         "income_total_period":  income_total_period,
+        "essential_total":      round(essential_total, 2),
+        "discretionary_total":  round(discretionary_total, 2),
         "net_period": income_total_period - spend_total_period,
     })
 

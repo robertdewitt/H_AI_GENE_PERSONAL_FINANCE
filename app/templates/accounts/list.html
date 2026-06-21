@@ -57,7 +57,7 @@
                         <th style="text-align:right;width:5rem">%</th>
                     </tr>
                 </thead>
-                <tbody>
+                <tbody class="income-breakdown">
                 {% for row in income_breakdown %}
                     <tr>
                         <td>{{ row.category }}</td>
@@ -88,10 +88,25 @@
                 Period totals
                 &mdash; <strong style="color:#dc2626">&minus;{{ sym }}{{ "{:,.2f}".format(spend_total_period) }}</strong>
             </summary>
+
+            {# Essential / discretionary subtotals at the top — the
+               headline budgeting answer the user came here to see. #}
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin:0.6rem 0 0.4rem 0;font-size:0.85rem">
+                <div style="background:#fee2e2;padding:0.35rem 0.6rem;border-radius:6px">
+                    <div style="color:#7f1d1d;font-size:0.78rem">Essential (non-discretionary)</div>
+                    <strong style="color:#991b1b">&minus;{{ sym }}{{ "{:,.2f}".format(essential_total) }}</strong>
+                </div>
+                <div style="background:#fef3c7;padding:0.35rem 0.6rem;border-radius:6px">
+                    <div style="color:#78350f;font-size:0.78rem">Discretionary</div>
+                    <strong style="color:#92400e">&minus;{{ sym }}{{ "{:,.2f}".format(discretionary_total) }}</strong>
+                </div>
+            </div>
+
             <table class="striped" style="margin:0.5rem 0 0 0;font-size:0.88rem">
                 <thead>
                     <tr>
                         <th style="text-align:left">Category</th>
+                        <th style="width:5rem">Type</th>
                         <th style="text-align:right">Total</th>
                         <th style="text-align:right;width:5rem">%</th>
                     </tr>
@@ -100,6 +115,13 @@
                 {% for row in spend_breakdown %}
                     <tr>
                         <td>{{ row.category }}</td>
+                        <td>
+                            {% if row.essential %}
+                            <span style="background:#fee2e2;color:#991b1b;padding:0.1rem 0.45rem;border-radius:999px;font-size:0.72rem;white-space:nowrap">Essential</span>
+                            {% else %}
+                            <span style="background:#fef3c7;color:#92400e;padding:0.1rem 0.45rem;border-radius:999px;font-size:0.72rem;white-space:nowrap">Discretionary</span>
+                            {% endif %}
+                        </td>
                         <td style="text-align:right;white-space:nowrap">{{ sym }}{{ "{:,.2f}".format(row.total) }}</td>
                         <td style="text-align:right">{{ "{:.1f}".format(row.pct) }}%</td>
                     </tr>
@@ -107,7 +129,7 @@
                 </tbody>
                 <tfoot>
                     <tr style="font-weight:700">
-                        <td>Total</td>
+                        <td colspan="2">Total</td>
                         <td style="text-align:right;white-space:nowrap;color:#dc2626">&minus;{{ sym }}{{ "{:,.2f}".format(spend_total_period) }}</td>
                         <td></td>
                     </tr>
