@@ -50,6 +50,7 @@
                     <tr>
                         <th>Name</th>
                         <th>Type</th>
+                        <th>Essential?</th>
                         <th>Parent</th>
                         <th style="text-align:right">Txns</th>
                         <th>Actions</th>
@@ -63,6 +64,20 @@
                         </td>
                         <td id="cat-type-{{ cat.id }}">
                             <span class="cat-display-{{ cat.id }}">{{ cat.category_type.value|title }}</span>
+                        </td>
+                        <td>
+                            {% if cat.category_type.value == "expense" %}
+                            <form method="post" action="/categories/{{ cat.id }}/essential" style="margin:0">
+                                <select name="is_essential" onchange="this.form.submit()"
+                                        style="margin:0;padding:0.15rem 0.4rem;font-size:0.8rem;width:auto">
+                                    <option value="auto" {% if cat.is_essential is none %}selected{% endif %}>Auto</option>
+                                    <option value="essential" {% if cat.is_essential == true %}selected{% endif %}>Essential</option>
+                                    <option value="discretionary" {% if cat.is_essential == false %}selected{% endif %}>Discretionary</option>
+                                </select>
+                            </form>
+                            {% else %}
+                            <span style="color:var(--pico-muted-color)">—</span>
+                            {% endif %}
                         </td>
                         <td>{{ cat.parent.name if cat.parent else "—" }}</td>
                         <td style="text-align:right">{{ cat_stats.get(cat.id, 0) }}</td>

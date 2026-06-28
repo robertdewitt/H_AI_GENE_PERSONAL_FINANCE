@@ -137,6 +137,9 @@ def init_db():
         _col("reconciliation_groups", "reconciliation_confidence", "REAL")
         _col("reconciliation_groups", "fx_rate_used",              "REAL")
 
+        # ── Essential / discretionary override on categories ─────────
+        _col("categories", "is_essential", "BOOLEAN")
+
         # ── v2 split / document columns ──────────────────────
         _col("transaction_splits", "document_line_id", "INTEGER")
 

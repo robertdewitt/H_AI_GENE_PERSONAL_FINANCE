@@ -243,9 +243,21 @@ def accounts_list(
         "transit", "transport", "groceries",
     )
 
+    # Explicit per-category overrides set on the Categories page.
+    #   True/False win; None falls back to the keyword heuristic.
+    _essential_overrides = {
+        name: ess
+        for name, ess in db.execute(
+            sa_select(Category.name, Category.is_essential)
+        ).all()
+    }
+
     def _is_essential(category_name: str | None) -> bool:
         if not category_name:
             return False
+        override = _essential_overrides.get(category_name)
+        if override is not None:
+            return override
         cl = category_name.lower()
         return any(kw in cl for kw in _ESSENTIAL_KEYWORDS)
 

@@ -39,6 +39,11 @@ class Category(Base):
         Enum(CategoryType), nullable=False
     )
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Essential (non-discretionary) override for expense categories.
+    #   None  → fall back to the name keyword heuristic
+    #   True  → always essential
+    #   False → always discretionary
+    is_essential: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
