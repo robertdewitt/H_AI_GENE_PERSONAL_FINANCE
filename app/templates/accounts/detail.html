@@ -372,6 +372,66 @@
 </div>
 {% endif %}
 
+{% if account_forecast and account_forecast.events %}
+{% set af = account_forecast %}
+{% set sym = account.currency_symbol %}
+<h2>Cash Flow Forecast</h2>
+<div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap;align-items:center">
+    <span style="font-size:0.9rem;color:var(--pico-muted-color)">Project ahead:</span>
+    {% for m in [3, 6, 12, 24] %}
+    <a href="/accounts/{{ account.id }}?forecast_months={{ m }}#forecast" role="button"
+       class="{% if m != forecast_months %}outline{% endif %}"
+       style="padding:0.25rem 0.75rem;font-size:0.85rem">{{ m }}mo</a>
+    {% endfor %}
+    {% if af.overdraft_dates %}
+    <span style="margin-left:auto;font-size:0.8rem;background:#dc2626;color:#fff;border-radius:4px;padding:0.15rem 0.5rem">
+        &#9888; Projected shortfall on {{ af.overdraft_dates[0].strftime("%d %b %Y") }}
+    </span>
+    {% endif %}
+</div>
+<div id="forecast" style="overflow-x:auto;margin-bottom:1.5rem">
+<table>
+    <thead>
+        <tr>
+            <th style="white-space:nowrap">Date</th>
+            <th>Payment</th>
+            <th style="text-align:right;white-space:nowrap">Amount</th>
+            <th style="text-align:right;white-space:nowrap">Balance after</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td style="color:var(--pico-muted-color);font-size:0.85rem">{{ now.strftime("%d %b %Y") }}</td>
+            <td style="color:var(--pico-muted-color);font-size:0.85rem"><em>Opening balance</em></td>
+            <td></td>
+            <td style="text-align:right;font-weight:600">{{ sym }}{{ "{:,.2f}".format(af.opening_balance|float) }}</td>
+        </tr>
+        {% set ns = namespace(running=af.opening_balance) %}
+        {% for evt in af.events %}
+        {% set ns.running = ns.running + evt.amount %}
+        {% set neg = ns.running < 0 %}
+        <tr{% if neg %} style="background:#fef2f2"{% endif %}>
+            <td style="font-size:0.85rem;white-space:nowrap">{{ evt.date.strftime("%d %b %Y") }}</td>
+            <td style="font-size:0.9rem">{{ evt.description }}
+                <small style="color:var(--pico-muted-color);text-transform:capitalize">&nbsp;{{ evt.frequency }}</small>
+            </td>
+            <td style="text-align:right;white-space:nowrap;font-weight:600">
+                {% if evt.amount < 0 %}
+                    <span class="negative">&minus;{{ sym }}{{ "%.2f"|format(evt.amount|float|abs) }}</span>
+                {% else %}
+                    <span class="positive">+{{ sym }}{{ "%.2f"|format(evt.amount|float) }}</span>
+                {% endif %}
+            </td>
+            <td style="text-align:right;white-space:nowrap;font-weight:600{% if neg %};color:#dc2626{% endif %}">
+                {% if neg %}&minus;{% endif %}{{ sym }}{{ "%.2f"|format(ns.running|float|abs) }}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}
+
 {% if category_summary %}
 <h2>Spending by Category</h2>
 <div class="grid">

@@ -12,7 +12,8 @@ from app.services.clock import naive_utc_now
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-STALE_DAYS = 30   # flag accounts not updated within this many days
+STALE_DAYS = 30     # flag accounts not updated within this many days
+DUE_SOON_DAYS = 30  # surface scheduled payments due within this window
 
 
 @dataclass
@@ -156,17 +157,23 @@ def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
             severity="info",
         ))
 
-    # ── 5. Overdue scheduled payments ────────────────────────────────────────
+    # ── 5. Overdue + upcoming scheduled payments ─────────────────────────────
     try:
         from app.models.scheduled_payment import ScheduledPayment
         from datetime import date
+
         today = date.today()
+        soon_cutoff = today + timedelta(days=DUE_SOON_DAYS)
+
+        # 5a. Overdue — past their due date and not yet matched off.
         overdue = db.execute(
             select(ScheduledPayment).where(
                 ScheduledPayment.active.is_(True),
                 ScheduledPayment.next_due_date < today,
             )
         ).scalars().all()
+        if user_id is not None:
+            overdue = [p for p in overdue if p.account and p.account.user_id == user_id]
         if overdue:
             names = ", ".join(p.description for p in overdue[:3])
             if len(overdue) > 3:
@@ -178,6 +185,54 @@ def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
                 count=len(overdue),
                 url="/scheduled",
                 severity="warning",
+            ))
+
+        # 5b. Due soon — one card per account with a payment due in the next
+        #     DUE_SOON_DAYS days, so "any account with payments due within the
+        #     next month" shows up on the tasks page.
+        upcoming = db.execute(
+            select(ScheduledPayment).where(
+                ScheduledPayment.active.is_(True),
+                ScheduledPayment.next_due_date >= today,
+                ScheduledPayment.next_due_date <= soon_cutoff,
+            ).order_by(ScheduledPayment.next_due_date)
+        ).scalars().all()
+
+        by_account: dict[int, list] = {}
+        for p in upcoming:
+            if user_id is not None and not (p.account and p.account.user_id == user_id):
+                continue
+            by_account.setdefault(p.account_id, []).append(p)
+
+        for acct_id, pmts in by_account.items():
+            acct = pmts[0].account
+            acct_name = acct.name if acct else f"Account {acct_id}"
+            soonest = pmts[0].next_due_date
+            days_away = (soonest - today).days
+            # Total outflow due in the window (payments are negative for bills).
+            outflow = sum(-float(p.amount) for p in pmts if (p.amount or 0) < 0)
+            sym = getattr(acct, "currency_symbol", "") if acct else ""
+            detail_bits = [
+                f"{p.description} ({p.next_due_date.strftime('%d %b')})"
+                for p in pmts[:3]
+            ]
+            if len(pmts) > 3:
+                detail_bits.append(f"+{len(pmts) - 3} more")
+            detail = ", ".join(detail_bits)
+            if outflow > 0:
+                detail = f"{sym}{outflow:,.2f} due — " + detail
+            tasks.append(Task(
+                category="scheduled",
+                title=(
+                    f"{acct_name}: {len(pmts)} payment"
+                    f"{'s' if len(pmts) != 1 else ''} due "
+                    + ("today" if days_away == 0
+                       else f"in {days_away} day{'s' if days_away != 1 else ''}")
+                ),
+                detail=detail,
+                count=len(pmts),
+                url=f"/accounts/{acct_id}",
+                severity="warning" if days_away <= 7 else "info",
             ))
     except Exception:
         pass  # table may not exist yet on old DBs

@@ -283,6 +283,48 @@ def confirm_import(
                     account.monthly_payment = meta["monthly_payment"]
                 if "original_balance" in meta and not account.original_principal_balance:
                     account.original_principal_balance = meta["original_balance"]
+
+                # Regular mortgage payment → statement-sourced scheduled payment
+                # so it shows up on the tasks page and feeds the cash-flow
+                # forecast. Mortgage statements rarely print a "due date", so
+                # anchor the next instalment one month past the statement date
+                # (rolled forward to the future), letting the import matcher
+                # snap it to the real payment date later.
+                mp = meta.get("monthly_payment")
+                if mp:
+                    from app.models.scheduled_payment import ScheduledPayment as _Sched
+                    from app.services.recurring_detector import _add_months as _addm
+                    anchor = stmt_date.date() if hasattr(stmt_date, "date") else stmt_date
+                    next_due = _addm(anchor, 1)
+                    today_d = naive_utc_now().date()
+                    while next_due < today_d:
+                        next_due = _addm(next_due, 1)
+                    pay_amt = _Dec(str(-abs(float(mp))))
+                    existing_mp = db.execute(
+                        select(_Sched).where(
+                            _Sched.account_id == account.id,
+                            _Sched.source == "statement",
+                            _Sched.active.is_(True),
+                        ).limit(1)
+                    ).scalar_one_or_none()
+                    if existing_mp is not None:
+                        existing_mp.amount = pay_amt
+                        existing_mp.next_due_date = next_due
+                        existing_mp.day_of_month = next_due.day
+                    else:
+                        db.add(_Sched(
+                            account_id=account.id,
+                            description=f"{account.name} — Mortgage Payment",
+                            amount=pay_amt,
+                            amount_type="fixed",
+                            currency=account.currency or "USD",
+                            frequency="monthly",
+                            next_due_date=next_due,
+                            day_of_month=next_due.day,
+                            source="statement",
+                            confidence=0.90,
+                            active=True,
+                        ))
                 db.commit()
 
                 # ── PaymentDecomposition for Regular Payment transactions ──
@@ -627,8 +669,28 @@ def confirm_import(
                             as_of_date=as_of_dt,
                         ))
 
-                # 3) Scheduled minimum payment, if we have a due date.
-                if due_date is not None:
+                # 3) Scheduled payment from the statement, if we have a due
+                #    date. Prefer the full statement balance (pay-in-full) as
+                #    the planned amount — that's what most people pay and it
+                #    gives an accurate forecast — falling back to the minimum.
+                #    Both figures are recorded in notes for reference.
+                if due_date is not None and (min_pay is not None or new_bal):
+                    sym = getattr(account, "currency_symbol", "") or ""
+                    full_owed = abs(float(new_bal)) if new_bal else 0.0
+                    min_owed = float(min_pay) if min_pay is not None else 0.0
+                    if full_owed > 0:
+                        plan_amount = _Dec(str(-full_owed))
+                        plan_desc = f"{account.name} — Statement Balance"
+                    else:
+                        plan_amount = _Dec(str(-min_owed))
+                        plan_desc = f"{account.name} — Minimum Payment"
+                    note_bits = []
+                    if full_owed > 0:
+                        note_bits.append(f"Pay in full: {sym}{full_owed:,.2f}")
+                    if min_owed > 0:
+                        note_bits.append(f"Minimum: {sym}{min_owed:,.2f}")
+                    plan_notes = " · ".join(note_bits) or None
+
                     existing_sched = db.execute(
                         _sel(ScheduledPayment).where(
                             ScheduledPayment.account_id == account_id,
@@ -636,21 +698,23 @@ def confirm_import(
                             ScheduledPayment.active.is_(True),
                         ).limit(1)
                     ).scalar_one_or_none()
-                    pay_amount = _Dec(str(-(min_pay or 0)))  # outflow = negative
                     if existing_sched is not None:
                         existing_sched.next_due_date = due_date
-                        if min_pay is not None:
-                            existing_sched.amount = pay_amount
-                    elif min_pay is not None:
+                        existing_sched.day_of_month = due_date.day
+                        existing_sched.amount = plan_amount
+                        existing_sched.description = plan_desc
+                        existing_sched.notes = plan_notes
+                    else:
                         db.add(ScheduledPayment(
                             account_id=account_id,
-                            description=f"{account.name} — Minimum Payment",
-                            amount=pay_amount,
+                            description=plan_desc,
+                            amount=plan_amount,
                             amount_type="estimated",
                             currency=account.currency or "USD",
                             frequency="monthly",
                             next_due_date=due_date,
                             day_of_month=due_date.day,
+                            notes=plan_notes,
                             source="statement",
                             confidence=0.95,
                             active=True,

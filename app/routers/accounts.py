@@ -452,6 +452,7 @@ def account_create(
 def account_detail(
     request: Request,
     account_id: int,
+    forecast_months: int = 6,
     db: Session = Depends(get_db),
 ):
     acct = get_account(db, account_id)
@@ -734,9 +735,22 @@ def account_detail(
         .order_by(PlanItPlan.start_date.asc(), PlanItPlan.id.asc())
     ).scalars().all()
 
+    # Cash-flow forecast for this account — projected balance from its
+    # active scheduled payments. User-selectable horizon, default 6 months.
+    from app.services.forecast_service import build_forecast
+    forecast_months = max(1, min(forecast_months, 24))
+    account_forecast = None
+    try:
+        _fc = build_forecast(db, months=forecast_months, account_ids={account_id})
+        account_forecast = _fc.accounts[0] if _fc.accounts else None
+    except Exception:
+        account_forecast = None  # scheduled_payments table may be absent on old DBs
+
     return templates.TemplateResponse(request, "accounts/detail.html", {
         "account": acct,
         "balance": balance,
+        "account_forecast": account_forecast,
+        "forecast_months": forecast_months,
         "balance_source": balance_result.balance_source_used,
         "balance_stale": balance_result.balance_stale,
         "transactions": recent_txns,
