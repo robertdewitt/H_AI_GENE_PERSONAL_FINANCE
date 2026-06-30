@@ -489,7 +489,11 @@ def account_detail(
         .limit(50)
     ).scalars().all()
 
-    # Category spending summary for this account (all transactions, including transfers)
+    # Category spending summary for this account. Exclude transfers — money
+    # moved between your own accounts (the "Account Transfer" category or any
+    # TRANSFER-type category, plus anything flagged is_transfer) is not
+    # spending and shouldn't appear here.
+    from app.models.category import CategoryType as _CatType
     cat_rows = db.execute(
         sa_select(
             Category.name,
@@ -497,7 +501,11 @@ def account_detail(
             sa_func.sum(Transaction.amount).label("total"),
         )
         .join(Category, Transaction.category_id == Category.id)
-        .where(Transaction.account_id == account_id)
+        .where(
+            Transaction.account_id == account_id,
+            Transaction.is_transfer.is_(False),
+            Category.category_type != _CatType.TRANSFER,
+        )
         .group_by(Category.name)
         .order_by(sa_func.sum(Transaction.amount))
     ).all()
@@ -514,6 +522,7 @@ def account_detail(
         .where(
             Transaction.account_id == account_id,
             Transaction.category_id.is_(None),
+            Transaction.is_transfer.is_(False),
         )
     ).one()
     if uncategorized[0]:
