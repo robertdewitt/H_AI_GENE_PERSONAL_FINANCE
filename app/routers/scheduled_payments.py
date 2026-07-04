@@ -37,9 +37,22 @@ def scheduled_list(request: Request, db: Session = Depends(get_db)):
         select(ScheduledPayment)
         .order_by(ScheduledPayment.active.desc(), ScheduledPayment.next_due_date)
     ).scalars().all()
+
+    # Effective flag level (auto vs reminder) per payment, and which payments
+    # are suppressed as the source side of an inter-account transfer.
+    from app.services.payment_classifier import (
+        effective_flag_level, find_suppressed_transfer_ids,
+    )
+    accounts_map = {p.account_id: p.account for p in payments if p.account}
+    levels = {p.id: effective_flag_level(p, accounts_map.get(p.account_id)) for p in payments}
+    suppressed = find_suppressed_transfer_ids(
+        [p for p in payments if p.active], accounts_map,
+    )
     return templates.TemplateResponse(request, "scheduled/list.html", {
         "payments": payments,
         "today": date.today(),
+        "levels": levels,
+        "suppressed": suppressed,
     })
 
 
@@ -145,6 +158,21 @@ def scheduled_update(
     payment.notes = notes.strip() or None
     payment.active = (active == "on")
     db.commit()
+    return RedirectResponse(url="/scheduled", status_code=303)
+
+
+# ── Set flag level (auto vs reminder) ──────────────────────────────────────────
+
+@router.post("/{payment_id}/flag-level")
+def scheduled_set_flag_level(
+    payment_id: int,
+    flag_level: str = Form(...),  # "auto" | "reminder" | "default"
+    db: Session = Depends(get_db),
+):
+    payment = db.get(ScheduledPayment, payment_id)
+    if payment:
+        payment.flag_level = flag_level if flag_level in ("auto", "reminder") else None
+        db.commit()
     return RedirectResponse(url="/scheduled", status_code=303)
 
 

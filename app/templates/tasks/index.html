@@ -66,11 +66,12 @@
 
 {# Group tasks by category #}
 {% set categories = [
-    ("scheduled",  "💸", "Payments due"),
+    ("reminders",  "🔔", "Payment reminders"),
     ("statements", "📅", "Statements"),
     ("transfers",  "↔",  "Transfers"),
     ("categories", "🏷",  "Categorization"),
     ("duplicates", "⚠",  "Duplicates"),
+    ("autopay",    "🔄", "Automatic payments"),
 ] %}
 
 {% for cat_key, icon, label in categories %}

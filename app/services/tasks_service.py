@@ -160,80 +160,105 @@ def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
     # ── 5. Overdue + upcoming scheduled payments ─────────────────────────────
     try:
         from app.models.scheduled_payment import ScheduledPayment
+        from app.models.account import Account as _SchedAcct
+        from app.services.payment_classifier import (
+            effective_flag_level, find_suppressed_transfer_ids,
+        )
         from datetime import date
 
         today = date.today()
         soon_cutoff = today + timedelta(days=DUE_SOON_DAYS)
 
-        # 5a. Overdue — past their due date and not yet matched off.
-        overdue = db.execute(
-            select(ScheduledPayment).where(
-                ScheduledPayment.active.is_(True),
-                ScheduledPayment.next_due_date < today,
-            )
+        all_active = db.execute(
+            select(ScheduledPayment).where(ScheduledPayment.active.is_(True))
         ).scalars().all()
+
+        acct_ids = {p.account_id for p in all_active}
+        accounts_map = {
+            a.id: a for a in (
+                db.execute(select(_SchedAcct).where(_SchedAcct.id.in_(acct_ids)))
+                .scalars().all() if acct_ids else []
+            )
+        }
         if user_id is not None:
-            overdue = [p for p in overdue if p.account and p.account.user_id == user_id]
+            all_active = [
+                p for p in all_active
+                if (a := accounts_map.get(p.account_id)) and a.user_id == user_id
+            ]
+
+        # Requirement 3: a payment that moves money between two of your own
+        # accounts is flagged only on the destination — drop the source side.
+        suppressed = find_suppressed_transfer_ids(all_active, accounts_map)
+        visible = [p for p in all_active if p.id not in suppressed]
+
+        # 5a. Overdue — always a reminder, regardless of level.
+        overdue = [p for p in visible if p.next_due_date < today]
         if overdue:
             names = ", ".join(p.description for p in overdue[:3])
             if len(overdue) > 3:
                 names += f" +{len(overdue) - 3} more"
             tasks.append(Task(
-                category="scheduled",
-                title=f"{len(overdue)} overdue scheduled payment{'s' if len(overdue) != 1 else ''}",
+                category="reminders",
+                title=f"{len(overdue)} overdue payment{'s' if len(overdue) != 1 else ''}",
                 detail=names,
                 count=len(overdue),
                 url="/scheduled",
                 severity="warning",
             ))
 
-        # 5b. Due soon — one card per account with a payment due in the next
-        #     DUE_SOON_DAYS days, so "any account with payments due within the
-        #     next month" shows up on the tasks page.
-        upcoming = db.execute(
-            select(ScheduledPayment).where(
-                ScheduledPayment.active.is_(True),
-                ScheduledPayment.next_due_date >= today,
-                ScheduledPayment.next_due_date <= soon_cutoff,
-            ).order_by(ScheduledPayment.next_due_date)
-        ).scalars().all()
-
-        by_account: dict[int, list] = {}
+        # 5b. Due soon — grouped per (account, level). Reminders surface
+        #     prominently; auto-payments drop to a low-level section.
+        upcoming = [p for p in visible if today <= p.next_due_date <= soon_cutoff]
+        groups: dict[tuple[int, str], list] = {}
         for p in upcoming:
-            if user_id is not None and not (p.account and p.account.user_id == user_id):
-                continue
-            by_account.setdefault(p.account_id, []).append(p)
+            lvl = effective_flag_level(p, accounts_map.get(p.account_id))
+            groups.setdefault((p.account_id, lvl), []).append(p)
 
-        for acct_id, pmts in by_account.items():
-            acct = pmts[0].account
+        for (acct_id, lvl), pmts in groups.items():
+            pmts.sort(key=lambda x: x.next_due_date)
+            acct = accounts_map.get(acct_id)
             acct_name = acct.name if acct else f"Account {acct_id}"
-            soonest = pmts[0].next_due_date
-            days_away = (soonest - today).days
-            # Total outflow due in the window (payments are negative for bills).
-            outflow = sum(-float(p.amount) for p in pmts if (p.amount or 0) < 0)
+            days_away = (pmts[0].next_due_date - today).days
             sym = getattr(acct, "currency_symbol", "") if acct else ""
+            outflow = sum(-float(p.amount) for p in pmts if (p.amount or 0) < 0)
+            inflow = sum(float(p.amount) for p in pmts if (p.amount or 0) > 0)
             detail_bits = [
                 f"{p.description} ({p.next_due_date.strftime('%d %b')})"
                 for p in pmts[:3]
             ]
             if len(pmts) > 3:
                 detail_bits.append(f"+{len(pmts) - 3} more")
-            detail = ", ".join(detail_bits)
+            money_bits = []
             if outflow > 0:
-                detail = f"{sym}{outflow:,.2f} due — " + detail
-            tasks.append(Task(
-                category="scheduled",
-                title=(
-                    f"{acct_name}: {len(pmts)} payment"
-                    f"{'s' if len(pmts) != 1 else ''} due "
-                    + ("today" if days_away == 0
-                       else f"in {days_away} day{'s' if days_away != 1 else ''}")
-                ),
-                detail=detail,
-                count=len(pmts),
-                url=f"/accounts/{acct_id}",
-                severity="warning" if days_away <= 7 else "info",
-            ))
+                money_bits.append(f"{sym}{outflow:,.2f} out")
+            if inflow > 0:
+                money_bits.append(f"+{sym}{inflow:,.2f} in")
+            detail = ", ".join(detail_bits)
+            if money_bits:
+                detail = " · ".join(money_bits) + " — " + detail
+            when = ("today" if days_away == 0
+                    else f"in {days_away} day{'s' if days_away != 1 else ''}")
+
+            if lvl == "reminder":
+                tasks.append(Task(
+                    category="reminders",
+                    title=(f"{acct_name}: {len(pmts)} payment"
+                           f"{'s' if len(pmts) != 1 else ''} due {when}"),
+                    detail=detail,
+                    count=len(pmts),
+                    url=f"/accounts/{acct_id}",
+                    severity="warning" if days_away <= 7 else "info",
+                ))
+            else:  # auto — low level, informational only
+                tasks.append(Task(
+                    category="autopay",
+                    title=(f"{acct_name}: {len(pmts)} auto-payment"
+                           f"{'s' if len(pmts) != 1 else ''} {when}"),
+                    detail=detail,
+                    count=len(pmts),
+                    url="/scheduled",
+                    severity="info",
+                ))
     except Exception:
         pass  # table may not exist yet on old DBs
 

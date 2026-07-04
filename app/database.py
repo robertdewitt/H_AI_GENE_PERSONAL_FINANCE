@@ -140,6 +140,9 @@ def init_db():
         # ── Essential / discretionary override on categories ─────────
         _col("categories", "is_essential", "BOOLEAN")
 
+        # ── Scheduled-payment flag level (auto vs reminder) ──────────
+        _col("scheduled_payments", "flag_level", "VARCHAR(20)")
+
         # ── v2 split / document columns ──────────────────────
         _col("transaction_splits", "document_line_id", "INTEGER")
 
