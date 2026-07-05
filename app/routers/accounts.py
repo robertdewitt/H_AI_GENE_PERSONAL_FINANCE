@@ -87,7 +87,7 @@ def accounts_list(
 ):
     from sqlalchemy import func as sa_func, select as sa_select
     from app.models.transaction import Transaction
-    from app.models.category import Category
+    from app.models.category import Category, CategoryType as _CatType
     from app.config import settings as _settings
 
     if preset is None:
@@ -140,14 +140,15 @@ def accounts_list(
         .join(Category, Transaction.category_id == Category.id)
         .where(
             Transaction.amount < 0,
+            # Never show transfers (any TRANSFER-type category, e.g.
+            # "Account Transfer") as expense spending — money moved between
+            # your own accounts is not consumption.
+            Category.category_type != _CatType.TRANSFER,
             _or(
-                _and(
-                    Transaction.is_transfer.is_(False),
-                    sa_func.lower(Category.name) != "account transfer",
-                ),
-                # Money to a mortgage/loan counts as an expense outflow
-                # even when the category or is_transfer flag suggests
-                # otherwise.
+                Transaction.is_transfer.is_(False),
+                # Money to a mortgage/loan still counts as an expense outflow
+                # even when flagged is_transfer — as long as it isn't filed
+                # under a transfer category (excluded above).
                 _loan_desc_filter,
             ),
             Transaction.date >= since,
@@ -173,7 +174,7 @@ def accounts_list(
             Transaction.amount > 0,
             Transaction.is_transfer.is_(False),
             _Acct.is_asset.is_(True),
-            sa_func.lower(Category.name) != "account transfer",
+            Category.category_type != _CatType.TRANSFER,
             Transaction.date >= since,
         )
         .group_by("month", Category.name)
