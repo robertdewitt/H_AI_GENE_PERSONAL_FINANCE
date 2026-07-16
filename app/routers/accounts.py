@@ -25,6 +25,8 @@ from app.services.account_service import (
     get_accounts_grouped,
     get_transaction_count,
     list_accounts,
+    next_payment_due,
+    next_payment_due_map,
     update_account,
 )
 from app.services.user_profile_service import get_profile
@@ -97,6 +99,8 @@ def accounts_list(
     display_ccy = profile.display_currency or "USD"
 
     groups = get_accounts_grouped(db, target_currency=display_ccy)
+    _all_accts = [item["account"] for items in groups.values() for item in items]
+    due_dates = next_payment_due_map(db, _all_accts)
     total_assets = sum(
         item["balance"]
         for items in groups.values()
@@ -298,6 +302,8 @@ def accounts_list(
 
     return templates.TemplateResponse(request, "accounts/list.html", {
         "groups": groups,
+        "due_dates": due_dates,
+        "today": naive_utc_now().date(),
         "total_assets": total_assets,
         "total_liabilities": total_liabilities,
         "net_worth": total_assets - total_liabilities,
@@ -351,6 +357,7 @@ def account_create(
     statement_balance_as_of: str = Form(""),
     overdraft_limit: str = Form(""),
     overdraft_as_of: str = Form(""),
+    payment_due_date: str = Form(""),
     db: Session = Depends(get_db),
 ):
     acct_type = AccountType(account_type)
@@ -453,6 +460,15 @@ def account_create(
             )
             db.commit()
         except (ValueError, InvalidOperation):
+            db.rollback()
+
+    if acct_type in LIABILITY_TYPES and payment_due_date.strip():
+        try:
+            acct.payment_due_date = datetime.strptime(
+                payment_due_date.strip(), "%Y-%m-%d"
+            ).date()
+            db.commit()
+        except ValueError:
             db.rollback()
 
     redirect = "/accounts"
@@ -789,6 +805,7 @@ def account_detail(
         "payment_breakdown": payment_breakdown,
         "interest_ytd": interest_ytd,
         "plan_it_plans": plan_it_plans,
+        "payment_due": next_payment_due(db, acct),
         "now": naive_utc_now(),
     })
 
@@ -834,6 +851,7 @@ def account_update(
     statement_balance_as_of: str = Form(""),
     overdraft_limit: str = Form(""),
     overdraft_as_of: str = Form(""),
+    payment_due_date: str = Form(""),
     db: Session = Depends(get_db),
 ):
     acct_type = AccountType(account_type)
@@ -945,6 +963,18 @@ def account_update(
     elif acct.overdraft_limit is not None and not overdraft_limit.strip():
         acct.overdraft_limit = None
         acct.overdraft_as_of = None
+        db.commit()
+
+    if acct_type in LIABILITY_TYPES and payment_due_date.strip():
+        try:
+            acct.payment_due_date = datetime.strptime(
+                payment_due_date.strip(), "%Y-%m-%d"
+            ).date()
+            db.commit()
+        except ValueError:
+            db.rollback()
+    elif acct.payment_due_date is not None and not payment_due_date.strip():
+        acct.payment_due_date = None
         db.commit()
 
     return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)

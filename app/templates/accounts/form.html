@@ -94,6 +94,14 @@
         <small>Link a mortgage to see equity (property value minus outstanding balance) on the account page.</small>
     </div>
 
+    {# Payment due date — for payable (liability) accounts: credit cards, loans, mortgages #}
+    <div id="payment-due-fields" style="display:none">
+        <label for="payment_due_date">Next Payment Due</label>
+        <input type="date" id="payment_due_date" name="payment_due_date"
+               value="{{ account.payment_due_date.strftime('%Y-%m-%d') if account and account.payment_due_date else '' }}">
+        <small>When the next payment on this account is due. Auto-filled from statements; leave blank to use the soonest scheduled payment.</small>
+    </div>
+
     {# Statement balance — shown for transactional accounts to anchor balance calculations #}
     <div id="statement-balance-fields">
         <hr>
@@ -166,6 +174,7 @@
 {% block scripts %}
 <script>
 const _PHYSICAL_ASSET_TYPES = ['real_estate', 'vehicle', 'collectible'];
+const _LIABILITY_TYPES = ['credit_card', 'loan', 'mortgage'];
 function updateAssetFields() {
     const val = document.getElementById('account_type').value;
     document.getElementById('physical-asset-fields').style.display =
@@ -174,6 +183,8 @@ function updateAssetFields() {
         val === 'real_estate' ? 'block' : 'none';
     document.getElementById('mortgage-fields').style.display =
         val === 'mortgage' ? 'block' : 'none';
+    document.getElementById('payment-due-fields').style.display =
+        _LIABILITY_TYPES.includes(val) ? 'block' : 'none';
 }
 document.getElementById('account_type').addEventListener('change', updateAssetFields);
 updateAssetFields();

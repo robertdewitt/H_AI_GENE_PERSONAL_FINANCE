@@ -166,6 +166,14 @@
                 {% if item.account.institution %}
                 <span class="account-institution">{{ item.account.institution }}</span>
                 {% endif %}
+                {% set _due = due_dates.get(item.account.id) %}
+                {% if _due %}
+                {% set _days = (_due - today).days %}
+                <span style="font-size:0.72rem;margin-left:0.4rem;padding:0.05rem 0.4rem;border-radius:4px;background:var(--pico-card-sectioning-background-color,#f3f4f6);color:{% if _days < 0 %}#dc2626{% elif _days <= 7 %}#d97706{% else %}var(--pico-muted-color){% endif %}"
+                      title="Next payment due">
+                    📅 Due {{ _due.strftime('%d %b') }}{% if _days < 0 %} · overdue{% elif _days == 0 %} · today{% elif _days <= 7 %} · {{ _days }}d{% endif %}
+                </span>
+                {% endif %}
                 {% if not item.account.is_asset and item.balance_source == 'transaction_sum' and not item.account.statement_balance %}
                 <a href="/accounts/{{ item.account.id }}/edit#statement-balance-fields"
                    title="Balance estimated from transactions only — click to set statement balance"

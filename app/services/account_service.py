@@ -1221,3 +1221,53 @@ def get_transaction_count(db: Session, account_id: int | None = None) -> int:
     if account_id:
         query = query.where(Transaction.account_id == account_id)
     return db.execute(query).scalar() or 0
+
+
+def next_payment_due(db: Session, account: Account):
+    """Effective next payment due date for a payable (liability) account.
+
+    Uses the account's own ``payment_due_date`` when set (from a statement or
+    entered by hand), otherwise falls back to the soonest active scheduled
+    payment on that account. Returns a ``date`` or ``None``.
+    """
+    if account is None or account.account_type not in LIABILITY_TYPES:
+        return None
+    if account.payment_due_date is not None:
+        return account.payment_due_date
+    from app.models.scheduled_payment import ScheduledPayment
+    return db.execute(
+        select(func.min(ScheduledPayment.next_due_date)).where(
+            ScheduledPayment.account_id == account.id,
+            ScheduledPayment.active.is_(True),
+        )
+    ).scalar()
+
+
+def next_payment_due_map(db: Session, accounts: list[Account]) -> dict[int, object]:
+    """`next_payment_due` for many accounts in one pass (for list views)."""
+    from app.models.scheduled_payment import ScheduledPayment
+
+    liability_ids = [
+        a.id for a in accounts if a.account_type in LIABILITY_TYPES
+    ]
+    sched: dict[int, object] = {}
+    if liability_ids:
+        rows = db.execute(
+            select(
+                ScheduledPayment.account_id,
+                func.min(ScheduledPayment.next_due_date),
+            )
+            .where(
+                ScheduledPayment.account_id.in_(liability_ids),
+                ScheduledPayment.active.is_(True),
+            )
+            .group_by(ScheduledPayment.account_id)
+        ).all()
+        sched = {aid: due for aid, due in rows}
+
+    out: dict[int, object] = {}
+    for a in accounts:
+        if a.account_type not in LIABILITY_TYPES:
+            continue
+        out[a.id] = a.payment_due_date or sched.get(a.id)
+    return out

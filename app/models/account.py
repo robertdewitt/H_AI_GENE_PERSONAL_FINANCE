@@ -1,9 +1,10 @@
 import enum
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     Enum,
     Float,
@@ -95,6 +96,9 @@ class Account(Base):
     original_principal_balance: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     interest_rate: Mapped[float | None] = mapped_column(Float)        # annual rate, e.g. 0.0425 = 4.25%
     monthly_payment: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    # Next payment due date for payable (liability) accounts — credit cards,
+    # loans, mortgages. Auto-populated from statements; user-editable.
+    payment_due_date: Mapped[date | None] = mapped_column(Date)
     balance_confidence: Mapped[float | None] = mapped_column(Float)
     balance_stale_hint: Mapped[bool | None] = mapped_column(Boolean)
     liability_balance_stale: Mapped[bool | None] = mapped_column(Boolean)

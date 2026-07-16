@@ -70,6 +70,22 @@
             {% if not account.is_asset %}&minus;{% endif %}{{ account.currency_symbol }}{{ "{:,.2f}".format(balance|abs) }}
         </div>
     </div>
+    {% if not account.is_asset and payment_due %}
+    {% set _pdays = (payment_due - now.date()).days %}
+    <div class="summary-card">
+        <div class="label">Next Payment Due</div>
+        <div class="value" style="font-size:1.4rem;{% if _pdays < 0 %}color:#dc2626{% elif _pdays <= 7 %}color:#d97706{% endif %}">
+            {{ payment_due.strftime("%d %b %Y") }}
+        </div>
+        <div style="font-size:0.8rem;color:var(--pico-muted-color);margin-top:0.25rem">
+            {% if _pdays < 0 %}Overdue by {{ -_pdays }} day{{ 's' if -_pdays != 1 else '' }}
+            {% elif _pdays == 0 %}Due today
+            {% else %}In {{ _pdays }} day{{ 's' if _pdays != 1 else '' }}{% endif %}
+            {% if account.monthly_payment %} · {{ account.currency_symbol }}{{ "{:,.2f}".format(account.monthly_payment) }}/mo{% endif %}
+            · <a href="/accounts/{{ account.id }}/edit#payment-due-fields">edit</a>
+        </div>
+    </div>
+    {% endif %}
     {% if account.plan_it_balance is not none and account.plan_it_balance != 0 %}
     <div class="summary-card">
         <div class="label">Plan-It Outstanding</div>
