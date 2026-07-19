@@ -141,6 +141,35 @@
     {% endif %}
 </div>
 
+{% if request.query_params.get("accrued") %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #16a34a;background:#f0fdf4">
+    &#10003; Posted {{ request.query_params.get("accrued") }} monthly interest accrual(s).
+</article>
+{% endif %}
+
+{% if account.interest_rate and account.account_type.value in ["credit_card", "loan", "other"] %}
+<details style="margin-bottom:1.5rem">
+    <summary role="button" class="outline" style="display:inline-block">Accrue interest ({{ "%.2f"|format(account.interest_rate * 100) }}% APR)</summary>
+    <form method="post" action="/accounts/{{ account.id }}/accrue-interest"
+          style="display:flex;gap:0.75rem;align-items:flex-end;flex-wrap:wrap;margin-top:0.75rem">
+        <div>
+            <label for="start_date" style="font-size:0.85rem">From (optional)</label>
+            <input type="date" id="start_date" name="start_date" style="margin:0">
+        </div>
+        <div>
+            <label for="through_date" style="font-size:0.85rem">Through (optional)</label>
+            <input type="date" id="through_date" name="through_date" style="margin:0">
+        </div>
+        <button type="submit" style="margin:0">Post monthly interest</button>
+    </form>
+    <small style="color:var(--pico-muted-color)">
+        Posts one interest transaction per month on the outstanding balance (monthly compounding),
+        backfilling history. Safe to run repeatedly — already-accrued months are skipped.
+        Leave dates blank to run from the first transaction through today.
+    </small>
+</details>
+{% endif %}
+
 {% if account.notes %}
 <blockquote>{{ account.notes }}</blockquote>
 {% endif %}

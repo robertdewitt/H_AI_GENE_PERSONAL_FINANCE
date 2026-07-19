@@ -1001,6 +1001,38 @@ def account_update(
     return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)
 
 
+@router.post("/{account_id}/accrue-interest")
+def account_accrue_interest(
+    account_id: int,
+    start_date: str = Form(""),
+    through_date: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Backfill monthly interest accruals on an interest-bearing account."""
+    from datetime import date as _date
+    from app.services.interest_accrual import accrue_interest
+
+    acct = get_account(db, account_id)
+    if not acct:
+        return HTMLResponse("Account not found", status_code=404)
+
+    start = None
+    through = None
+    try:
+        if start_date.strip():
+            start = datetime.strptime(start_date.strip(), "%Y-%m-%d").date()
+        if through_date.strip():
+            through = datetime.strptime(through_date.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        pass
+
+    created = accrue_interest(db, acct, start=start, through=through or _date.today())
+    db.commit()
+    return RedirectResponse(
+        url=f"/accounts/{account_id}?accrued={len(created)}", status_code=303,
+    )
+
+
 @router.post("/{account_id}/delete")
 def account_remove(account_id: int, db: Session = Depends(get_db)):
     delete_account(db, account_id)
