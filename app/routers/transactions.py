@@ -432,6 +432,14 @@ def _link_transfer(db: Session, txn: Transaction, other_account_id: int):
         .limit(1)
     ).scalar_one_or_none()
 
+    if match is None:
+        # No counterpart exists in the other account (e.g. a manually-tracked
+        # personal loan or cash account with no statement). Create the mirror
+        # transaction so the transfer is represented on both sides.
+        match = _create_counterpart(db, txn, other_account_id)
+        if match is None:
+            return
+
     if match:
         if txn.amount < 0:
             link = TransferLink(
@@ -457,6 +465,43 @@ def _link_transfer(db: Session, txn: Transaction, other_account_id: int):
         txn.is_transfer = True
         match.transfer_link_id = link.id
         match.is_transfer = True
+
+
+def _create_counterpart(db: Session, txn: Transaction, other_account_id: int):
+    """Create the opposite side of a transfer in ``other_account_id``.
+
+    The mirror carries the opposite sign (money leaving one account arrives in
+    the other), converted to the destination account's currency when they
+    differ. Returns the new Transaction, or None if the account is missing.
+    """
+    from app.models.account import Account
+
+    dst = db.get(Account, other_account_id)
+    if dst is None:
+        return None
+    src = db.get(Account, txn.account_id)
+    src_ccy = (src.currency if src else None) or (txn.original_currency or "USD")
+    dst_ccy = dst.currency or src_ccy
+
+    counter_amount = -txn.amount
+    if src_ccy != dst_ccy:
+        from app.services.fx_service import convert_amount
+        conv, _rate = convert_amount(db, abs(txn.amount), src_ccy, dst_ccy, txn.date)
+        if conv is not None:
+            counter_amount = conv if txn.amount < 0 else -conv
+
+    label = f"Transfer from {src.name}" if src else (txn.description or "Transfer")
+    counterpart = Transaction(
+        account_id=other_account_id,
+        date=txn.date,
+        description=label[:500],
+        amount=counter_amount,
+        original_currency=dst_ccy,
+        is_transfer=True,
+    )
+    db.add(counterpart)
+    db.flush()
+    return counterpart
 
 
 # ── Delete single transaction ────────────────────────────────────────
