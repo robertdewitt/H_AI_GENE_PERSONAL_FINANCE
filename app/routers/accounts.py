@@ -434,6 +434,16 @@ def account_create(
                 )
         db.commit()
 
+    # Interest rate for non-mortgage interest-bearing accounts (loans,
+    # credit cards, personal loans filed under "other").
+    _INTEREST_TYPES = {AccountType.CREDIT_CARD, AccountType.LOAN, AccountType.OTHER}
+    if acct_type in _INTEREST_TYPES and interest_rate.strip():
+        try:
+            acct.interest_rate = float(interest_rate) / 100.0
+            db.commit()
+        except ValueError:
+            pass
+
     stmt_err: str | None = None
     if statement_balance.strip():
         try:
@@ -927,6 +937,17 @@ def account_update(
                 )
         elif not monthly_payment.strip():
             acct.monthly_payment = None
+        db.commit()
+
+    _INTEREST_TYPES = {AccountType.CREDIT_CARD, AccountType.LOAN, AccountType.OTHER}
+    if acct_type in _INTEREST_TYPES:
+        if interest_rate.strip():
+            try:
+                acct.interest_rate = float(interest_rate) / 100.0
+            except ValueError:
+                pass
+        else:
+            acct.interest_rate = None
         db.commit()
 
     if statement_balance.strip():

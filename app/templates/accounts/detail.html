@@ -133,6 +133,7 @@
 
 <div class="btn-group" style="margin-bottom:1.5rem">
     <a href="/accounts/{{ account.id }}/edit" role="button" class="outline">Edit Account</a>
+    <a href="/transactions/new?account_id={{ account.id }}" role="button">+ Add Transaction</a>
     <a href="/import?account={{ account.id }}" role="button" class="outline">Import Transactions</a>
     <a href="/transactions?account_id={{ account.id }}" role="button" class="outline">All Transactions</a>
     {% if account.account_type.value in ["real_estate", "vehicle", "collectible", "pension"] %}
@@ -547,7 +548,8 @@
 {% else %}
 <div class="empty-state">
     <h3>No transactions</h3>
-    <p><a href="/import">Import a file</a> to add transactions to this account.</p>
+    <p><a href="/transactions/new?account_id={{ account.id }}">Add one by hand</a>
+       or <a href="/import">import a file</a> to add transactions to this account.</p>
 </div>
 {% endif %}
 {% endblock %}
