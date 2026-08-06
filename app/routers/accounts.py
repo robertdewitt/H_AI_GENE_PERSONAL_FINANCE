@@ -25,6 +25,11 @@ from app.services.account_service import (
     get_accounts_grouped,
     get_transaction_count,
     list_accounts,
+    close_account,
+    next_payment_due,
+    next_payment_due_map,
+    reopen_account,
+    split_closed_accounts,
     update_account,
 )
 from app.services.user_profile_service import get_profile
@@ -87,7 +92,7 @@ def accounts_list(
 ):
     from sqlalchemy import func as sa_func, select as sa_select
     from app.models.transaction import Transaction
-    from app.models.category import Category
+    from app.models.category import Category, CategoryType as _CatType
     from app.config import settings as _settings
 
     if preset is None:
@@ -97,6 +102,8 @@ def accounts_list(
     display_ccy = profile.display_currency or "USD"
 
     groups = get_accounts_grouped(db, target_currency=display_ccy)
+    _all_accts = [item["account"] for items in groups.values() for item in items]
+    due_dates = next_payment_due_map(db, _all_accts)
     total_assets = sum(
         item["balance"]
         for items in groups.values()
@@ -109,6 +116,10 @@ def accounts_list(
         for item in items
         if not item["account"].is_asset
     )
+
+    # Closed accounts still count toward the totals above — closing is
+    # organisational only. Split them out so the active list stays uncluttered.
+    groups, closed_accounts = split_closed_accounts(groups)
 
     since = _preset_to_since(preset)
 
@@ -140,14 +151,15 @@ def accounts_list(
         .join(Category, Transaction.category_id == Category.id)
         .where(
             Transaction.amount < 0,
+            # Never show transfers (any TRANSFER-type category, e.g.
+            # "Account Transfer") as expense spending — money moved between
+            # your own accounts is not consumption.
+            Category.category_type != _CatType.TRANSFER,
             _or(
-                _and(
-                    Transaction.is_transfer.is_(False),
-                    sa_func.lower(Category.name) != "account transfer",
-                ),
-                # Money to a mortgage/loan counts as an expense outflow
-                # even when the category or is_transfer flag suggests
-                # otherwise.
+                Transaction.is_transfer.is_(False),
+                # Money to a mortgage/loan still counts as an expense outflow
+                # even when flagged is_transfer — as long as it isn't filed
+                # under a transfer category (excluded above).
                 _loan_desc_filter,
             ),
             Transaction.date >= since,
@@ -173,7 +185,7 @@ def accounts_list(
             Transaction.amount > 0,
             Transaction.is_transfer.is_(False),
             _Acct.is_asset.is_(True),
-            sa_func.lower(Category.name) != "account transfer",
+            Category.category_type != _CatType.TRANSFER,
             Transaction.date >= since,
         )
         .group_by("month", Category.name)
@@ -243,9 +255,21 @@ def accounts_list(
         "transit", "transport", "groceries",
     )
 
+    # Explicit per-category overrides set on the Categories page.
+    #   True/False win; None falls back to the keyword heuristic.
+    _essential_overrides = {
+        name: ess
+        for name, ess in db.execute(
+            sa_select(Category.name, Category.is_essential)
+        ).all()
+    }
+
     def _is_essential(category_name: str | None) -> bool:
         if not category_name:
             return False
+        override = _essential_overrides.get(category_name)
+        if override is not None:
+            return override
         cl = category_name.lower()
         return any(kw in cl for kw in _ESSENTIAL_KEYWORDS)
 
@@ -285,6 +309,9 @@ def accounts_list(
 
     return templates.TemplateResponse(request, "accounts/list.html", {
         "groups": groups,
+        "closed_accounts": closed_accounts,
+        "due_dates": due_dates,
+        "today": naive_utc_now().date(),
         "total_assets": total_assets,
         "total_liabilities": total_liabilities,
         "net_worth": total_assets - total_liabilities,
@@ -338,6 +365,7 @@ def account_create(
     statement_balance_as_of: str = Form(""),
     overdraft_limit: str = Form(""),
     overdraft_as_of: str = Form(""),
+    payment_due_date: str = Form(""),
     db: Session = Depends(get_db),
 ):
     acct_type = AccountType(account_type)
@@ -414,6 +442,16 @@ def account_create(
                 )
         db.commit()
 
+    # Interest rate for non-mortgage interest-bearing accounts (loans,
+    # credit cards, personal loans filed under "other").
+    _INTEREST_TYPES = {AccountType.CREDIT_CARD, AccountType.LOAN, AccountType.OTHER}
+    if acct_type in _INTEREST_TYPES and interest_rate.strip():
+        try:
+            acct.interest_rate = float(interest_rate) / 100.0
+            db.commit()
+        except ValueError:
+            pass
+
     stmt_err: str | None = None
     if statement_balance.strip():
         try:
@@ -442,6 +480,15 @@ def account_create(
         except (ValueError, InvalidOperation):
             db.rollback()
 
+    if acct_type in LIABILITY_TYPES and payment_due_date.strip():
+        try:
+            acct.payment_due_date = datetime.strptime(
+                payment_due_date.strip(), "%Y-%m-%d"
+            ).date()
+            db.commit()
+        except ValueError:
+            db.rollback()
+
     redirect = "/accounts"
     if stmt_err:
         redirect += "?error=" + urllib.parse.quote(stmt_err)
@@ -452,6 +499,7 @@ def account_create(
 def account_detail(
     request: Request,
     account_id: int,
+    forecast_months: int = 6,
     db: Session = Depends(get_db),
 ):
     acct = get_account(db, account_id)
@@ -476,7 +524,11 @@ def account_detail(
         .limit(50)
     ).scalars().all()
 
-    # Category spending summary for this account (all transactions, including transfers)
+    # Category spending summary for this account. Exclude transfers — money
+    # moved between your own accounts (the "Account Transfer" category or any
+    # TRANSFER-type category, plus anything flagged is_transfer) is not
+    # spending and shouldn't appear here.
+    from app.models.category import CategoryType as _CatType
     cat_rows = db.execute(
         sa_select(
             Category.name,
@@ -484,7 +536,11 @@ def account_detail(
             sa_func.sum(Transaction.amount).label("total"),
         )
         .join(Category, Transaction.category_id == Category.id)
-        .where(Transaction.account_id == account_id)
+        .where(
+            Transaction.account_id == account_id,
+            Transaction.is_transfer.is_(False),
+            Category.category_type != _CatType.TRANSFER,
+        )
         .group_by(Category.name)
         .order_by(sa_func.sum(Transaction.amount))
     ).all()
@@ -501,6 +557,7 @@ def account_detail(
         .where(
             Transaction.account_id == account_id,
             Transaction.category_id.is_(None),
+            Transaction.is_transfer.is_(False),
         )
     ).one()
     if uncategorized[0]:
@@ -734,9 +791,52 @@ def account_detail(
         .order_by(PlanItPlan.start_date.asc(), PlanItPlan.id.asc())
     ).scalars().all()
 
+    # Cash-flow forecast for this account — projected balance from its
+    # active scheduled payments. User-selectable horizon, default 6 months.
+    from app.services.forecast_service import build_forecast
+    forecast_months = max(1, min(forecast_months, 24))
+    account_forecast = None
+    try:
+        _fc = build_forecast(db, months=forecast_months, account_ids={account_id})
+        account_forecast = _fc.accounts[0] if _fc.accounts else None
+    except Exception:
+        account_forecast = None  # scheduled_payments table may be absent on old DBs
+
+    # RSU grants + vesting (for RSU accounts) and pension fund holdings.
+    rsu_grants = None
+    rsu_summary = None
+    pension_holdings = None
+    if acct.account_type == AccountType.RSU:
+        from app.models.rsu import RSUGrant
+        from app.services.rsu_service import value_rsu_account
+        rsu_grants = db.execute(
+            sa_select(RSUGrant)
+            .where(RSUGrant.account_id == account_id)
+            .order_by(RSUGrant.award_date.desc())
+        ).scalars().all()
+        if rsu_grants:
+            try:
+                rsu_summary = value_rsu_account(
+                    db, acct, refresh_price=False, persist=False,
+                )
+            except Exception:
+                rsu_summary = None
+    elif acct.account_type == AccountType.PENSION:
+        from app.services.epa_pension_import import value_pension_account
+        try:
+            _pv = value_pension_account(db, acct, persist=False)
+            pension_holdings = _pv.get("holdings") or None
+        except Exception:
+            pension_holdings = None
+
     return templates.TemplateResponse(request, "accounts/detail.html", {
         "account": acct,
         "balance": balance,
+        "account_forecast": account_forecast,
+        "forecast_months": forecast_months,
+        "rsu_grants": rsu_grants,
+        "rsu_summary": rsu_summary,
+        "pension_holdings": pension_holdings,
         "balance_source": balance_result.balance_source_used,
         "balance_stale": balance_result.balance_stale,
         "transactions": recent_txns,
@@ -753,6 +853,7 @@ def account_detail(
         "payment_breakdown": payment_breakdown,
         "interest_ytd": interest_ytd,
         "plan_it_plans": plan_it_plans,
+        "payment_due": next_payment_due(db, acct),
         "now": naive_utc_now(),
     })
 
@@ -798,6 +899,7 @@ def account_update(
     statement_balance_as_of: str = Form(""),
     overdraft_limit: str = Form(""),
     overdraft_as_of: str = Form(""),
+    payment_due_date: str = Form(""),
     db: Session = Depends(get_db),
 ):
     acct_type = AccountType(account_type)
@@ -875,6 +977,17 @@ def account_update(
             acct.monthly_payment = None
         db.commit()
 
+    _INTEREST_TYPES = {AccountType.CREDIT_CARD, AccountType.LOAN, AccountType.OTHER}
+    if acct_type in _INTEREST_TYPES:
+        if interest_rate.strip():
+            try:
+                acct.interest_rate = float(interest_rate) / 100.0
+            except ValueError:
+                pass
+        else:
+            acct.interest_rate = None
+        db.commit()
+
     if statement_balance.strip():
         try:
             acct.statement_balance = Decimal(statement_balance)
@@ -911,7 +1024,112 @@ def account_update(
         acct.overdraft_as_of = None
         db.commit()
 
+    if acct_type in LIABILITY_TYPES and payment_due_date.strip():
+        try:
+            acct.payment_due_date = datetime.strptime(
+                payment_due_date.strip(), "%Y-%m-%d"
+            ).date()
+            db.commit()
+        except ValueError:
+            db.rollback()
+    elif acct.payment_due_date is not None and not payment_due_date.strip():
+        acct.payment_due_date = None
+        db.commit()
+
     return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)
+
+
+@router.post("/{account_id}/accrue-interest")
+def account_accrue_interest(
+    account_id: int,
+    start_date: str = Form(""),
+    through_date: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Backfill monthly interest accruals on an interest-bearing account."""
+    from datetime import date as _date
+    from app.services.interest_accrual import accrue_interest
+
+    acct = get_account(db, account_id)
+    if not acct:
+        return HTMLResponse("Account not found", status_code=404)
+
+    start = None
+    through = None
+    try:
+        if start_date.strip():
+            start = datetime.strptime(start_date.strip(), "%Y-%m-%d").date()
+        if through_date.strip():
+            through = datetime.strptime(through_date.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        pass
+
+    created = accrue_interest(db, acct, start=start, through=through or _date.today())
+    db.commit()
+    return RedirectResponse(
+        url=f"/accounts/{account_id}?accrued={len(created)}", status_code=303,
+    )
+
+
+@router.post("/{account_id}/close")
+def account_close(
+    account_id: int,
+    closed_at: str = Form(""),
+    reason: str = Form(""),
+    zero_balance: bool = Form(False),
+    db: Session = Depends(get_db),
+):
+    """Close an account: keeps every transaction, hides it from the active
+    list, and stops its scheduled payments."""
+    acct = get_account(db, account_id)
+    if not acct:
+        return HTMLResponse("Account not found", status_code=404)
+
+    when = None
+    if closed_at.strip():
+        try:
+            when = datetime.strptime(closed_at.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            return RedirectResponse(
+                url=f"/accounts/{account_id}?close_err=date", status_code=303,
+            )
+
+    stats = close_account(
+        db, acct, closed_at=when, reason=reason, zero_balance=zero_balance,
+    )
+    return RedirectResponse(
+        url=f"/accounts/{account_id}?closed=1&sched={stats['scheduled_deactivated']}",
+        status_code=303,
+    )
+
+
+@router.post("/{account_id}/reopen")
+def account_reopen(account_id: int, db: Session = Depends(get_db)):
+    acct = get_account(db, account_id)
+    if not acct:
+        return HTMLResponse("Account not found", status_code=404)
+    reopen_account(db, acct)
+    return RedirectResponse(url=f"/accounts/{account_id}?reopened=1", status_code=303)
+
+
+@router.post("/{account_id}/refresh-rsu-price")
+def account_refresh_rsu_price(account_id: int, db: Session = Depends(get_db)):
+    """Fetch the live market price and re-value an RSU account."""
+    acct = get_account(db, account_id)
+    if not acct or acct.account_type != AccountType.RSU:
+        return HTMLResponse("Not an RSU account", status_code=404)
+    from app.services.rsu_service import value_rsu_account
+    try:
+        summary = value_rsu_account(db, acct, refresh_price=True, persist=True)
+        db.commit()
+    except Exception:
+        db.rollback()
+        return RedirectResponse(url=f"/accounts/{account_id}?rsu_price_err=1", status_code=303)
+    px = summary.get("price")
+    return RedirectResponse(
+        url=f"/accounts/{account_id}?rsu_priced={px if px is not None else ''}",
+        status_code=303,
+    )
 
 
 @router.post("/{account_id}/delete")

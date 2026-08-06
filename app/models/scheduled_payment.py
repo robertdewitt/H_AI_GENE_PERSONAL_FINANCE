@@ -62,6 +62,13 @@ class ScheduledPayment(Base):
     # auto_detected | statement | manual
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # ── Flag level ──────────────────────────────────────────────────────────
+    # How this payment surfaces on the tasks page:
+    #   "auto"     → automatic charge (subscription / direct debit), low-level
+    #   "reminder" → needs attention (card/loan/mortgage payment, income in)
+    #   None       → fall back to the classifier default (payment_classifier)
+    flag_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
     # ── Status ────────────────────────────────────────────────────────────
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 

@@ -52,13 +52,15 @@
         <small>Used to calculate how long you've held the asset and value changes over time.</small>
     </div>
 
-    <div id="mortgage-fields" style="display:none">
+    <div id="interest-fields" style="display:none">
         <label for="interest_rate">Annual Interest Rate (%)</label>
         <input type="number" id="interest_rate" name="interest_rate" step="0.0001" min="0" max="100"
                value="{{ (account.interest_rate * 100) | round(4) if account and account.interest_rate else '' }}"
                placeholder="e.g., 4.25">
-        <small>Imported automatically from PDF statements. Used for payoff projection.</small>
+        <small>Interest rate on this loan/credit. Used for payoff projection and interest accrual.</small>
+    </div>
 
+    <div id="mortgage-fields" style="display:none">
         <label for="monthly_payment">Monthly Payment</label>
         <input type="number" id="monthly_payment" name="monthly_payment" step="0.01"
                value="{{ account.monthly_payment if account and account.monthly_payment is not none else '' }}"
@@ -92,6 +94,14 @@
             {% endfor %}
         </select>
         <small>Link a mortgage to see equity (property value minus outstanding balance) on the account page.</small>
+    </div>
+
+    {# Payment due date — for payable (liability) accounts: credit cards, loans, mortgages #}
+    <div id="payment-due-fields" style="display:none">
+        <label for="payment_due_date">Next Payment Due</label>
+        <input type="date" id="payment_due_date" name="payment_due_date"
+               value="{{ account.payment_due_date.strftime('%Y-%m-%d') if account and account.payment_due_date else '' }}">
+        <small>When the next payment on this account is due. Auto-filled from statements; leave blank to use the soonest scheduled payment.</small>
     </div>
 
     {# Statement balance — shown for transactional accounts to anchor balance calculations #}
@@ -166,6 +176,8 @@
 {% block scripts %}
 <script>
 const _PHYSICAL_ASSET_TYPES = ['real_estate', 'vehicle', 'collectible'];
+const _LIABILITY_TYPES = ['credit_card', 'loan', 'mortgage'];
+const _INTEREST_TYPES = ['credit_card', 'loan', 'mortgage', 'other'];
 function updateAssetFields() {
     const val = document.getElementById('account_type').value;
     document.getElementById('physical-asset-fields').style.display =
@@ -174,6 +186,10 @@ function updateAssetFields() {
         val === 'real_estate' ? 'block' : 'none';
     document.getElementById('mortgage-fields').style.display =
         val === 'mortgage' ? 'block' : 'none';
+    document.getElementById('interest-fields').style.display =
+        _INTEREST_TYPES.includes(val) ? 'block' : 'none';
+    document.getElementById('payment-due-fields').style.display =
+        _LIABILITY_TYPES.includes(val) ? 'block' : 'none';
 }
 document.getElementById('account_type').addEventListener('change', updateAssetFields);
 updateAssetFields();

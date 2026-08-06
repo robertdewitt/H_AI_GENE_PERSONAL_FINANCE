@@ -43,11 +43,19 @@
 {% set base_symbol = base_currency | currency_symbol %}
 <div style="background:var(--pico-card-background-color,#fff);border:1px solid var(--pico-muted-border-color);border-radius:8px;padding:1rem;margin-bottom:1.5rem">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">
-        <small style="color:var(--pico-muted-color)">All flows in {{ base_currency }} (mixed-currency totals converted at today's rate)</small>
+        <small style="color:var(--pico-muted-color)">Net flows in {{ base_currency }} · reciprocal transfers shown in their dominant direction (mixed currencies converted at today's rate)</small>
         <small style="color:var(--pico-muted-color)">{{ node_count }} accounts · {{ total_flows }} flow{{ '' if total_flows == 1 else 's' }}</small>
     </div>
+    {% if dropped_flows %}
+    <div style="margin-bottom:0.5rem;padding:0.4rem 0.7rem;border-left:3px solid #f59e0b;background:color-mix(in srgb,#f59e0b 8%,transparent);font-size:0.82rem">
+        {{ dropped_flows }} small flow{{ 's' if dropped_flows != 1 else '' }} hidden to keep the diagram acyclic (circular transfer chain detected).
+    </div>
+    {% endif %}
     <div style="overflow:auto">
         <canvas id="sankeyChart" style="width:100%;height:{{ chart_height }}px"></canvas>
+        <p id="sankeyError" style="display:none;color:var(--pico-del-color);padding:1rem">
+            Couldn't render the flow diagram. The per-account summary below still has the totals.
+        </p>
     </div>
 </div>
 
@@ -115,6 +123,7 @@ const priority = {};
 nodeNames.forEach((n, i) => { priority[n] = i; });
 
 const ctx = document.getElementById('sankeyChart').getContext('2d');
+try {
 new Chart(ctx, {
     type: 'sankey',
     data: {
@@ -160,6 +169,13 @@ new Chart(ctx, {
         }
     }
 });
+} catch (err) {
+    // chartjs-chart-sankey throws on a cyclic graph rather than degrading.
+    // Don't let that blank the page — surface a message and keep the table.
+    console.error('Sankey render failed:', err);
+    document.getElementById('sankeyChart').style.display = 'none';
+    document.getElementById('sankeyError').style.display = 'block';
+}
 </script>
 {% endif %}
 {% endblock %}

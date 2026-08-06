@@ -23,6 +23,16 @@ from app.services.revolut_pdf_parser import (
     is_revolut_pdf,
     parse_revolut_pdf,
 )
+from app.services.rsu_service import (
+    import_rsu_grants,
+    is_merrill_rsu_csv,
+    parse_merrill_rsu_csv,
+)
+from app.services.epa_pension_import import (
+    import_pension_positions,
+    is_epa_pension_pdf,
+    parse_epa_pension_pdf,
+)
 
 router = APIRouter(prefix="/import", tags=["import"])
 
@@ -119,6 +129,40 @@ async def upload_file(
             "account_name": account.name if account else f"Account {account_id}",
             "filepath": str(dest),
             "sections": sections,
+        })
+
+    # Detect Merrill / BofA RSU award-summary CSV — dedicated preview
+    if ext == ".csv" and is_merrill_rsu_csv(str(dest)):
+        try:
+            parsed_rsu = parse_merrill_rsu_csv(str(dest))
+        except Exception as exc:
+            return templates.TemplateResponse(request, "imports/upload.html", {
+                "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+                "error": f"Failed to parse RSU award summary: {exc}",
+            })
+        account = db.get(Account, account_id)
+        return templates.TemplateResponse(request, "imports/rsu_preview.html", {
+            "account_id": account_id,
+            "account_name": account.name if account else f"Account {account_id}",
+            "filepath": str(dest),
+            "parsed": parsed_rsu,
+        })
+
+    # Detect WTW ePA pension "My Fund Balance" PDF — dedicated preview
+    if ext == ".pdf" and is_epa_pension_pdf(str(dest)):
+        try:
+            parsed_pension = parse_epa_pension_pdf(str(dest))
+        except Exception as exc:
+            return templates.TemplateResponse(request, "imports/upload.html", {
+                "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+                "error": f"Failed to parse ePA pension statement: {exc}",
+            })
+        account = db.get(Account, account_id)
+        return templates.TemplateResponse(request, "imports/epa_preview.html", {
+            "account_id": account_id,
+            "account_name": account.name if account else f"Account {account_id}",
+            "filepath": str(dest),
+            "parsed": parsed_pension,
         })
 
     # Detect IBKR activity statement CSV — route to dedicated preview
@@ -283,6 +327,49 @@ def confirm_import(
                     account.monthly_payment = meta["monthly_payment"]
                 if "original_balance" in meta and not account.original_principal_balance:
                     account.original_principal_balance = meta["original_balance"]
+
+                # Regular mortgage payment → statement-sourced scheduled payment
+                # so it shows up on the tasks page and feeds the cash-flow
+                # forecast. Mortgage statements rarely print a "due date", so
+                # anchor the next instalment one month past the statement date
+                # (rolled forward to the future), letting the import matcher
+                # snap it to the real payment date later.
+                mp = meta.get("monthly_payment")
+                if mp:
+                    from app.models.scheduled_payment import ScheduledPayment as _Sched
+                    from app.services.recurring_detector import _add_months as _addm
+                    anchor = stmt_date.date() if hasattr(stmt_date, "date") else stmt_date
+                    next_due = _addm(anchor, 1)
+                    today_d = naive_utc_now().date()
+                    while next_due < today_d:
+                        next_due = _addm(next_due, 1)
+                    account.payment_due_date = next_due
+                    pay_amt = _Dec(str(-abs(float(mp))))
+                    existing_mp = db.execute(
+                        select(_Sched).where(
+                            _Sched.account_id == account.id,
+                            _Sched.source == "statement",
+                            _Sched.active.is_(True),
+                        ).limit(1)
+                    ).scalar_one_or_none()
+                    if existing_mp is not None:
+                        existing_mp.amount = pay_amt
+                        existing_mp.next_due_date = next_due
+                        existing_mp.day_of_month = next_due.day
+                    else:
+                        db.add(_Sched(
+                            account_id=account.id,
+                            description=f"{account.name} — Mortgage Payment",
+                            amount=pay_amt,
+                            amount_type="fixed",
+                            currency=account.currency or "USD",
+                            frequency="monthly",
+                            next_due_date=next_due,
+                            day_of_month=next_due.day,
+                            source="statement",
+                            confidence=0.90,
+                            active=True,
+                        ))
                 db.commit()
 
                 # ── PaymentDecomposition for Regular Payment transactions ──
@@ -627,8 +714,32 @@ def confirm_import(
                             as_of_date=as_of_dt,
                         ))
 
-                # 3) Scheduled minimum payment, if we have a due date.
+                # 3) Scheduled payment from the statement, if we have a due
+                #    date. Prefer the full statement balance (pay-in-full) as
+                #    the planned amount — that's what most people pay and it
+                #    gives an accurate forecast — falling back to the minimum.
+                #    Both figures are recorded in notes for reference.
                 if due_date is not None:
+                    # Surface the due date on the account itself.
+                    account.payment_due_date = due_date
+
+                if due_date is not None and (min_pay is not None or new_bal):
+                    sym = getattr(account, "currency_symbol", "") or ""
+                    full_owed = abs(float(new_bal)) if new_bal else 0.0
+                    min_owed = float(min_pay) if min_pay is not None else 0.0
+                    if full_owed > 0:
+                        plan_amount = _Dec(str(-full_owed))
+                        plan_desc = f"{account.name} — Statement Balance"
+                    else:
+                        plan_amount = _Dec(str(-min_owed))
+                        plan_desc = f"{account.name} — Minimum Payment"
+                    note_bits = []
+                    if full_owed > 0:
+                        note_bits.append(f"Pay in full: {sym}{full_owed:,.2f}")
+                    if min_owed > 0:
+                        note_bits.append(f"Minimum: {sym}{min_owed:,.2f}")
+                    plan_notes = " · ".join(note_bits) or None
+
                     existing_sched = db.execute(
                         _sel(ScheduledPayment).where(
                             ScheduledPayment.account_id == account_id,
@@ -636,21 +747,23 @@ def confirm_import(
                             ScheduledPayment.active.is_(True),
                         ).limit(1)
                     ).scalar_one_or_none()
-                    pay_amount = _Dec(str(-(min_pay or 0)))  # outflow = negative
                     if existing_sched is not None:
                         existing_sched.next_due_date = due_date
-                        if min_pay is not None:
-                            existing_sched.amount = pay_amount
-                    elif min_pay is not None:
+                        existing_sched.day_of_month = due_date.day
+                        existing_sched.amount = plan_amount
+                        existing_sched.description = plan_desc
+                        existing_sched.notes = plan_notes
+                    else:
                         db.add(ScheduledPayment(
                             account_id=account_id,
-                            description=f"{account.name} — Minimum Payment",
-                            amount=pay_amount,
+                            description=plan_desc,
+                            amount=plan_amount,
                             amount_type="estimated",
                             currency=account.currency or "USD",
                             frequency="monthly",
                             next_due_date=due_date,
                             day_of_month=due_date.day,
+                            notes=plan_notes,
                             source="statement",
                             confidence=0.95,
                             active=True,
@@ -710,6 +823,75 @@ def ibkr_confirm(
     dividends = stats["dividends_added"]
     return RedirectResponse(
         url=f"/portfolio?ibkr_imported=1&positions={positions}&trades={trades}&dividends={dividends}",
+        status_code=303,
+    )
+
+
+@router.post("/rsu-confirm")
+def rsu_confirm(
+    request: Request,
+    account_id: int = Form(...),
+    filepath: str = Form(...),
+    db: Session = Depends(get_db),
+    user = Depends(get_current_user),
+):
+    from app.services.upload_safety import assert_user_owns_path, UnsafeFilenameError
+    try:
+        assert_user_owns_path(settings.upload_dir, user.id, filepath)
+    except UnsafeFilenameError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    account = db.get(Account, account_id)
+    if not account:
+        return RedirectResponse(url="/import", status_code=303)
+
+    try:
+        parsed = parse_merrill_rsu_csv(filepath)
+        stats = import_rsu_grants(db, account, parsed)
+    except Exception as exc:
+        accounts = db.execute(select(Account).order_by(Account.name)).scalars().all()
+        return templates.TemplateResponse(request, "imports/upload.html", {
+            "accounts": accounts,
+            "error": f"RSU import failed: {exc}",
+        })
+
+    grants = stats["grants_created"] + stats["grants_updated"]
+    return RedirectResponse(
+        url=f"/accounts/{account_id}?rsu_imported=1&grants={grants}&vests={stats['vests_created']}",
+        status_code=303,
+    )
+
+
+@router.post("/epa-confirm")
+def epa_confirm(
+    request: Request,
+    account_id: int = Form(...),
+    filepath: str = Form(...),
+    db: Session = Depends(get_db),
+    user = Depends(get_current_user),
+):
+    from app.services.upload_safety import assert_user_owns_path, UnsafeFilenameError
+    try:
+        assert_user_owns_path(settings.upload_dir, user.id, filepath)
+    except UnsafeFilenameError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    account = db.get(Account, account_id)
+    if not account:
+        return RedirectResponse(url="/import", status_code=303)
+
+    try:
+        parsed = parse_epa_pension_pdf(filepath)
+        stats = import_pension_positions(db, account, parsed)
+    except Exception as exc:
+        accounts = db.execute(select(Account).order_by(Account.name)).scalars().all()
+        return templates.TemplateResponse(request, "imports/upload.html", {
+            "accounts": accounts,
+            "error": f"ePA pension import failed: {exc}",
+        })
+
+    return RedirectResponse(
+        url=f"/accounts/{account_id}?epa_imported=1&funds={stats['funds']}",
         status_code=303,
     )
 

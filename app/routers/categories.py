@@ -101,6 +101,23 @@ def category_edit(
     return RedirectResponse(url="/categories", status_code=303)
 
 
+@router.post("/{cat_id}/essential")
+def category_set_essential(
+    cat_id: int,
+    is_essential: str = Form(...),  # "auto" | "essential" | "discretionary"
+    db: Session = Depends(get_db),
+):
+    cat = db.get(Category, cat_id)
+    if not cat:
+        return HTMLResponse("Category not found", status_code=404)
+    cat.is_essential = {
+        "essential": True,
+        "discretionary": False,
+    }.get(is_essential.strip().lower())  # "auto" / anything else → None
+    db.commit()
+    return RedirectResponse(url="/categories", status_code=303)
+
+
 @router.post("/{cat_id}/delete")
 def category_delete(
     cat_id: int,

@@ -26,6 +26,79 @@ from app.services.transfer_detector import (
 router = APIRouter(prefix="/transfers", tags=["transfers"])
 
 
+def _acyclic_edges(pair_flow: dict) -> tuple[list[dict], int]:
+    """Turn directed (from,to)→entry flows into an acyclic edge list.
+
+    A Sankey diagram must be a DAG — ``chartjs-chart-sankey`` silently
+    renders nothing when the graph contains a cycle. We:
+
+    1. Net every reciprocal pair (A→B and B→A) into one edge in the
+       dominant direction (kills all 2-cycles, the common case).
+    2. Break any remaining longer cycle by dropping its smallest-flow edge
+       until the graph is acyclic.
+
+    Returns ``(edges, dropped_count)``.
+    """
+    # 1. Net reciprocal pairs.
+    netted: list[dict] = []
+    processed: set[tuple[str, str]] = set()
+    for (f, t), e in pair_flow.items():
+        if (f, t) in processed:
+            continue
+        rev = pair_flow.get((t, f))
+        if rev is not None:
+            processed.add((f, t))
+            processed.add((t, f))
+            if e["flow"] >= rev["flow"]:
+                src, dst, net = f, t, e["flow"] - rev["flow"]
+            else:
+                src, dst, net = t, f, rev["flow"] - e["flow"]
+            if net <= 0:
+                continue  # cancels out exactly — no net movement to draw
+            netted.append({
+                "from": src, "to": dst, "flow": net,
+                "count": e["count"] + rev["count"],
+                "native": e["native"] + rev["native"],
+                "netted": True,
+            })
+        else:
+            processed.add((f, t))
+            netted.append(e)
+
+    # 2. Break any remaining cycle (e.g. A→B→C→A) by removing the smallest
+    #    edge until acyclic. Min feedback arc set is NP-hard, but this greedy
+    #    pass is fine at the handful-of-accounts scale here.
+    def _has_cycle(edges: list[dict]) -> bool:
+        from collections import defaultdict
+        adj: dict[str, list[str]] = defaultdict(list)
+        nodes: set[str] = set()
+        for e in edges:
+            adj[e["from"]].append(e["to"])
+            nodes.add(e["from"])
+            nodes.add(e["to"])
+        state: dict[str, int] = {}  # 0=visiting, 1=done
+
+        def visit(u: str) -> bool:
+            state[u] = 0
+            for v in adj[u]:
+                if state.get(v) == 0:
+                    return True
+                if v not in state and visit(v):
+                    return True
+            state[u] = 1
+            return False
+
+        return any(n not in state and visit(n) for n in nodes)
+
+    dropped = 0
+    while _has_cycle(netted):
+        netted.sort(key=lambda e: e["flow"])
+        netted.pop(0)
+        dropped += 1
+
+    return netted, dropped
+
+
 @router.get("", response_class=HTMLResponse)
 def transfers_page(
     request: Request,
@@ -238,7 +311,13 @@ def transfer_flow(
             "ccy": ccy, "amount": native_amount, "count": int(r.count or 0),
         })
 
-    sankey_data = sorted(pair_flow.values(), key=lambda d: -d["flow"])
+    # ── Make the graph a DAG ────────────────────────────────────────────
+    # A Sankey must be acyclic; chartjs-chart-sankey renders *nothing* if it
+    # hits a cycle. Reciprocal transfers (A→B and B→A) are the common case,
+    # so net each pair into a single dominant-direction edge. Then break any
+    # remaining longer cycle by dropping its smallest-flow edge.
+    netted_edges, dropped_count = _acyclic_edges(pair_flow)
+    sankey_data = sorted(netted_edges, key=lambda d: -d["flow"])
 
     # Per-account totals for summary table (in base currency)
     out_totals: dict[str, float] = {}
@@ -267,4 +346,5 @@ def transfer_flow(
         "total_flows": len(sankey_data),
         "node_count": len(accounts),
         "base_currency": base_ccy,
+        "dropped_flows": dropped_count,
     })

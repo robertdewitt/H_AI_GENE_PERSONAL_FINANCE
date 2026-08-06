@@ -260,6 +260,71 @@ def transactions_list(
 
 # ── Single transaction edit ──────────────────────────────────────────
 
+# ── Manual add transaction ───────────────────────────────────────────
+
+@router.get("/new", response_class=HTMLResponse)
+def transaction_new_form(
+    request: Request,
+    account_id: int | None = Query(None),
+    return_url: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    accounts = db.execute(select(Account).order_by(Account.name)).scalars().all()
+    categories = db.execute(select(Category).order_by(Category.name)).scalars().all()
+    return templates.TemplateResponse(request, "transactions/new.html", {
+        "accounts": accounts,
+        "categories": categories,
+        "account_id": account_id,
+        "today": datetime.now().strftime("%Y-%m-%d"),
+        "return_url": return_url or (f"/accounts/{account_id}" if account_id else "/transactions"),
+    })
+
+
+@router.post("/new")
+def transaction_create(
+    request: Request,
+    account_id: int = Form(...),
+    date: str = Form(...),
+    description: str = Form(...),
+    amount: str = Form(...),
+    category_id: str = Form(""),
+    is_transfer: bool = Form(False),
+    transfer_account_id: str = Form(""),
+    return_url: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    account = db.get(Account, account_id)
+    if account is None:
+        return HTMLResponse("Account not found", status_code=404)
+    try:
+        amt = Decimal(amount)
+    except (ValueError, ArithmeticError):
+        return HTMLResponse("Invalid amount", status_code=400)
+
+    txn = Transaction(
+        account_id=account_id,
+        date=datetime.strptime(date, "%Y-%m-%d"),
+        description=description.strip()[:500] or "(no description)",
+        amount=amt,
+        original_currency=account.currency or "USD",
+        category_id=int(category_id) if category_id.strip() else None,
+        is_transfer=is_transfer,
+    )
+    db.add(txn)
+    db.flush()
+
+    if is_transfer and transfer_account_id.strip():
+        dest = int(transfer_account_id)
+        if dest != account_id:
+            _link_transfer(db, txn, dest)
+
+    apply_truth_after_transaction_update(db, txn, None)
+    db.commit()
+
+    redirect = return_url.strip() or f"/accounts/{account_id}"
+    return RedirectResponse(url=redirect, status_code=303)
+
+
 @router.get("/{txn_id:int}/edit", response_class=HTMLResponse)
 def transaction_edit_form(
     request: Request,
@@ -432,6 +497,14 @@ def _link_transfer(db: Session, txn: Transaction, other_account_id: int):
         .limit(1)
     ).scalar_one_or_none()
 
+    if match is None:
+        # No counterpart exists in the other account (e.g. a manually-tracked
+        # personal loan or cash account with no statement). Create the mirror
+        # transaction so the transfer is represented on both sides.
+        match = _create_counterpart(db, txn, other_account_id)
+        if match is None:
+            return
+
     if match:
         if txn.amount < 0:
             link = TransferLink(
@@ -457,6 +530,43 @@ def _link_transfer(db: Session, txn: Transaction, other_account_id: int):
         txn.is_transfer = True
         match.transfer_link_id = link.id
         match.is_transfer = True
+
+
+def _create_counterpart(db: Session, txn: Transaction, other_account_id: int):
+    """Create the opposite side of a transfer in ``other_account_id``.
+
+    The mirror carries the opposite sign (money leaving one account arrives in
+    the other), converted to the destination account's currency when they
+    differ. Returns the new Transaction, or None if the account is missing.
+    """
+    from app.models.account import Account
+
+    dst = db.get(Account, other_account_id)
+    if dst is None:
+        return None
+    src = db.get(Account, txn.account_id)
+    src_ccy = (src.currency if src else None) or (txn.original_currency or "USD")
+    dst_ccy = dst.currency or src_ccy
+
+    counter_amount = -txn.amount
+    if src_ccy != dst_ccy:
+        from app.services.fx_service import convert_amount
+        conv, _rate = convert_amount(db, abs(txn.amount), src_ccy, dst_ccy, txn.date)
+        if conv is not None:
+            counter_amount = conv if txn.amount < 0 else -conv
+
+    label = f"Transfer from {src.name}" if src else (txn.description or "Transfer")
+    counterpart = Transaction(
+        account_id=other_account_id,
+        date=txn.date,
+        description=label[:500],
+        amount=counter_amount,
+        original_currency=dst_ccy,
+        is_transfer=True,
+    )
+    db.add(counterpart)
+    db.flush()
+    return counterpart
 
 
 # ── Delete single transaction ────────────────────────────────────────

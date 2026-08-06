@@ -124,7 +124,7 @@ def _extract_us_state(address: str) -> str | None:
 
 # ── FRED data fetch ───────────────────────────────────────────────────────────
 
-def _fetch_fred_csv(series_id: str, timeout: int = 8) -> list[tuple[datetime, float]]:
+def _fetch_fred_csv(series_id: str, timeout: int = 5) -> list[tuple[datetime, float]]:
     """Download a FRED series CSV and return (date, value) pairs sorted by date."""
     import requests
     url = _FRED_CSV_URL.format(series_id=series_id)
@@ -185,7 +185,38 @@ def _cagr_from_series(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+# ── TTL cache ───────────────────────────────────────────────────────────────
+# HPI is fetched from FRED over the network. Without caching, every Monte
+# Carlo run (and every horizon button click) re-hits FRED — and when FRED is
+# slow/unreachable each run blocks for ~8s per series, making the net-worth
+# page appear broken. Cache successes for a day (HPI updates monthly at most)
+# and failures briefly as a circuit-breaker so we don't re-hang on every load.
+import time as _time
+
+_HPI_CACHE: dict[str, tuple[float, HPIResult]] = {}
+_SUCCESS_TTL = 24 * 3600   # 1 day
+_FAILURE_TTL = 600         # 10 minutes
+
+
 def get_hpi_for_address(address: str | None) -> HPIResult:
+    """Cached wrapper around :func:`_compute_hpi_for_address`."""
+    key = (address or "").strip().lower()
+    now = _time.time()
+    cached = _HPI_CACHE.get(key)
+    if cached and cached[0] > now:
+        return cached[1]
+
+    result = _compute_hpi_for_address(address)
+
+    # Short TTL when we fell back because the network fetch failed, so a
+    # transient FRED outage clears quickly; long TTL for real data.
+    failed_fetch = "fetch failed" in (result.source or "")
+    ttl = _FAILURE_TTL if failed_fetch else _SUCCESS_TTL
+    _HPI_CACHE[key] = (now + ttl, result)
+    return result
+
+
+def _compute_hpi_for_address(address: str | None) -> HPIResult:
     """Return historical HPI CAGR for the given property address.
 
     Tries regional data first, falls back to national, then to 4 % default.

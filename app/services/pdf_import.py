@@ -62,6 +62,17 @@ def pdf_to_dataframe(filepath: str) -> pd.DataFrame:
                 log.info("UK HP loan statement: %d transactions", len(df))
                 return df
 
+        # Attempt 1d: Barclays (Isle of Man / UK) current-account statement.
+        # Multi-line rows where the date appears once per day, the running
+        # balance only shows on the day's last row, and Money out / Money in
+        # are separate columns — the sign is only recoverable from the column
+        # an amount sits in, so parse by word x-position.
+        if _is_barclays_statement(full_text):
+            df = _parse_barclays_transactions(pdf, full_text)
+            if df is not None and len(df) > 0:
+                log.info("Barclays statement: %d transactions", len(df))
+                return df
+
         # Attempt 2: proper table extraction
         df = _extract_tables(pdf)
         if df is not None and len(df) >= 2:
@@ -241,6 +252,155 @@ def _parse_uk_hp_loan_transactions(text: str) -> "pd.DataFrame | None":
             "description": desc,
             "amount": amount,
         })
+
+    if not rows:
+        return None
+    return pd.DataFrame(rows)
+
+
+# ── Barclays (Isle of Man / UK) current-account statement parser ────────────
+
+_BARCLAYS_MONTHS = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+}
+_BARCLAYS_AMT_RE = re.compile(r"^-?\d{1,3}(?:,\d{3})*\.\d{2}$")
+_BARCLAYS_NOISE = (
+    "barclays offers", "registered", "financial conduct", "prudential",
+    "continued", "anything wrong", "your transactions", "at a glance",
+    "arranged limits", "charges coming up", "about charges",
+    "keeping track", "start balance", "end balance",
+    "sort code", "account number", "account no", "date description",
+    "your balances", "total charges", "personal od", "isle of man",
+)
+# Footer/page-number fragments that shouldn't be appended to a description.
+_BARCLAYS_FOOTER_RE = re.compile(r"^page\s+\d", re.I)
+# Column right-edge (x1) thresholds, calibrated from Barclays statements:
+# Money out ≈ 305, Money in ≈ 359, Balance ≈ 412.
+_BARCLAYS_X_OUT = 315.0
+_BARCLAYS_X_IN = 366.0
+_BARCLAYS_X_DESC = 256.0   # description tokens start left of the money columns
+
+
+def _is_barclays_statement(text: str) -> bool:
+    low = text[:6000].lower()
+    return (
+        "barclays" in low
+        and "your transactions" in low
+        and "money out" in low
+        and "money in" in low
+    )
+
+
+def _barclays_year_month(text: str) -> tuple[int, int]:
+    """(end_year, end_month) inferred from the statement date."""
+    m = re.search(r"Statement date\s+(\d{1,2})\s+([A-Z][a-z]{2})\s+(\d{4})", text)
+    if not m:
+        m = re.search(r"(\d{1,2})\s+([A-Z][a-z]{2})\s+(\d{4})", text)
+    if m and m.group(2) in _BARCLAYS_MONTHS:
+        return int(m.group(3)), _BARCLAYS_MONTHS[m.group(2)]
+    now = naive_utc_now()
+    return now.year, now.month
+
+
+def _parse_barclays_transactions(pdf, full_text: str) -> "pd.DataFrame | None":
+    """Parse a Barclays statement using word x-positions to resolve columns.
+
+    The layout gives the date once per day, shows the running balance only on
+    the day's last row, and splits amounts into Money out / Money in columns —
+    so the sign is only recoverable from which column an amount sits in.
+    Money out → negative, Money in → positive; Balance column is ignored.
+    """
+    end_year, end_month = _barclays_year_month(full_text)
+    date_tok = re.compile(r"^\d{1,2}$")
+
+    def year_for(month: int) -> int:
+        # A month later than the statement's end month belongs to the prior
+        # year (e.g. December rows on a January statement).
+        return end_year - 1 if month > end_month else end_year
+
+    rows: list[dict] = []
+    for page_idx, page in enumerate(pdf.pages):
+        words = page.extract_words()
+        if not words:
+            continue
+        # Cluster words into visual rows by their top coordinate.
+        clusters: dict[int, list] = {}
+        for w in words:
+            clusters.setdefault(round(w["top"] / 3.0), []).append(w)
+
+        cur_day = cur_month = cur_year = None
+        # Track the last transaction's row so continuation lines (Ref:, wrapped
+        # text) only attach when they sit immediately below it — this stops the
+        # info/footer pages from bleeding into the final transaction.
+        cont_page = None
+        cont_top = None
+        for key in sorted(clusters):
+            row = sorted(clusters[key], key=lambda w: w["x0"])
+            row_top = min(w["top"] for w in row)
+            texts = [w["text"] for w in row]
+            low = " ".join(texts).lower()
+
+            # Date at the start of the row? "DD Mon"
+            if (
+                len(row) >= 2
+                and date_tok.match(row[0]["text"])
+                and row[0]["x0"] < 90
+                and row[1]["text"] in _BARCLAYS_MONTHS
+            ):
+                cur_day = int(row[0]["text"])
+                cur_month = _BARCLAYS_MONTHS[row[1]["text"]]
+                cur_year = year_for(cur_month)
+
+            money_out = money_in = None
+            for w in row:
+                if not _BARCLAYS_AMT_RE.match(w["text"]):
+                    continue
+                val = float(w["text"].replace(",", ""))
+                if w["x1"] <= _BARCLAYS_X_OUT:
+                    money_out = val
+                elif w["x1"] <= _BARCLAYS_X_IN:
+                    money_in = val
+                # else: balance column — ignore
+
+            if any(n in low for n in _BARCLAYS_NOISE):
+                continue
+
+            if money_out is not None or money_in is not None:
+                if cur_month is None:
+                    continue
+                desc_tokens = [
+                    w["text"] for w in row
+                    if w["x0"] < _BARCLAYS_X_DESC and not _BARCLAYS_AMT_RE.match(w["text"])
+                ]
+                if desc_tokens and date_tok.match(desc_tokens[0]):
+                    desc_tokens = desc_tokens[2:]   # drop leading "DD Mon"
+                desc = " ".join(desc_tokens).strip() or "(no description)"
+                amount = -money_out if money_out is not None else money_in
+                rows.append({
+                    "date": f"{cur_year:04d}-{cur_month:02d}-{cur_day:02d}",
+                    "description": desc,
+                    "amount": round(amount, 2),
+                })
+                cont_page, cont_top = page_idx, row_top
+            else:
+                # Continuation line (Ref:, wrapped text) — append only when it
+                # sits immediately below the last transaction (same page, next
+                # line or two), so footer/info text can't bleed in.
+                extra = " ".join(texts).strip()
+                near = (
+                    cont_page == page_idx and cont_top is not None
+                    and 0 < (row_top - cont_top) < 35
+                )
+                if (
+                    rows and extra and near and len(extra) < 80
+                    and not date_tok.match(texts[0])
+                    and not _BARCLAYS_FOOTER_RE.match(extra)
+                ):
+                    rows[-1]["description"] = (rows[-1]["description"] + " " + extra).strip()
+                    cont_top = row_top   # chain multiple continuation lines
+                else:
+                    cont_page = cont_top = None
 
     if not rows:
         return None

@@ -12,7 +12,8 @@ from app.services.clock import naive_utc_now
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-STALE_DAYS = 30   # flag accounts not updated within this many days
+STALE_DAYS = 30     # flag accounts not updated within this many days
+DUE_SOON_DAYS = 30  # surface scheduled payments due within this window
 
 
 @dataclass
@@ -52,6 +53,10 @@ def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
     stale_accounts: list[Account] = []
     for acct in accounts:
         if acct.account_type not in transactional_types:
+            continue
+        # A closed account is expected to stop receiving transactions — don't
+        # nag about it going stale.
+        if getattr(acct, "closed_at", None) is not None:
             continue
         # Use most recent transaction date as proxy for "last updated"
         last_txn_date = db.execute(
@@ -156,29 +161,108 @@ def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
             severity="info",
         ))
 
-    # ── 5. Overdue scheduled payments ────────────────────────────────────────
+    # ── 5. Overdue + upcoming scheduled payments ─────────────────────────────
     try:
         from app.models.scheduled_payment import ScheduledPayment
+        from app.models.account import Account as _SchedAcct
+        from app.services.payment_classifier import (
+            effective_flag_level, find_suppressed_transfer_ids,
+        )
         from datetime import date
+
         today = date.today()
-        overdue = db.execute(
-            select(ScheduledPayment).where(
-                ScheduledPayment.active.is_(True),
-                ScheduledPayment.next_due_date < today,
-            )
+        soon_cutoff = today + timedelta(days=DUE_SOON_DAYS)
+
+        all_active = db.execute(
+            select(ScheduledPayment).where(ScheduledPayment.active.is_(True))
         ).scalars().all()
+
+        acct_ids = {p.account_id for p in all_active}
+        accounts_map = {
+            a.id: a for a in (
+                db.execute(select(_SchedAcct).where(_SchedAcct.id.in_(acct_ids)))
+                .scalars().all() if acct_ids else []
+            )
+        }
+        if user_id is not None:
+            all_active = [
+                p for p in all_active
+                if (a := accounts_map.get(p.account_id)) and a.user_id == user_id
+            ]
+
+        # Requirement 3: a payment that moves money between two of your own
+        # accounts is flagged only on the destination — drop the source side.
+        suppressed = find_suppressed_transfer_ids(all_active, accounts_map)
+        visible = [p for p in all_active if p.id not in suppressed]
+
+        # 5a. Overdue — always a reminder, regardless of level.
+        overdue = [p for p in visible if p.next_due_date < today]
         if overdue:
             names = ", ".join(p.description for p in overdue[:3])
             if len(overdue) > 3:
                 names += f" +{len(overdue) - 3} more"
             tasks.append(Task(
-                category="scheduled",
-                title=f"{len(overdue)} overdue scheduled payment{'s' if len(overdue) != 1 else ''}",
+                category="reminders",
+                title=f"{len(overdue)} overdue payment{'s' if len(overdue) != 1 else ''}",
                 detail=names,
                 count=len(overdue),
                 url="/scheduled",
                 severity="warning",
             ))
+
+        # 5b. Due soon — grouped per (account, level). Reminders surface
+        #     prominently; auto-payments drop to a low-level section.
+        upcoming = [p for p in visible if today <= p.next_due_date <= soon_cutoff]
+        groups: dict[tuple[int, str], list] = {}
+        for p in upcoming:
+            lvl = effective_flag_level(p, accounts_map.get(p.account_id))
+            groups.setdefault((p.account_id, lvl), []).append(p)
+
+        for (acct_id, lvl), pmts in groups.items():
+            pmts.sort(key=lambda x: x.next_due_date)
+            acct = accounts_map.get(acct_id)
+            acct_name = acct.name if acct else f"Account {acct_id}"
+            days_away = (pmts[0].next_due_date - today).days
+            sym = getattr(acct, "currency_symbol", "") if acct else ""
+            outflow = sum(-float(p.amount) for p in pmts if (p.amount or 0) < 0)
+            inflow = sum(float(p.amount) for p in pmts if (p.amount or 0) > 0)
+            detail_bits = [
+                f"{p.description} ({p.next_due_date.strftime('%d %b')})"
+                for p in pmts[:3]
+            ]
+            if len(pmts) > 3:
+                detail_bits.append(f"+{len(pmts) - 3} more")
+            money_bits = []
+            if outflow > 0:
+                money_bits.append(f"{sym}{outflow:,.2f} out")
+            if inflow > 0:
+                money_bits.append(f"+{sym}{inflow:,.2f} in")
+            detail = ", ".join(detail_bits)
+            if money_bits:
+                detail = " · ".join(money_bits) + " — " + detail
+            when = ("today" if days_away == 0
+                    else f"in {days_away} day{'s' if days_away != 1 else ''}")
+
+            if lvl == "reminder":
+                tasks.append(Task(
+                    category="reminders",
+                    title=(f"{acct_name}: {len(pmts)} payment"
+                           f"{'s' if len(pmts) != 1 else ''} due {when}"),
+                    detail=detail,
+                    count=len(pmts),
+                    url=f"/accounts/{acct_id}",
+                    severity="warning" if days_away <= 7 else "info",
+                ))
+            else:  # auto — low level, informational only
+                tasks.append(Task(
+                    category="autopay",
+                    title=(f"{acct_name}: {len(pmts)} auto-payment"
+                           f"{'s' if len(pmts) != 1 else ''} {when}"),
+                    detail=detail,
+                    count=len(pmts),
+                    url="/scheduled",
+                    severity="info",
+                ))
     except Exception:
         pass  # table may not exist yet on old DBs
 

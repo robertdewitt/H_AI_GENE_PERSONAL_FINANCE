@@ -35,6 +35,7 @@
             <th>Amount</th>
             <th>Frequency</th>
             <th style="white-space:nowrap">Next Due</th>
+            <th>Flag as</th>
             <th>Source</th>
             <th>Last Matched</th>
             <th></th>
@@ -63,6 +64,19 @@
         <td style="font-size:0.9rem;white-space:nowrap{% if overdue %};color:#dc2626;font-weight:600{% endif %}">
             {{ p.next_due_date.strftime("%d %b %Y") }}
             {% if overdue %}<span style="font-size:0.75rem"> overdue</span>{% endif %}
+        </td>
+        <td style="font-size:0.85rem">
+            <form method="post" action="/scheduled/{{ p.id }}/flag-level" style="margin:0">
+                <select name="flag_level" onchange="this.form.submit()"
+                        style="margin:0;padding:0.1rem 0.3rem;font-size:0.78rem;width:auto">
+                    <option value="default" {% if not p.flag_level %}selected{% endif %}>Auto-classify ({{ levels.get(p.id, 'auto') }})</option>
+                    <option value="reminder" {% if p.flag_level == 'reminder' %}selected{% endif %}>Reminder</option>
+                    <option value="auto" {% if p.flag_level == 'auto' %}selected{% endif %}>Automatic</option>
+                </select>
+            </form>
+            {% if p.id in suppressed %}
+            <small style="color:var(--pico-muted-color)" title="Flagged on the destination account instead">↳ via destination</small>
+            {% endif %}
         </td>
         <td style="font-size:0.8rem;color:var(--pico-muted-color);text-transform:capitalize">{{ p.source.replace('_', ' ') }}</td>
         <td style="font-size:0.85rem;color:var(--pico-muted-color)">

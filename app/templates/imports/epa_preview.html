@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Pension Statement Preview &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>Pension Fund Balance Preview</h1>
+    <p>Review the funds extracted from your ePA statement. The account will be valued at <strong>units &times; unit price</strong> per fund.</p>
+</hgroup>
+
+<article style="margin-bottom:1.5rem;padding:0.75rem 1rem;border-left:4px solid var(--pico-primary)">
+    <strong>Account:</strong> {{ account_name }}
+    &nbsp;&bull;&nbsp;<strong>Funds:</strong> {{ parsed.funds | length }}
+    {% if parsed.total_value %}&nbsp;&bull;&nbsp;<strong>Total Value:</strong> £{{ "{:,.2f}".format(parsed.total_value) }}{% endif %}
+</article>
+
+<div style="overflow-x:auto;margin-bottom:1.5rem">
+<table>
+    <thead>
+        <tr>
+            <th>Fund</th>
+            <th style="text-align:right">Units</th>
+            <th style="text-align:right">Unit Price</th>
+            <th style="text-align:right">Price Date</th>
+            <th style="text-align:right">Value (£)</th>
+            <th style="text-align:right">%</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for f in parsed.funds %}
+        <tr>
+            <td><strong>{{ f.name }}</strong></td>
+            <td style="text-align:right">{{ "{:,.2f}".format(f.units) }}</td>
+            <td style="text-align:right">{{ "{:,.4f}".format(f.unit_price) }}</td>
+            <td style="text-align:right">{{ f.price_date.strftime("%d %b %Y") if f.price_date else "—" }}</td>
+            <td style="text-align:right">£{{ "{:,.2f}".format(f.value) }}</td>
+            <td style="text-align:right">{{ "{:.2f}".format(f.percentage) if f.percentage is not none else "—" }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+    {% if parsed.total_value %}
+    <tfoot>
+        <tr>
+            <th>Total</th>
+            <td colspan="3"></td>
+            <td style="text-align:right"><strong>£{{ "{:,.2f}".format(parsed.total_value) }}</strong></td>
+            <td></td>
+        </tr>
+    </tfoot>
+    {% endif %}
+</table>
+</div>
+
+<form method="post" action="/import/epa-confirm">
+    <input type="hidden" name="account_id" value="{{ account_id }}">
+    <input type="hidden" name="filepath" value="{{ filepath }}">
+    <div style="display:flex;gap:1rem;margin-top:1rem">
+        <button type="submit">Import Pension Funds</button>
+        <a href="/import" role="button" class="outline">Cancel</a>
+    </div>
+</form>
+{% endblock %}

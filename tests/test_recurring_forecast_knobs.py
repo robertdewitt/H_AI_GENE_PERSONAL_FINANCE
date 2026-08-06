@@ -50,14 +50,16 @@ ANCHOR_DATE = date(2026, 6, 12)
 
 
 def _set_today(monkeypatch, today: date):
-    """Pin date.today() inside recurring_detector to a fixed value."""
+    """Pin date.today() inside recurring_detector and forecast_service."""
     import app.services.recurring_detector as rd
+    import app.services.forecast_service as fs
 
     class _D(date):
         @classmethod
         def today(cls):
             return today
     monkeypatch.setattr(rd, "date", _D)
+    monkeypatch.setattr(fs, "date", _D)
 
 
 def _seed_account(db, currency="USD"):

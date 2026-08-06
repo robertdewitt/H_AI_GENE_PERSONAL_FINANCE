@@ -138,23 +138,31 @@ def _get_account_balance(db: "Session", account_id: int) -> Decimal:
     return get_account_balance(db, account_id)
 
 
-def build_forecast(db: "Session", months: int = 3) -> ForecastResult:
-    """Project all active scheduled payments forward for `months` months."""
+def build_forecast(
+    db: "Session",
+    months: int = 3,
+    account_ids: "set[int] | None" = None,
+) -> ForecastResult:
+    """Project active scheduled payments forward for `months` months.
+
+    When ``account_ids`` is given, only those accounts' payments are
+    projected — used by the per-account forecast on the account detail page.
+    """
     from sqlalchemy import select
     from app.models.account import Account
     from app.models.scheduled_payment import ScheduledPayment
 
     today      = date.today()
-    end_date   = _advance_date(today, "monthly", None)
     # Advance end_date by months
     from app.services.recurring_detector import _add_months
     end_date = _add_months(today, months)
 
     # Load active scheduled payments
+    _q = select(ScheduledPayment).where(ScheduledPayment.active.is_(True))
+    if account_ids is not None:
+        _q = _q.where(ScheduledPayment.account_id.in_(account_ids))
     payments = db.execute(
-        select(ScheduledPayment)
-        .where(ScheduledPayment.active.is_(True))
-        .order_by(ScheduledPayment.next_due_date)
+        _q.order_by(ScheduledPayment.next_due_date)
     ).scalars().all()
 
     if not payments:

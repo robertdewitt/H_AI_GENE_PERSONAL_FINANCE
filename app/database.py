@@ -108,6 +108,9 @@ def init_db():
         _col("accounts", "original_principal_balance", "REAL")
         _col("accounts", "interest_rate",              "REAL")
         _col("accounts", "monthly_payment",            "REAL")
+        _col("accounts", "payment_due_date",           "DATE")
+        _col("accounts", "closed_at",                  "DATE")
+        _col("accounts", "closed_reason",              "VARCHAR(200)")
         _col("accounts", "balance_confidence",         "REAL")
         _col("accounts", "balance_stale_hint",         "BOOLEAN")
         _col("accounts", "liability_balance_stale",    "BOOLEAN")
@@ -136,6 +139,12 @@ def init_db():
         # ── v2 recon columns ─────────────────────────────────
         _col("reconciliation_groups", "reconciliation_confidence", "REAL")
         _col("reconciliation_groups", "fx_rate_used",              "REAL")
+
+        # ── Essential / discretionary override on categories ─────────
+        _col("categories", "is_essential", "BOOLEAN")
+
+        # ── Scheduled-payment flag level (auto vs reminder) ──────────
+        _col("scheduled_payments", "flag_level", "VARCHAR(20)")
 
         # ── v2 split / document columns ──────────────────────
         _col("transaction_splits", "document_line_id", "INTEGER")
