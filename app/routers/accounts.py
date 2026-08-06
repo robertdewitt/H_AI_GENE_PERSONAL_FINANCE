@@ -25,8 +25,11 @@ from app.services.account_service import (
     get_accounts_grouped,
     get_transaction_count,
     list_accounts,
+    close_account,
     next_payment_due,
     next_payment_due_map,
+    reopen_account,
+    split_closed_accounts,
     update_account,
 )
 from app.services.user_profile_service import get_profile
@@ -113,6 +116,10 @@ def accounts_list(
         for item in items
         if not item["account"].is_asset
     )
+
+    # Closed accounts still count toward the totals above — closing is
+    # organisational only. Split them out so the active list stays uncluttered.
+    groups, closed_accounts = split_closed_accounts(groups)
 
     since = _preset_to_since(preset)
 
@@ -302,6 +309,7 @@ def accounts_list(
 
     return templates.TemplateResponse(request, "accounts/list.html", {
         "groups": groups,
+        "closed_accounts": closed_accounts,
         "due_dates": due_dates,
         "today": naive_utc_now().date(),
         "total_assets": total_assets,
@@ -794,11 +802,41 @@ def account_detail(
     except Exception:
         account_forecast = None  # scheduled_payments table may be absent on old DBs
 
+    # RSU grants + vesting (for RSU accounts) and pension fund holdings.
+    rsu_grants = None
+    rsu_summary = None
+    pension_holdings = None
+    if acct.account_type == AccountType.RSU:
+        from app.models.rsu import RSUGrant
+        from app.services.rsu_service import value_rsu_account
+        rsu_grants = db.execute(
+            sa_select(RSUGrant)
+            .where(RSUGrant.account_id == account_id)
+            .order_by(RSUGrant.award_date.desc())
+        ).scalars().all()
+        if rsu_grants:
+            try:
+                rsu_summary = value_rsu_account(
+                    db, acct, refresh_price=False, persist=False,
+                )
+            except Exception:
+                rsu_summary = None
+    elif acct.account_type == AccountType.PENSION:
+        from app.services.epa_pension_import import value_pension_account
+        try:
+            _pv = value_pension_account(db, acct, persist=False)
+            pension_holdings = _pv.get("holdings") or None
+        except Exception:
+            pension_holdings = None
+
     return templates.TemplateResponse(request, "accounts/detail.html", {
         "account": acct,
         "balance": balance,
         "account_forecast": account_forecast,
         "forecast_months": forecast_months,
+        "rsu_grants": rsu_grants,
+        "rsu_summary": rsu_summary,
+        "pension_holdings": pension_holdings,
         "balance_source": balance_result.balance_source_used,
         "balance_stale": balance_result.balance_stale,
         "transactions": recent_txns,
@@ -1030,6 +1068,67 @@ def account_accrue_interest(
     db.commit()
     return RedirectResponse(
         url=f"/accounts/{account_id}?accrued={len(created)}", status_code=303,
+    )
+
+
+@router.post("/{account_id}/close")
+def account_close(
+    account_id: int,
+    closed_at: str = Form(""),
+    reason: str = Form(""),
+    zero_balance: bool = Form(False),
+    db: Session = Depends(get_db),
+):
+    """Close an account: keeps every transaction, hides it from the active
+    list, and stops its scheduled payments."""
+    acct = get_account(db, account_id)
+    if not acct:
+        return HTMLResponse("Account not found", status_code=404)
+
+    when = None
+    if closed_at.strip():
+        try:
+            when = datetime.strptime(closed_at.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            return RedirectResponse(
+                url=f"/accounts/{account_id}?close_err=date", status_code=303,
+            )
+
+    stats = close_account(
+        db, acct, closed_at=when, reason=reason, zero_balance=zero_balance,
+    )
+    return RedirectResponse(
+        url=f"/accounts/{account_id}?closed=1&sched={stats['scheduled_deactivated']}",
+        status_code=303,
+    )
+
+
+@router.post("/{account_id}/reopen")
+def account_reopen(account_id: int, db: Session = Depends(get_db)):
+    acct = get_account(db, account_id)
+    if not acct:
+        return HTMLResponse("Account not found", status_code=404)
+    reopen_account(db, acct)
+    return RedirectResponse(url=f"/accounts/{account_id}?reopened=1", status_code=303)
+
+
+@router.post("/{account_id}/refresh-rsu-price")
+def account_refresh_rsu_price(account_id: int, db: Session = Depends(get_db)):
+    """Fetch the live market price and re-value an RSU account."""
+    acct = get_account(db, account_id)
+    if not acct or acct.account_type != AccountType.RSU:
+        return HTMLResponse("Not an RSU account", status_code=404)
+    from app.services.rsu_service import value_rsu_account
+    try:
+        summary = value_rsu_account(db, acct, refresh_price=True, persist=True)
+        db.commit()
+    except Exception:
+        db.rollback()
+        return RedirectResponse(url=f"/accounts/{account_id}?rsu_price_err=1", status_code=303)
+    px = summary.get("price")
+    return RedirectResponse(
+        url=f"/accounts/{account_id}?rsu_priced={px if px is not None else ''}",
+        status_code=303,
     )
 
 

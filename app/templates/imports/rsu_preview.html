@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}RSU Award Summary Preview &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+<hgroup>
+    <h1>RSU Award Summary Preview</h1>
+    <p>Review your restricted stock units before importing. The account will be valued at <strong>unvested units &times; live {{ parsed.symbol }} price</strong>.</p>
+</hgroup>
+
+<article style="margin-bottom:1.5rem;padding:0.75rem 1rem;border-left:4px solid var(--pico-primary)">
+    <strong>Account:</strong> {{ account_name }}
+    {% if parsed.symbol %}&nbsp;&bull;&nbsp;<strong>Symbol:</strong> {{ parsed.symbol }}{% endif %}
+    {% if parsed.stock_price %}&nbsp;&bull;&nbsp;<strong>Price:</strong> {{ "{:,.2f}".format(parsed.stock_price) }}
+        {% if parsed.price_date %}(as of {{ parsed.price_date.strftime("%d %b %Y") }}){% endif %}{% endif %}
+</article>
+
+<div style="display:flex;gap:2rem;flex-wrap:wrap;margin-bottom:1.5rem">
+    <div class="summary-card">
+        <div class="label">Grants</div>
+        <div class="value">{{ parsed.grants | length }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Awarded Units</div>
+        <div class="value">{{ "{:,.0f}".format(parsed.total_awarded) if parsed.total_awarded else "—" }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Unvested Units</div>
+        <div class="value">{{ "{:,.0f}".format(parsed.total_unvested) if parsed.total_unvested else "—" }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Vested Units</div>
+        <div class="value">{{ "{:,.0f}".format(parsed.total_vested) if parsed.total_vested else "—" }}</div>
+    </div>
+    {% if parsed.total_unvested and parsed.stock_price %}
+    <div class="summary-card">
+        <div class="label">Unvested Value</div>
+        <div class="value">{{ "{:,.2f}".format(parsed.total_unvested * parsed.stock_price) }}</div>
+    </div>
+    {% endif %}
+</div>
+
+{% for g in parsed.grants %}
+<h3 style="margin-bottom:0.25rem">
+    {{ g.award_code or "Grant" }}
+    <small style="font-weight:normal;color:var(--pico-muted-color)">
+        {% if g.award_date %}awarded {{ g.award_date.strftime("%d %b %Y") }} &bull; {% endif %}
+        {{ "{:,.0f}".format(g.awarded_units) if g.awarded_units else "?" }} units
+    </small>
+</h3>
+<div style="overflow-x:auto;margin-bottom:1.25rem">
+<table>
+    <thead>
+        <tr>
+            <th>Vesting / Delivery Date</th>
+            <th style="text-align:right">Units Vesting</th>
+            <th style="text-align:right">Unvested</th>
+            <th style="text-align:right">Vested</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for v in g.vests %}
+        <tr>
+            <td>{{ v.vest_date.strftime("%d %b %Y") }}</td>
+            <td style="text-align:right">{{ "{:,.0f}".format(v.units) }}</td>
+            <td style="text-align:right">{{ "{:,.0f}".format(v.units_unvested) if v.units_unvested is not none else "—" }}</td>
+            <td style="text-align:right">{{ "{:,.0f}".format(v.units_vested) if v.units_vested is not none else "—" }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endfor %}
+
+<form method="post" action="/import/rsu-confirm">
+    <input type="hidden" name="account_id" value="{{ account_id }}">
+    <input type="hidden" name="filepath" value="{{ filepath }}">
+    <div style="display:flex;gap:1rem;margin-top:1rem">
+        <button type="submit">Import RSU Grants</button>
+        <a href="/import" role="button" class="outline">Cancel</a>
+    </div>
+</form>
+{% endblock %}

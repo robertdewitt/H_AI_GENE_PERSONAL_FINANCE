@@ -133,6 +133,10 @@
 
 <div class="btn-group" style="margin-bottom:1.5rem">
     <a href="/accounts/{{ account.id }}/edit" role="button" class="outline">Edit Account</a>
+    {% if not account.is_closed %}
+    <a href="#close-account" role="button" class="outline"
+       style="border-color:var(--pico-muted-color);color:var(--pico-muted-color)">Close Account</a>
+    {% endif %}
     <a href="/transactions/new?account_id={{ account.id }}" role="button">+ Add Transaction</a>
     <a href="/import?account={{ account.id }}" role="button" class="outline">Import Transactions</a>
     <a href="/transactions?account_id={{ account.id }}" role="button" class="outline">All Transactions</a>
@@ -140,6 +144,39 @@
     <a href="/valuations/{{ account.id }}" role="button" class="outline">Valuations</a>
     {% endif %}
 </div>
+
+{% if request.query_params.get("closed") %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #16a34a;background:#f0fdf4">
+    &#10003; Account closed. All transactions kept.
+    {% set _n = request.query_params.get("sched")|int %}
+    {% if _n %}Deactivated {{ _n }} scheduled payment{{ 's' if _n != 1 else '' }}.{% endif %}
+</article>
+{% endif %}
+{% if request.query_params.get("reopened") %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #16a34a;background:#f0fdf4">
+    &#10003; Account reopened. Any scheduled payments stay off until you re-enable them on the
+    <a href="/scheduled">Scheduled</a> page.
+</article>
+{% endif %}
+{% if request.query_params.get("close_err") == "date" %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #dc2626;background:#fef2f2">
+    Couldn't read that closing date — use YYYY-MM-DD.
+</article>
+{% endif %}
+
+{% if account.is_closed %}
+<article style="margin-bottom:1.5rem;padding:0.75rem 1rem;border-left:4px solid var(--pico-muted-color);background:var(--pico-card-sectioning-background-color,#f3f4f6)">
+    <strong>This account is closed</strong>{% if account.closed_at %} as of {{ account.closed_at.strftime("%d %b %Y") }}{% endif %}.
+    {% if account.closed_reason %}<br><em>{{ account.closed_reason }}</em>{% endif %}
+    <br><small style="color:var(--pico-muted-color)">
+        History is fully preserved and the balance still counts toward net worth.
+        It's hidden from the active accounts list and won't raise reminders.
+    </small>
+    <form method="post" action="/accounts/{{ account.id }}/reopen" style="margin:0.6rem 0 0 0">
+        <button type="submit" class="outline" style="padding:0.25rem 0.8rem;font-size:0.85rem;margin:0">Reopen account</button>
+    </form>
+</article>
+{% endif %}
 
 {% if request.query_params.get("accrued") %}
 <article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #16a34a;background:#f0fdf4">
@@ -172,6 +209,130 @@
 
 {% if account.notes %}
 <blockquote>{{ account.notes }}</blockquote>
+{% endif %}
+
+{# ── RSU grants + vesting schedule ─────────────────────────────────────── #}
+{% if rsu_grants %}
+{% if request.query_params.get("rsu_priced") is not none %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #16a34a;background:#f0fdf4">
+    &#10003; Refreshed live price{% if request.query_params.get("rsu_priced") %} — {{ account.currency_symbol }}{{ request.query_params.get("rsu_priced") }}/share{% endif %} and re-valued.
+</article>
+{% endif %}
+{% if request.query_params.get("rsu_price_err") %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #dc2626;background:#fef2f2">
+    Couldn't fetch a live price just now — showing the last known value. Try again shortly.
+</article>
+{% endif %}
+
+<h2>Restricted Stock Units</h2>
+{% set sym = account.currency_symbol %}
+<div class="summary-grid" style="margin-bottom:1rem">
+    {% if rsu_summary %}
+    <div class="summary-card">
+        <div class="label">Unvested Units</div>
+        <div class="value">{{ "{:,.0f}".format(rsu_summary.units_unvested) }}</div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Price / Share</div>
+        <div class="value">{{ sym }}{{ "{:,.2f}".format(rsu_summary.price) if rsu_summary.price is not none else "—" }}</div>
+        <div style="font-size:0.72rem;color:var(--pico-muted-color)">
+            {{ "live" if rsu_summary.price_source == "yfinance_live" else "from statement" }}
+        </div>
+    </div>
+    <div class="summary-card">
+        <div class="label">Unvested Value</div>
+        <div class="value">{{ sym }}{{ "{:,.2f}".format(rsu_summary.value) }}</div>
+    </div>
+    {% endif %}
+</div>
+<form method="post" action="/accounts/{{ account.id }}/refresh-rsu-price" style="margin-bottom:1.25rem">
+    <button type="submit" class="outline" style="padding:0.3rem 0.9rem;font-size:0.85rem">↻ Refresh market price</button>
+    <small style="color:var(--pico-muted-color);margin-left:0.5rem">Vested units are excluded — they've been delivered out of the plan.</small>
+</form>
+
+{% for g in rsu_grants %}
+<h4 style="margin-bottom:0.25rem">
+    {{ g.award_code or "Grant" }}
+    <small style="font-weight:normal;color:var(--pico-muted-color)">
+        {% if g.award_date %}awarded {{ g.award_date.strftime("%d %b %Y") }} &bull; {% endif %}
+        {{ "{:,.0f}".format(g.awarded_units) if g.awarded_units else "?" }} units
+    </small>
+</h4>
+<div style="overflow-x:auto;margin-bottom:1.25rem">
+<table>
+    <thead>
+        <tr>
+            <th>Delivery Date</th>
+            <th style="text-align:right">Units</th>
+            <th style="text-align:right">Unvested</th>
+            <th>Status</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for v in g.vests %}
+        <tr>
+            <td style="white-space:nowrap">{{ v.vest_date.strftime("%d %b %Y") }}</td>
+            <td style="text-align:right">{{ "{:,.0f}".format(v.units) }}</td>
+            <td style="text-align:right">{{ "{:,.0f}".format(v.units_unvested) if v.units_unvested is not none else "—" }}</td>
+            <td>
+                {% if v.is_vested %}
+                <span style="color:var(--pico-muted-color);font-size:0.8rem">✓ delivered</span>
+                {% else %}
+                <span style="color:#d97706;font-size:0.8rem">◷ vests {{ v.vest_date.strftime("%Y") }}</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endfor %}
+{% endif %}
+
+{# ── Pension fund holdings ─────────────────────────────────────────────── #}
+{% if pension_holdings %}
+{% if request.query_params.get("epa_imported") %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #16a34a;background:#f0fdf4">
+    &#10003; Imported {{ request.query_params.get("funds") }} pension fund(s).
+</article>
+{% endif %}
+<h2>Pension Fund Holdings</h2>
+{% set psym = account.currency_symbol %}
+<div style="overflow-x:auto;margin-bottom:1.5rem">
+<table>
+    <thead>
+        <tr>
+            <th>Fund</th>
+            <th style="text-align:right">Units</th>
+            <th style="text-align:right">Unit Price</th>
+            <th style="text-align:right">Value</th>
+            <th style="text-align:right">Priced</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% set ptotal = namespace(v=0) %}
+        {% for h in pension_holdings %}
+        {% set ptotal.v = ptotal.v + h.value|float %}
+        <tr>
+            <td><strong>{{ h.name }}</strong></td>
+            <td style="text-align:right">{{ "{:,.2f}".format(h.units) }}</td>
+            <td style="text-align:right">{{ psym }}{{ "{:,.4f}".format(h.unit_price) }}</td>
+            <td style="text-align:right">{{ psym }}{{ "{:,.2f}".format(h.value) }}</td>
+            <td style="text-align:right;font-size:0.8rem;color:var(--pico-muted-color)">{{ h.as_of.strftime("%d %b %Y") if h.as_of else "—" }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+    <tfoot>
+        <tr>
+            <th>Total</th>
+            <td colspan="2"></td>
+            <td style="text-align:right"><strong>{{ psym }}{{ "{:,.2f}".format(ptotal.v) }}</strong></td>
+            <td></td>
+        </tr>
+    </tfoot>
+</table>
+</div>
+<small style="color:var(--pico-muted-color)">Unit prices come from the ePA statement (these funds aren't exchange-listed). Re-import a newer statement to update.</small>
 {% endif %}
 
 {% if account.account_type.value in ["real_estate", "vehicle", "collectible"] %}
@@ -580,6 +741,40 @@
     <p><a href="/transactions/new?account_id={{ account.id }}">Add one by hand</a>
        or <a href="/import">import a file</a> to add transactions to this account.</p>
 </div>
+{% endif %}
+
+{% if not account.is_closed %}
+<details id="close-account" style="margin-top:2rem;border-top:1px solid var(--pico-muted-border-color);padding-top:1rem">
+    <summary style="cursor:pointer;color:var(--pico-muted-color)">Close this account</summary>
+    <p style="font-size:0.9rem;color:var(--pico-muted-color);margin:0.5rem 0">
+        For accounts you no longer hold &mdash; a paid-off loan or a cancelled card.
+        Every transaction is kept and the balance still counts toward net worth.
+        The account moves to the Closed section of your accounts list, stops raising
+        reminders, and its scheduled payments are switched off.
+        You can reopen it at any time.
+    </p>
+    <form method="post" action="/accounts/{{ account.id }}/close">
+        <div style="display:flex;gap:0.75rem;align-items:flex-end;flex-wrap:wrap">
+            <div>
+                <label for="closed_at" style="font-size:0.85rem">Closing date</label>
+                <input type="date" id="closed_at" name="closed_at" value="{{ now.strftime('%Y-%m-%d') }}" style="margin:0">
+            </div>
+            <div style="flex:1;min-width:220px">
+                <label for="reason" style="font-size:0.85rem">Reason (optional)</label>
+                <input type="text" id="reason" name="reason" maxlength="200" style="margin:0"
+                       placeholder="e.g. Paid off — traded in for new car">
+            </div>
+        </div>
+        <label style="font-size:0.85rem;margin-top:0.7rem">
+            <input type="checkbox" name="zero_balance" value="true">
+            Also mark the balance as settled (set to zero)
+        </label>
+        <small style="color:var(--pico-muted-color);display:block;margin-bottom:0.7rem">
+            Tick this for a paid-off loan whose last statement balance would otherwise linger as a phantom debt.
+        </small>
+        <button type="submit" style="margin:0">Close account</button>
+    </form>
+</details>
 {% endif %}
 {% endblock %}
 

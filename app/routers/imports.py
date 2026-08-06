@@ -23,6 +23,16 @@ from app.services.revolut_pdf_parser import (
     is_revolut_pdf,
     parse_revolut_pdf,
 )
+from app.services.rsu_service import (
+    import_rsu_grants,
+    is_merrill_rsu_csv,
+    parse_merrill_rsu_csv,
+)
+from app.services.epa_pension_import import (
+    import_pension_positions,
+    is_epa_pension_pdf,
+    parse_epa_pension_pdf,
+)
 
 router = APIRouter(prefix="/import", tags=["import"])
 
@@ -119,6 +129,40 @@ async def upload_file(
             "account_name": account.name if account else f"Account {account_id}",
             "filepath": str(dest),
             "sections": sections,
+        })
+
+    # Detect Merrill / BofA RSU award-summary CSV — dedicated preview
+    if ext == ".csv" and is_merrill_rsu_csv(str(dest)):
+        try:
+            parsed_rsu = parse_merrill_rsu_csv(str(dest))
+        except Exception as exc:
+            return templates.TemplateResponse(request, "imports/upload.html", {
+                "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+                "error": f"Failed to parse RSU award summary: {exc}",
+            })
+        account = db.get(Account, account_id)
+        return templates.TemplateResponse(request, "imports/rsu_preview.html", {
+            "account_id": account_id,
+            "account_name": account.name if account else f"Account {account_id}",
+            "filepath": str(dest),
+            "parsed": parsed_rsu,
+        })
+
+    # Detect WTW ePA pension "My Fund Balance" PDF — dedicated preview
+    if ext == ".pdf" and is_epa_pension_pdf(str(dest)):
+        try:
+            parsed_pension = parse_epa_pension_pdf(str(dest))
+        except Exception as exc:
+            return templates.TemplateResponse(request, "imports/upload.html", {
+                "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+                "error": f"Failed to parse ePA pension statement: {exc}",
+            })
+        account = db.get(Account, account_id)
+        return templates.TemplateResponse(request, "imports/epa_preview.html", {
+            "account_id": account_id,
+            "account_name": account.name if account else f"Account {account_id}",
+            "filepath": str(dest),
+            "parsed": parsed_pension,
         })
 
     # Detect IBKR activity statement CSV — route to dedicated preview
@@ -779,6 +823,75 @@ def ibkr_confirm(
     dividends = stats["dividends_added"]
     return RedirectResponse(
         url=f"/portfolio?ibkr_imported=1&positions={positions}&trades={trades}&dividends={dividends}",
+        status_code=303,
+    )
+
+
+@router.post("/rsu-confirm")
+def rsu_confirm(
+    request: Request,
+    account_id: int = Form(...),
+    filepath: str = Form(...),
+    db: Session = Depends(get_db),
+    user = Depends(get_current_user),
+):
+    from app.services.upload_safety import assert_user_owns_path, UnsafeFilenameError
+    try:
+        assert_user_owns_path(settings.upload_dir, user.id, filepath)
+    except UnsafeFilenameError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    account = db.get(Account, account_id)
+    if not account:
+        return RedirectResponse(url="/import", status_code=303)
+
+    try:
+        parsed = parse_merrill_rsu_csv(filepath)
+        stats = import_rsu_grants(db, account, parsed)
+    except Exception as exc:
+        accounts = db.execute(select(Account).order_by(Account.name)).scalars().all()
+        return templates.TemplateResponse(request, "imports/upload.html", {
+            "accounts": accounts,
+            "error": f"RSU import failed: {exc}",
+        })
+
+    grants = stats["grants_created"] + stats["grants_updated"]
+    return RedirectResponse(
+        url=f"/accounts/{account_id}?rsu_imported=1&grants={grants}&vests={stats['vests_created']}",
+        status_code=303,
+    )
+
+
+@router.post("/epa-confirm")
+def epa_confirm(
+    request: Request,
+    account_id: int = Form(...),
+    filepath: str = Form(...),
+    db: Session = Depends(get_db),
+    user = Depends(get_current_user),
+):
+    from app.services.upload_safety import assert_user_owns_path, UnsafeFilenameError
+    try:
+        assert_user_owns_path(settings.upload_dir, user.id, filepath)
+    except UnsafeFilenameError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    account = db.get(Account, account_id)
+    if not account:
+        return RedirectResponse(url="/import", status_code=303)
+
+    try:
+        parsed = parse_epa_pension_pdf(filepath)
+        stats = import_pension_positions(db, account, parsed)
+    except Exception as exc:
+        accounts = db.execute(select(Account).order_by(Account.name)).scalars().all()
+        return templates.TemplateResponse(request, "imports/upload.html", {
+            "accounts": accounts,
+            "error": f"ePA pension import failed: {exc}",
+        })
+
+    return RedirectResponse(
+        url=f"/accounts/{account_id}?epa_imported=1&funds={stats['funds']}",
         status_code=303,
     )
 

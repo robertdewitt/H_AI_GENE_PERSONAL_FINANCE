@@ -1223,6 +1223,88 @@ def get_transaction_count(db: Session, account_id: int | None = None) -> int:
     return db.execute(query).scalar() or 0
 
 
+def close_account(
+    db: Session,
+    account: Account,
+    closed_at: "date | None" = None,
+    reason: str | None = None,
+    zero_balance: bool = False,
+) -> dict:
+    """Close an account without losing any of its history.
+
+    Transactions are untouched and the balance still counts toward net worth —
+    closing is organisational. What it does change: the account moves to the
+    closed section of the accounts list, its scheduled payments are
+    deactivated (so nothing shows as due or overdue and the forecast drops
+    them), and any pending payment due date is cleared.
+
+    ``zero_balance`` additionally marks the balance settled — the right thing
+    for a paid-off loan whose last statement balance would otherwise linger as
+    a phantom liability. Returns a summary of what changed.
+    """
+    from datetime import date as _date
+    from app.models.scheduled_payment import ScheduledPayment
+
+    account.closed_at = closed_at or _date.today()
+    account.closed_reason = (reason or "").strip()[:200] or None
+    account.payment_due_date = None
+
+    deactivated = 0
+    for sp in db.execute(
+        select(ScheduledPayment).where(
+            ScheduledPayment.account_id == account.id,
+            ScheduledPayment.active.is_(True),
+        )
+    ).scalars().all():
+        sp.active = False
+        deactivated += 1
+
+    zeroed = False
+    if zero_balance:
+        # Mark the balance settled. original_principal_balance is deliberately
+        # left alone — it records what the loan was originally for, which stays
+        # true after payoff.
+        account.statement_balance = Decimal("0.00")
+        account.statement_balance_as_of = naive_utc_now()
+        account.current_value = Decimal("0.00")
+        zeroed = True
+
+    db.commit()
+    return {
+        "closed_at": account.closed_at,
+        "scheduled_deactivated": deactivated,
+        "balance_zeroed": zeroed,
+    }
+
+
+def reopen_account(db: Session, account: Account) -> None:
+    """Reopen a closed account. Scheduled payments stay deactivated — the user
+    reactivates the ones that still apply on the Scheduled page."""
+    account.closed_at = None
+    account.closed_reason = None
+    db.commit()
+
+
+def split_closed_accounts(
+    groups: dict[str, list[dict]],
+) -> tuple[dict[str, list[dict]], list[dict]]:
+    """Split grouped account items into (open groups, flat closed list).
+
+    Totals are computed from the full set before calling this — closing an
+    account hides it from the active list but does not change net worth.
+    """
+    open_groups: dict[str, list[dict]] = {}
+    closed: list[dict] = []
+    for group_name, items in groups.items():
+        open_items = [i for i in items if not i["account"].is_closed]
+        closed.extend(i for i in items if i["account"].is_closed)
+        if open_items:
+            open_groups[group_name] = open_items
+    from datetime import date as _date
+    closed.sort(key=lambda i: (i["account"].closed_at or _date.min), reverse=True)
+    return open_groups, closed
+
+
 def next_payment_due(db: Session, account: Account):
     """Effective next payment due date for a payable (liability) account.
 

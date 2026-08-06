@@ -188,11 +188,42 @@
         {% endfor %}
     </div>
     {% endfor %}
-{% else %}
+{% elif not closed_accounts %}
 <div class="empty-state">
     <h3>No accounts yet</h3>
     <p>Add your first account to start tracking your finances.</p>
 </div>
+{% endif %}
+
+{% if closed_accounts %}
+<details class="account-group" style="margin-top:1.5rem">
+    <summary style="cursor:pointer;font-size:1.1rem;font-weight:600;color:var(--pico-muted-color)">
+        Closed Accounts <span style="font-weight:400">({{ closed_accounts | length }})</span>
+    </summary>
+    <small style="color:var(--pico-muted-color);display:block;margin:0.4rem 0 0.6rem 0">
+        History is kept and these still count toward the totals above &mdash; they're just out of the way.
+    </small>
+    {% for item in closed_accounts %}
+    <div class="account-row" style="opacity:0.72">
+        <div class="account-info">
+            <a href="/accounts/{{ item.account.id }}" class="account-name">
+                {{ item.account.name }}
+            </a>
+            {% if item.account.institution %}
+            <span class="account-institution">{{ item.account.institution }}</span>
+            {% endif %}
+            <span style="font-size:0.72rem;margin-left:0.4rem;padding:0.05rem 0.4rem;border-radius:4px;background:var(--pico-card-sectioning-background-color,#f3f4f6);color:var(--pico-muted-color)"
+                  title="{{ item.account.closed_reason or 'Closed account' }}">
+                Closed{% if item.account.closed_at %} {{ item.account.closed_at.strftime('%b %Y') }}{% endif %}
+            </span>
+        </div>
+        <div class="account-balance {% if item.balance >= 0 and item.account.is_asset %}positive{% elif not item.account.is_asset %}negative{% endif %}">
+            {{ sym }}{{ "{:,.2f}".format(item.balance) }}
+            {% if item.account.currency != display_currency %}<small style="color:var(--pico-muted-color)">({{ item.account.currency }})</small>{% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</details>
 {% endif %}
 {% endblock %}
 

@@ -27,6 +27,7 @@ class AccountType(str, enum.Enum):
     SAVINGS = "savings"
     CREDIT_CARD = "credit_card"
     BROKERAGE = "brokerage"
+    RSU = "rsu"
     IRA = "ira"
     ROTH_IRA = "roth_ira"
     PENSION = "pension"
@@ -43,6 +44,7 @@ ASSET_TYPES = {
     AccountType.CHECKING,
     AccountType.SAVINGS,
     AccountType.BROKERAGE,
+    AccountType.RSU,
     AccountType.IRA,
     AccountType.ROTH_IRA,
     AccountType.PENSION,
@@ -99,6 +101,14 @@ class Account(Base):
     # Next payment due date for payable (liability) accounts — credit cards,
     # loans, mortgages. Auto-populated from statements; user-editable.
     payment_due_date: Mapped[date | None] = mapped_column(Date)
+    # ── Closure ─────────────────────────────────────────────────────────
+    # A closed account (paid-off loan, cancelled card) keeps every
+    # transaction and still counts toward net worth — closing is purely
+    # organisational. It moves out of the active accounts list into the
+    # closed section and goes quiet: no stale-balance nags, and its
+    # scheduled payments are deactivated.
+    closed_at: Mapped[date | None] = mapped_column(Date)
+    closed_reason: Mapped[str | None] = mapped_column(String(200))
     balance_confidence: Mapped[float | None] = mapped_column(Float)
     balance_stale_hint: Mapped[bool | None] = mapped_column(Boolean)
     liability_balance_stale: Mapped[bool | None] = mapped_column(Boolean)
@@ -144,7 +154,13 @@ class Account(Base):
         return self.CURRENCY_SYMBOLS.get(self.currency, self.currency)
 
     @property
+    def is_closed(self) -> bool:
+        return self.closed_at is not None
+
+    @property
     def display_type(self) -> str:
+        if self.account_type == AccountType.RSU:
+            return "RSU (Restricted Stock Units)"
         return self.account_type.value.replace("_", " ").title()
 
     @property
@@ -158,6 +174,7 @@ class Account(Base):
             return "Credit Cards"
         if self.account_type in {
             AccountType.BROKERAGE,
+            AccountType.RSU,
             AccountType.IRA,
             AccountType.ROTH_IRA,
             AccountType.PENSION,

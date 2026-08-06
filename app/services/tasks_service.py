@@ -54,6 +54,10 @@ def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
     for acct in accounts:
         if acct.account_type not in transactional_types:
             continue
+        # A closed account is expected to stop receiving transactions — don't
+        # nag about it going stale.
+        if getattr(acct, "closed_at", None) is not None:
+            continue
         # Use most recent transaction date as proxy for "last updated"
         last_txn_date = db.execute(
             select(func.max(Transaction.date)).where(
