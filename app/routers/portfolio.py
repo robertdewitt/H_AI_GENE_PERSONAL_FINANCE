@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, or_ as _or, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -45,11 +45,19 @@ def portfolio_dashboard(request: Request, db: Session = Depends(get_db)):
     ).scalars().all()
 
     # ── Build positions list ──────────────────────────────────────────────
+    # Pension scheme funds are excluded: they aren't exchange-listed, so their
+    # unit price comes from the statement rather than a market feed. Sending
+    # their synthetic symbols to yfinance just 404s and stalls the page for
+    # seconds. They're shown on their own account page instead.
     position_rows = db.execute(
         select(PositionLot, Instrument)
         .join(Instrument, PositionLot.instrument_id == Instrument.id)
         .where(
-            PositionLot.account_id.in_([a.id for a in investment_accounts])
+            PositionLot.account_id.in_([a.id for a in investment_accounts]),
+            _or(
+                Instrument.asset_class.is_(None),
+                Instrument.asset_class != "pension_fund",
+            ),
         )
         .order_by(Instrument.symbol)
     ).all()

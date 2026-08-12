@@ -70,6 +70,16 @@ _SPEND_PRESETS = [
     ("all", "All"),
 ]
 
+# Accounts whose activity is held in the brokerage tables (trades, dividends,
+# position lots) rather than as generic Transaction rows.
+_MARKET_ACCOUNT_TYPES = {
+    AccountType.BROKERAGE,
+    AccountType.IRA,
+    AccountType.ROTH_IRA,
+    AccountType.FOUR_OH_ONE_K,
+}
+
+
 def _preset_to_since(preset: str | None) -> datetime:
     from datetime import date
     today = naive_utc_now()
@@ -142,19 +152,35 @@ def accounts_list(
         sa_func.lower(Transaction.description).like(f"%{kw}%")
         for kw in _LOAN_DESC_KEYWORDS
     ))
+    # Spending with no category still left the household, so it belongs in the
+    # breakdown. An inner join would drop it silently and understate the
+    # totals — outer-join it and bucket it under "Uncategorized" instead.
+    _cat_label = sa_func.coalesce(Category.name, "Uncategorized")
+    _not_transfer_cat = _or(
+        Category.id.is_(None),
+        Category.category_type != _CatType.TRANSFER,
+    )
+    # Statement anchors ("Balance brought/carried forward" on a mortgage
+    # statement) are balance markers, not money spent. They dwarf real
+    # spending if left in — one pair alone is nearly £900k.
+    _BALANCE_MARKERS = ("%brought forward%", "%carried forward%", "%opening balance%")
+    _not_balance_marker = _and(*(
+        sa_func.lower(Transaction.description).notlike(m) for m in _BALANCE_MARKERS
+    ))
     monthly_rows = db.execute(
         sa_select(
             _ym.label("month"),
-            Category.name.label("category"),
+            _cat_label.label("category"),
             sa_func.sum(Transaction.amount).label("total"),
         )
-        .join(Category, Transaction.category_id == Category.id)
+        .outerjoin(Category, Transaction.category_id == Category.id)
         .where(
             Transaction.amount < 0,
             # Never show transfers (any TRANSFER-type category, e.g.
             # "Account Transfer") as expense spending — money moved between
             # your own accounts is not consumption.
-            Category.category_type != _CatType.TRANSFER,
+            _not_transfer_cat,
+            _not_balance_marker,
             _or(
                 Transaction.is_transfer.is_(False),
                 # Money to a mortgage/loan still counts as an expense outflow
@@ -164,8 +190,8 @@ def accounts_list(
             ),
             Transaction.date >= since,
         )
-        .group_by("month", Category.name)
-        .order_by("month", Category.name)
+        .group_by("month", _cat_label)
+        .order_by("month", _cat_label)
     ).all()
 
     # Income: positive non-transfer transactions on *asset* accounts only.
@@ -176,20 +202,20 @@ def accounts_list(
     income_rows = db.execute(
         sa_select(
             _ym.label("month"),
-            Category.name.label("category"),
+            _cat_label.label("category"),
             sa_func.sum(Transaction.amount).label("total"),
         )
-        .join(Category, Transaction.category_id == Category.id)
+        .outerjoin(Category, Transaction.category_id == Category.id)
         .join(_Acct, _Acct.id == Transaction.account_id)
         .where(
             Transaction.amount > 0,
             Transaction.is_transfer.is_(False),
             _Acct.is_asset.is_(True),
-            Category.category_type != _CatType.TRANSFER,
+            _not_transfer_cat,
             Transaction.date >= since,
         )
-        .group_by("month", Category.name)
-        .order_by("month", Category.name)
+        .group_by("month", _cat_label)
+        .order_by("month", _cat_label)
     ).all()
 
     months_ordered = sorted(
@@ -829,6 +855,41 @@ def account_detail(
         except Exception:
             pension_holdings = None
 
+    # Brokerage activity lives in its own tables (the IBKR importer writes
+    # trades / dividends / lots, not generic Transaction rows), so surface it
+    # here — otherwise these accounts look empty on their own page.
+    broker_positions = broker_trades = broker_dividends = None
+    if acct.account_type in _MARKET_ACCOUNT_TYPES:
+        from app.models.instrument import Instrument, PositionLot
+        from app.models.stock_dividend import StockDividend
+        from app.models.stock_trade import StockTrade
+        try:
+            broker_positions = db.execute(
+                sa_select(PositionLot, Instrument)
+                .join(Instrument, PositionLot.instrument_id == Instrument.id)
+                .where(
+                    PositionLot.account_id == account_id,
+                    PositionLot.source != "epa_pension",
+                )
+                .order_by(Instrument.symbol)
+            ).all() or None
+            broker_trades = db.execute(
+                sa_select(StockTrade, Instrument)
+                .join(Instrument, StockTrade.instrument_id == Instrument.id)
+                .where(StockTrade.account_id == account_id)
+                .order_by(StockTrade.trade_date.desc())
+                .limit(50)
+            ).all() or None
+            broker_dividends = db.execute(
+                sa_select(StockDividend, Instrument)
+                .join(Instrument, StockDividend.instrument_id == Instrument.id)
+                .where(StockDividend.account_id == account_id)
+                .order_by(StockDividend.pay_date.desc())
+                .limit(50)
+            ).all() or None
+        except Exception:
+            pass
+
     return templates.TemplateResponse(request, "accounts/detail.html", {
         "account": acct,
         "balance": balance,
@@ -837,6 +898,9 @@ def account_detail(
         "rsu_grants": rsu_grants,
         "rsu_summary": rsu_summary,
         "pension_holdings": pension_holdings,
+        "broker_positions": broker_positions,
+        "broker_trades": broker_trades,
+        "broker_dividends": broker_dividends,
         "balance_source": balance_result.balance_source_used,
         "balance_stale": balance_result.balance_stale,
         "transactions": recent_txns,

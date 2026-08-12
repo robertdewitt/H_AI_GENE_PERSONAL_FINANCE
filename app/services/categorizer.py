@@ -211,7 +211,13 @@ def match_learned_rule(db: Session, description: str) -> int | None:
     ).scalars().all()
 
     for rule in rules:
-        pattern_lower = rule.pattern.lower()
+        pattern_lower = (rule.pattern or "").lower().strip()
+
+        # An empty pattern is a substring of *every* description, so a single
+        # blank rule would silently swallow the entire ledger into one
+        # category. Never let one match.
+        if not pattern_lower:
+            continue
 
         # Strategy 1: fast exact substring
         if pattern_lower in desc:
@@ -259,7 +265,16 @@ def learn_from_correction(
 
     Returns (rule, count_updated).
     """
-    pattern = _extract_pattern(description)
+    pattern = (_extract_pattern(description) or "").strip()
+    if not pattern:
+        # Nothing distinctive survived extraction (e.g. a description that is
+        # all digits or punctuation). Storing a blank pattern would create a
+        # catch-all rule matching every future transaction, so learn nothing.
+        log.warning(
+            "categorizer: refusing to learn a blank rule from description %r",
+            description,
+        )
+        return None, 0
 
     if user_id is None:
         # Derive from the category we're attaching the rule to so a missing

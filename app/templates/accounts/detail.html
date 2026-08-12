@@ -184,7 +184,7 @@
 </article>
 {% endif %}
 
-{% if account.interest_rate and account.account_type.value in ["credit_card", "loan", "other"] %}
+{% if account.interest_rate and account.account_type.value in ["credit_card", "loan", "mortgage", "other"] %}
 <details style="margin-bottom:1.5rem">
     <summary role="button" class="outline" style="display:inline-block">Accrue interest ({{ "%.2f"|format(account.interest_rate * 100) }}% APR)</summary>
     <form method="post" action="/accounts/{{ account.id }}/accrue-interest"
@@ -287,6 +287,94 @@
 </table>
 </div>
 {% endfor %}
+{% endif %}
+
+{# ── Brokerage holdings / trades / dividends ───────────────────────────── #}
+{% if broker_positions or broker_trades or broker_dividends %}
+{% set bsym = account.currency_symbol %}
+{% if broker_positions %}
+<h2>Holdings</h2>
+<div style="overflow-x:auto;margin-bottom:1.5rem">
+<table>
+    <thead>
+        <tr>
+            <th>Symbol</th><th>Name</th>
+            <th style="text-align:right">Quantity</th>
+            <th style="text-align:right">Cost Basis</th>
+            <th style="text-align:right">As Of</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for lot, inst in broker_positions %}
+        <tr>
+            <td><strong>{{ inst.symbol }}</strong></td>
+            <td style="font-size:0.9rem">{{ inst.name or inst.symbol }}</td>
+            <td style="text-align:right">{{ "{:,.4f}".format(lot.quantity|float) }}</td>
+            <td style="text-align:right">{% if lot.cost_basis_total %}{{ bsym }}{{ "{:,.2f}".format(lot.cost_basis_total) }}{% else %}&mdash;{% endif %}</td>
+            <td style="text-align:right;font-size:0.8rem;color:var(--pico-muted-color)">{{ lot.as_of_date.strftime("%d %b %Y") if lot.as_of_date else "—" }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}
+
+{% if broker_trades %}
+<h2>Trades <small style="font-weight:400;color:var(--pico-muted-color)">({{ broker_trades|length }} most recent)</small></h2>
+<div style="overflow-x:auto;margin-bottom:1.5rem">
+<table>
+    <thead>
+        <tr>
+            <th>Date</th><th>Symbol</th><th>Side</th>
+            <th style="text-align:right">Quantity</th>
+            <th style="text-align:right">Price</th>
+            <th style="text-align:right">Proceeds</th>
+            <th style="text-align:right">Realized P&amp;L</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for t, inst in broker_trades %}
+        <tr>
+            <td style="white-space:nowrap;font-size:0.85rem">{{ t.trade_date.strftime("%d %b %Y") }}</td>
+            <td><strong>{{ inst.symbol }}</strong></td>
+            <td style="font-size:0.85rem">{{ "Buy" if t.quantity|float > 0 else "Sell" }}</td>
+            <td style="text-align:right">{{ "{:,.4f}".format(t.quantity|float|abs) }}</td>
+            <td style="text-align:right">{{ bsym }}{{ "{:,.2f}".format(t.price) }}</td>
+            <td style="text-align:right">{% if t.proceeds is not none %}{{ bsym }}{{ "{:,.2f}".format(t.proceeds) }}{% else %}&mdash;{% endif %}</td>
+            <td style="text-align:right">
+                {% if t.realized_pnl is not none and t.realized_pnl != 0 %}
+                <span class="{{ 'positive' if t.realized_pnl|float >= 0 else 'negative' }}">
+                    {{ "{:+,.2f}".format(t.realized_pnl) }}</span>
+                {% else %}&mdash;{% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}
+
+{% if broker_dividends %}
+{% set div_total = broker_dividends | sum(attribute='0.amount_native') %}
+<h2>Dividends <small style="font-weight:400;color:var(--pico-muted-color)">({{ broker_dividends|length }} most recent &middot; {{ bsym }}{{ "{:,.2f}".format(div_total) }})</small></h2>
+<div style="overflow-x:auto;margin-bottom:1.5rem">
+<table>
+    <thead>
+        <tr><th>Pay Date</th><th>Symbol</th><th>Description</th><th style="text-align:right">Amount</th></tr>
+    </thead>
+    <tbody>
+        {% for d, inst in broker_dividends %}
+        <tr>
+            <td style="white-space:nowrap;font-size:0.85rem">{{ d.pay_date.strftime("%d %b %Y") }}</td>
+            <td><strong>{{ inst.symbol }}</strong></td>
+            <td style="font-size:0.85rem;color:var(--pico-muted-color)">{{ (d.description or "")[:60] }}</td>
+            <td style="text-align:right"><span class="positive">+{{ bsym }}{{ "{:,.2f}".format(d.amount_native) }}</span></td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}
 {% endif %}
 
 {# ── Pension fund holdings ─────────────────────────────────────────────── #}
@@ -623,14 +711,25 @@
                 <small style="color:var(--pico-muted-color);text-transform:capitalize">&nbsp;{{ evt.frequency }}</small>
             </td>
             <td style="text-align:right;white-space:nowrap;font-weight:600">
-                {% if evt.amount < 0 %}
+                {# On a liability (mortgage, loan, card) a scheduled payment
+                   lowers what you owe, so show it as a positive move — the same
+                   way this account's own transactions are recorded. On an asset
+                   account the plain cash-flow sign is what you want. #}
+                {% if not account.is_asset %}
+                    {% if evt.amount < 0 %}
+                        <span class="positive">+{{ sym }}{{ "%.2f"|format(evt.amount|float|abs) }}</span>
+                    {% else %}
+                        <span class="negative">&minus;{{ sym }}{{ "%.2f"|format(evt.amount|float) }}</span>
+                    {% endif %}
+                {% elif evt.amount < 0 %}
                     <span class="negative">&minus;{{ sym }}{{ "%.2f"|format(evt.amount|float|abs) }}</span>
                 {% else %}
                     <span class="positive">+{{ sym }}{{ "%.2f"|format(evt.amount|float) }}</span>
                 {% endif %}
             </td>
+            {# Balance owed stays signed like the headline balance above. #}
             <td style="text-align:right;white-space:nowrap;font-weight:600{% if neg %};color:#dc2626{% endif %}">
-                {% if neg %}&minus;{% endif %}{{ sym }}{{ "%.2f"|format(ns.running|float|abs) }}
+                {% if neg or not account.is_asset %}&minus;{% endif %}{{ sym }}{{ "%.2f"|format(ns.running|float|abs) }}
             </td>
         </tr>
         {% endfor %}
