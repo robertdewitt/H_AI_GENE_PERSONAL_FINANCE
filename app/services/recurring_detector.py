@@ -144,9 +144,20 @@ def detect_recurring_payments(db: "Session", user_id: int | None = None) -> list
     from app.models.account import Account
     from app.models.transaction import Transaction
 
+    # Interest the app posts itself (interest_accrual) is derived from the
+    # account's rate every month — it is not an obligation to predict, and
+    # surfacing it as a recurring payment would double it in the forecast.
+    # Interest charged *by* a bank still arrives as an ordinary imported row
+    # and is detected as normal.
+    from app.services.interest_accrual import INTEREST_EVENT
+
     txns = db.execute(
         select(Transaction)
-        .where(Transaction.is_transfer.is_(False))
+        .where(
+            Transaction.is_transfer.is_(False),
+            (Transaction.event_type.is_(None))
+            | (Transaction.event_type != INTEREST_EVENT),
+        )
         .order_by(Transaction.account_id, Transaction.date)
     ).scalars().all()
 

@@ -29,6 +29,7 @@ from app.models.snapshots import (
 from app.models.user_profile import UserProfile
 from app.models.deleted_transaction import DeletedTransaction
 from app.models.dismissed_duplicate import DismissedDuplicate
+from app.models.dismissed_scheduled_payment import DismissedScheduledPayment
 from app.models.scheduled_payment import ScheduledPayment
 from app.models.plan_it_plan import PlanItPlan
 from app.models.user import User
@@ -68,6 +69,7 @@ __all__ = [
     "UserProfile",
     "DeletedTransaction",
     "DismissedDuplicate",
+    "DismissedScheduledPayment",
     "ScheduledPayment",
     "PlanItPlan",
     "User",

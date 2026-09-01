@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime
 from decimal import Decimal
 
@@ -9,10 +10,13 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.templating import templates
+
+log = logging.getLogger(__name__)
 from app.models.account import Account
 from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.transaction_split import TransactionSplit
+from app.models.scheduled_payment import ScheduledPayment
 from app.models.transfer_link import TransferLink
 from app.services.split_service import list_splits, replace_transaction_splits
 from app.services.transaction_truth import apply_truth_after_transaction_update
@@ -81,6 +85,20 @@ def _delete_txn_safe(db: Session, txn: Transaction) -> None:
             p.transfer_link_id = None
         db.flush()
         db.delete(tl)
+
+    # 2. A scheduled payment remembers the transaction that last satisfied it.
+    #    That FK has no cascade, so deleting a matched row — an imported direct
+    #    debit, or an occurrence confirmed from the account page — fails on
+    #    "FOREIGN KEY constraint failed" unless the pointer is cleared first.
+    #    last_matched_date is left alone: it still records when the schedule
+    #    was last seen, and next_due_date was advanced off it.
+    matched = db.execute(
+        select(ScheduledPayment).where(
+            ScheduledPayment.last_matched_txn_id == txn.id
+        )
+    ).scalars().all()
+    for payment in matched:
+        payment.last_matched_txn_id = None
 
     db.flush()
     db.delete(txn)
@@ -280,6 +298,28 @@ def transaction_new_form(
     })
 
 
+def _resync_interest(db: Session, account_id: int) -> None:
+    """Re-check derived interest after a row on this account changed.
+
+    Only does anything on accounts whose interest this app posts itself, and
+    only writes when a month's accrual no longer matches the balance it was
+    charged on — a backdated repayment invalidates every month after it.
+    """
+    from app.models.account import Account
+    from app.services.interest_accrual import resync_account_interest
+
+    try:
+        account = db.get(Account, account_id)
+        if account is None:
+            return
+        result = resync_account_interest(db, account)
+        if result["created"] or result["removed"]:
+            db.commit()
+    except Exception:
+        db.rollback()
+        log.warning("interest resync failed for account %s", account_id, exc_info=True)
+
+
 @router.post("/new")
 def transaction_create(
     request: Request,
@@ -320,6 +360,7 @@ def transaction_create(
 
     apply_truth_after_transaction_update(db, txn, None)
     db.commit()
+    _resync_interest(db, account_id)
 
     redirect = return_url.strip() or f"/accounts/{account_id}"
     return RedirectResponse(url=redirect, status_code=303)
@@ -470,6 +511,7 @@ def transaction_update(
     apply_truth_after_transaction_update(db, txn, old_event_type)
 
     db.commit()
+    _resync_interest(db, txn.account_id)
 
     redirect_to = return_url.strip() if return_url else f"/accounts/{txn.account_id}"
     return RedirectResponse(url=redirect_to, status_code=303)
@@ -584,6 +626,7 @@ def transaction_delete(
     _log_deleted(db, txn)
     _delete_txn_safe(db, txn)
     db.commit()
+    _resync_interest(db, account_id)
     redirect = return_url if return_url else f"/accounts/{account_id}"
     return RedirectResponse(url=redirect, status_code=303)
 
@@ -820,10 +863,13 @@ def bulk_delete(
 ):
     ids = [int(x) for x in txn_ids.split(",") if x.strip().isdigit()]
     txns = db.execute(select(Transaction).where(Transaction.id.in_(ids))).scalars().all()
+    touched = {t.account_id for t in txns}
     for txn in txns:
         _log_deleted(db, txn)
         _delete_txn_safe(db, txn)
     db.commit()
+    for account_id in touched:
+        _resync_interest(db, account_id)
     return RedirectResponse(url=return_url, status_code=303)
 
 

@@ -67,8 +67,19 @@
     <div class="summary-card">
         <div class="label">Current Balance ({{ account.currency }})</div>
         <div class="value {% if not account.is_asset %}negative{% elif balance >= 0 %}positive{% else %}negative{% endif %}">
-            {% if not account.is_asset %}&minus;{% endif %}{{ account.currency_symbol }}{{ "{:,.2f}".format(balance|abs) }}
+            {% if not account.is_asset or balance < 0 %}&minus;{% endif %}{{ account.currency_symbol }}{{ "{:,.2f}".format(balance|abs) }}
         </div>
+        {% if future_txn_count %}
+        {# Confirmed scheduled payments are dated ahead, so the headline figure
+           is not "money in the account today" — spell out both. #}
+        <div style="font-size:0.78rem;color:var(--pico-muted-color);margin-top:0.3rem;line-height:1.35">
+            Includes {{ future_txn_count }} future-dated
+            {{ "entry" if future_txn_count == 1 else "entries" }}
+            ({% if future_txn_total < 0 %}&minus;{% else %}+{% endif %}{{ account.currency_symbol }}{{ "{:,.2f}".format(future_txn_total|abs) }}).<br>
+            <a href="/transactions?account_id={{ account.id }}">{% if not account.is_asset or balance_today < 0 %}&minus;{% endif %}{{ account.currency_symbol }}{{ "{:,.2f}".format(balance_today|abs) }}</a>
+            as of today.
+        </div>
+        {% endif %}
     </div>
     {% if not account.is_asset and payment_due %}
     {% set _pdays = (payment_due - now.date()).days %}
@@ -292,8 +303,37 @@
 {# ── Brokerage holdings / trades / dividends ───────────────────────────── #}
 {% if broker_positions or broker_trades or broker_dividends %}
 {% set bsym = account.currency_symbol %}
+
+{% if value_history %}
+<h2>Value Over Time</h2>
+<div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.5rem">
+    <small style="color:var(--pico-muted-color)">
+        Market value per holding, stacked. Dividends are shown cumulatively on the right axis.
+        Cash isn't plotted &mdash; the broker import doesn't record a cash balance.
+    </small>
+</div>
+<div class="chart-container" style="height:380px;margin-bottom:1.5rem">
+    <canvas id="valueHistoryChart"></canvas>
+</div>
+{% endif %}
+{% if request.query_params.get("priced") is not none %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #16a34a;background:#f0fdf4">
+    &#10003; Refreshed {{ request.query_params.get("priced") }} price(s){% if request.query_params.get("live") == "0" %} from cache — the live feed didn't respond{% endif %}.
+</article>
+{% endif %}
+{% if request.query_params.get("price_err") %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #dc2626;background:#fef2f2">
+    Couldn't refresh prices just now — showing the last known values.
+</article>
+{% endif %}
+
 {% if broker_positions %}
-<h2>Holdings</h2>
+<h2 style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+    Holdings
+    <form method="post" action="/accounts/{{ account.id }}/refresh-prices" style="margin:0">
+        <button type="submit" class="outline" style="padding:0.25rem 0.8rem;font-size:0.8rem;margin:0">↻ Update prices</button>
+    </form>
+</h2>
 <div style="overflow-x:auto;margin-bottom:1.5rem">
 <table>
     <thead>
@@ -667,6 +707,183 @@
 </div>
 {% endif %}
 
+{# ── Scheduled payments ───────────────────────────────────────────────────
+   Amend / pause / delete this account's projections in place. The Cash Flow
+   Forecast below is rebuilt from exactly these rows on every save, and each
+   projected occurrence there can be confirmed into the ledger. #}
+{% set SCHED_SYMBOLS = {"GBP": "£", "EUR": "€", "USD": "$", "CAD": "CA$", "AUD": "A$"} %}
+{% set sched_return = "/accounts/" ~ account.id ~ "?forecast_months=" ~ forecast_months ~ "#scheduled" %}
+{% set forecast_return = "/accounts/" ~ account.id ~ "?forecast_months=" ~ forecast_months ~ "#forecast" %}
+{% set sched_today = now.date() %}
+
+<h2 id="scheduled">Scheduled Payments</h2>
+
+{% if request.query_params.get("confirmed") == "1" %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #16a34a;background:#f0fdf4">
+    &#10003; Confirmed &mdash; it's in the ledger below and counted in the balance.
+    The schedule has moved on to its next date.
+</article>
+{% elif request.query_params.get("confirmed") == "0" %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #f59e0b;background:color-mix(in srgb,#f59e0b 8%,transparent)">
+    That occurrence was already confirmed &mdash; nothing was added a second time.
+</article>
+{% elif request.query_params.get("confirm_error") %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #dc2626;background:#fef2f2">
+    Couldn't confirm that occurrence. Check the amount and date on the schedule.
+</article>
+{% elif request.query_params.get("saved") %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #16a34a;background:#f0fdf4">
+    &#10003; Scheduled payment updated. The forecast below has been recalculated.
+</article>
+{% elif request.query_params.get("added") %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #16a34a;background:#f0fdf4">
+    &#10003; Scheduled payment added.
+</article>
+{% elif request.query_params.get("deleted") %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #16a34a;background:#f0fdf4">
+    &#10003; Scheduled payment deleted. It won't be suggested again or rebuilt by an import.
+</article>
+{% endif %}
+
+{% if account_scheduled %}
+{# Each row's inputs belong to a form declared here rather than in the table:
+   a <form> cannot wrap a <tr>, so the HTML5 form= attribute does the binding. #}
+{% for p in account_scheduled %}
+<form id="schedf{{ p.id }}" method="post" action="/scheduled/{{ p.id }}/edit" hidden>
+    <input type="hidden" name="return_to" value="{{ sched_return }}">
+    <input type="hidden" name="account_id" value="{{ account.id }}">
+    <input type="hidden" name="currency" value="{{ p.currency or account.currency }}">
+    <input type="hidden" name="amount_type" value="{{ p.amount_type or 'fixed' }}">
+    <input type="hidden" name="day_of_month" value="{{ p.day_of_month if p.day_of_month is not none else '' }}">
+    <input type="hidden" name="end_date" value="{{ p.end_date.isoformat() if p.end_date else '' }}">
+    <input type="hidden" name="notes" value="{{ p.notes or '' }}">
+    <input type="hidden" name="active" value="{{ 'on' if p.active else 'off' }}">
+</form>
+{% endfor %}
+
+<div style="overflow-x:auto;margin-bottom:1rem">
+<table>
+    <thead>
+        <tr>
+            <th>Description</th>
+            <th style="text-align:right">Amount</th>
+            <th>Category</th>
+            <th>Frequency</th>
+            <th style="white-space:nowrap">Next due</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for p in account_scheduled %}
+    {% set psym = SCHED_SYMBOLS.get(p.currency, (p.currency ~ " ") if p.currency else account.currency_symbol) %}
+    {% set overdue = p.active and p.next_due_date < sched_today %}
+    <tr{% if not p.active %} style="opacity:0.55"{% endif %}>
+        <td>
+            <input type="text" name="description" form="schedf{{ p.id }}"
+                   value="{{ p.description }}" required
+                   style="margin:0;padding:0.2rem 0.4rem;font-size:0.85rem;width:100%;min-width:8rem;max-width:13rem">
+            <small style="color:var(--pico-muted-color);display:block;margin-top:0.15rem">
+                {{ p.source.replace('_', ' ') }}{% if not p.active %} &bull; paused{% endif %}
+                {% if p.amount_type == 'variable' %} &bull; projected from a trailing average{% endif %}
+                {% if p.last_matched_date %} &bull; last seen {{ p.last_matched_date.strftime("%d %b %Y") }}{% endif %}
+            </small>
+        </td>
+        <td style="text-align:right">
+            <span style="font-size:0.8rem;color:var(--pico-muted-color)">{{ psym }}</span>
+            <input type="number" step="0.01" name="amount" form="schedf{{ p.id }}"
+                   value="{{ "%.2f"|format(p.amount|float) }}" required
+                   style="margin:0;padding:0.2rem 0.4rem;font-size:0.85rem;width:6.5rem;text-align:right;display:inline-block">
+        </td>
+        <td>
+            <select name="category_id" form="schedf{{ p.id }}"
+                    style="margin:0;padding:0.2rem 0.4rem;font-size:0.85rem;width:100%;max-width:12rem">
+                <option value="">&mdash;</option>
+                {% for c in scheduled_categories %}
+                <option value="{{ c.id }}" {% if p.category_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+                {% endfor %}
+            </select>
+        </td>
+        <td>
+            <select name="frequency" form="schedf{{ p.id }}"
+                    style="margin:0;padding:0.2rem 0.4rem;font-size:0.85rem;width:100%;max-width:9rem;text-transform:capitalize">
+                {% for f in scheduled_frequencies %}
+                <option value="{{ f }}" {% if p.frequency == f %}selected{% endif %}>{{ f }}</option>
+                {% endfor %}
+            </select>
+        </td>
+        <td>
+            <input type="date" name="next_due_date" form="schedf{{ p.id }}"
+                   value="{{ p.next_due_date.isoformat() }}" required
+                   style="margin:0;padding:0.2rem 0.4rem;font-size:0.85rem;width:100%;max-width:9.5rem{% if overdue %};border-color:#dc2626{% endif %}">
+            {% if overdue %}<small style="color:#dc2626;display:block">overdue</small>{% endif %}
+        </td>
+        <td style="white-space:nowrap;text-align:right">
+            <button type="submit" form="schedf{{ p.id }}"
+                    style="padding:0.15rem 0.6rem;font-size:0.78rem;margin:0;width:auto">Save</button>
+            <form method="post" action="/scheduled/{{ p.id }}/toggle" style="display:inline-block;margin:0">
+                <input type="hidden" name="return_to" value="{{ sched_return }}">
+                <button type="submit" class="outline"
+                        style="padding:0.15rem 0.6rem;font-size:0.78rem;margin:0;width:auto">{{ "Pause" if p.active else "Resume" }}</button>
+            </form>
+            <form method="post" action="/scheduled/{{ p.id }}/delete" style="display:inline-block;margin:0"
+                  onsubmit="return confirm('Delete this scheduled payment? It will not be suggested again or rebuilt by an import.')">
+                <input type="hidden" name="return_to" value="{{ sched_return }}">
+                <button type="submit" class="outline"
+                        style="padding:0.15rem 0.6rem;font-size:0.78rem;margin:0;width:auto;color:#dc2626;border-color:#dc2626">Delete</button>
+            </form>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% else %}
+<p style="color:var(--pico-muted-color);font-size:0.9rem">
+    No scheduled payments on this account yet. Add one below, or
+    <a href="/scheduled/detect">detect them from transaction history</a>.
+</p>
+{% endif %}
+
+<details style="margin-bottom:1.5rem">
+    <summary style="cursor:pointer;font-size:0.9rem">+ Add a scheduled payment</summary>
+    <form method="post" action="/scheduled/new" style="margin-top:0.75rem">
+        <input type="hidden" name="return_to" value="{{ sched_return }}">
+        <input type="hidden" name="account_id" value="{{ account.id }}">
+        <input type="hidden" name="currency" value="{{ account.currency }}">
+        <input type="hidden" name="amount_type" value="fixed">
+        <div class="grid">
+            <label>Description
+                <input type="text" name="description" required placeholder="e.g. Rent">
+            </label>
+            <label>Amount ({{ account.currency }})
+                <input type="number" step="0.01" name="amount" required
+                       placeholder="negative for money out">
+            </label>
+        </div>
+        <div class="grid">
+            <label>Category
+                <select name="category_id">
+                    <option value="">&mdash;</option>
+                    {% for c in scheduled_categories %}
+                    <option value="{{ c.id }}">{{ c.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>Frequency
+                <select name="frequency" style="text-transform:capitalize">
+                    {% for f in scheduled_frequencies %}
+                    <option value="{{ f }}" {% if f == 'monthly' %}selected{% endif %}>{{ f }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>Next due
+                <input type="date" name="next_due_date" required value="{{ sched_today.isoformat() }}">
+            </label>
+        </div>
+        <button type="submit" style="padding:0.4rem 1rem;font-size:0.9rem;width:auto">Add scheduled payment</button>
+    </form>
+</details>
+
 {% if account_forecast and account_forecast.events %}
 {% set af = account_forecast %}
 {% set sym = account.currency_symbol %}
@@ -692,6 +909,7 @@
             <th>Payment</th>
             <th style="text-align:right;white-space:nowrap">Amount</th>
             <th style="text-align:right;white-space:nowrap">Balance after</th>
+            <th style="width:1%"></th>
         </tr>
     </thead>
     <tbody>
@@ -700,6 +918,7 @@
             <td style="color:var(--pico-muted-color);font-size:0.85rem"><em>Opening balance</em></td>
             <td></td>
             <td style="text-align:right;font-weight:600">{{ sym }}{{ "{:,.2f}".format(af.opening_balance|float) }}</td>
+            <td></td>
         </tr>
         {% set ns = namespace(running=af.opening_balance) %}
         {% for evt in af.events %}
@@ -730,6 +949,21 @@
             {# Balance owed stays signed like the headline balance above. #}
             <td style="text-align:right;white-space:nowrap;font-weight:600{% if neg %};color:#dc2626{% endif %}">
                 {% if neg or not account.is_asset %}&minus;{% endif %}{{ sym }}{{ "%.2f"|format(ns.running|float|abs) }}
+            </td>
+            {# Confirming an occurrence posts it to the ledger at the amount
+               shown on this row. Anything but the earliest outstanding one
+               skips the occurrences before it, so those ask first. #}
+            {% set is_next = forecast_first_occurrence.get(evt.scheduled_payment_id) == evt.date %}
+            <td style="text-align:right">
+                <form method="post" action="/scheduled/{{ evt.scheduled_payment_id }}/confirm" style="margin:0"
+                      {% if not is_next %}onsubmit="return confirm('This is not the next occurrence of this payment. Confirming it skips the earlier unconfirmed ones. Continue?')"{% endif %}>
+                    <input type="hidden" name="occurrence_date" value="{{ evt.date.isoformat() }}">
+                    <input type="hidden" name="amount" value="{{ evt.amount }}">
+                    <input type="hidden" name="return_to" value="{{ forecast_return }}">
+                    <button type="submit" class="{% if not is_next %}outline{% endif %}"
+                            title="Record this in the ledger as if it had already happened"
+                            style="padding:0.1rem 0.55rem;font-size:0.78rem;margin:0;width:auto;white-space:nowrap">Confirm</button>
+                </form>
             </td>
         </tr>
         {% endfor %}
@@ -878,6 +1112,84 @@
 {% endblock %}
 
 {% block scripts %}
+{% if value_history %}
+<script>
+(function () {
+    const dates  = {{ value_history.dates | tojson }};
+    const series = {{ value_history.series | tojson }};
+    const divs   = {{ value_history.dividends_cum | tojson }};
+    const sym    = {{ account.currency_symbol | tojson }};
+
+    // Distinct hues per holding so a stacked band is easy to follow.
+    const palette = ['#2563eb','#16a34a','#d97706','#dc2626','#7c3aed',
+                     '#0891b2','#db2777','#65a30d','#ea580c','#4f46e5'];
+    const datasets = Object.keys(series).map((symbol, i) => ({
+        label: symbol,
+        data: series[symbol],
+        backgroundColor: palette[i % palette.length] + 'cc',
+        borderColor: palette[i % palette.length],
+        borderWidth: 1,
+        fill: true,
+        stack: 'holdings',
+        pointRadius: 0,
+        tension: 0.15,
+    }));
+    datasets.push({
+        label: 'Dividends (cumulative)',
+        data: divs,
+        borderColor: '#0f766e',
+        backgroundColor: 'transparent',
+        borderDash: [5, 3],
+        borderWidth: 2,
+        fill: false,
+        pointRadius: 0,
+        yAxisID: 'yDiv',
+    });
+
+    const fmt = v => sym + Number(v).toLocaleString(undefined,
+        {minimumFractionDigits: 0, maximumFractionDigits: 0});
+
+    new Chart(document.getElementById('valueHistoryChart').getContext('2d'), {
+        type: 'line',
+        data: { labels: dates, datasets: datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                x: { ticks: { maxTicksLimit: 12, autoSkip: true } },
+                y: {
+                    stacked: true, position: 'left',
+                    ticks: { callback: fmt },
+                    title: { display: true, text: 'Holdings value' },
+                },
+                yDiv: {
+                    position: 'right', beginAtZero: true,
+                    grid: { drawOnChartArea: false },
+                    ticks: { callback: fmt },
+                    title: { display: true, text: 'Dividends' },
+                },
+            },
+            plugins: {
+                legend: { position: 'bottom', labels: { boxWidth: 12 } },
+                tooltip: {
+                    callbacks: {
+                        label: c => c.dataset.label + ': ' + fmt(c.parsed.y),
+                        footer: items => {
+                            // Sum only the stacked holdings, not the dividend line.
+                            const total = items
+                                .filter(i => i.dataset.stack === 'holdings')
+                                .reduce((s, i) => s + i.parsed.y, 0);
+                            return 'Total: ' + fmt(total);
+                        },
+                    },
+                },
+            },
+        },
+    });
+})();
+</script>
+{% endif %}
 {% if liability_balance_history %}
 <script>
 (function() {

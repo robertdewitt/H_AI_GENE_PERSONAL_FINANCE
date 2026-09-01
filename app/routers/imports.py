@@ -352,14 +352,20 @@ def confirm_import(
                             _Sched.active.is_(True),
                         ).limit(1)
                     ).scalar_one_or_none()
+                    from app.services.scheduled_dismissal import (
+                        is_dismissed as _is_dismissed,
+                    )
+                    _mp_desc = f"{account.name} — Mortgage Payment"
                     if existing_mp is not None:
                         existing_mp.amount = pay_amt
                         existing_mp.next_due_date = next_due
                         existing_mp.day_of_month = next_due.day
+                    elif _is_dismissed(db, account.id, _mp_desc):
+                        pass   # deleted by the user — don't rebuild it
                     else:
                         db.add(_Sched(
                             account_id=account.id,
-                            description=f"{account.name} — Mortgage Payment",
+                            description=_mp_desc,
                             amount=pay_amt,
                             amount_type="fixed",
                             currency=account.currency or "USD",
@@ -747,12 +753,16 @@ def confirm_import(
                             ScheduledPayment.active.is_(True),
                         ).limit(1)
                     ).scalar_one_or_none()
+                    from app.services.scheduled_dismissal import is_dismissed
                     if existing_sched is not None:
                         existing_sched.next_due_date = due_date
                         existing_sched.day_of_month = due_date.day
                         existing_sched.amount = plan_amount
                         existing_sched.description = plan_desc
                         existing_sched.notes = plan_notes
+                    elif is_dismissed(db, account_id, plan_desc):
+                        # The user deleted this one — don't rebuild it.
+                        pass
                     else:
                         db.add(ScheduledPayment(
                             account_id=account_id,
@@ -913,7 +923,7 @@ def revolut_confirm(
 
     from decimal import Decimal
     from app.models.transaction import Transaction
-    from app.models.import_batch import ImportBatch
+    from app.models.import_batch import ImportBatch, ImportSource
     from app.models.account import Account, LIABILITY_TYPES
 
     account = db.get(Account, account_id)
@@ -949,7 +959,7 @@ def revolut_confirm(
         filename=Path(filepath).name,
         file_type="pdf",
         row_count=0,
-        source="revolut_pdf",
+        source=ImportSource.REVOLUT_PDF.value,
     )
     db.add(batch)
     db.flush()

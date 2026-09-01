@@ -26,10 +26,27 @@
 
 {% if active_payments %}
 <h2 style="font-size:1.1rem;margin-bottom:0.75rem">Active ({{ active_payments | length }})</h2>
+{# One form wraps the table: the checkboxes drive the bulk action, while each
+   row's own buttons override the target with formaction. Nesting a form per
+   row inside this one would be invalid HTML and the browser would drop it. #}
+<form method="post" action="/scheduled/bulk-delete" id="schedBulkForm"
+      onsubmit="return this.__single || confirm('Delete the selected scheduled payments?')">
+<div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;margin-bottom:0.5rem">
+    <button type="submit" class="outline" id="schedBulkBtn" disabled
+            style="padding:0.2rem 0.7rem;font-size:0.8rem;margin:0;color:#dc2626;border-color:#dc2626">
+        Delete selected (<span id="schedSelCount">0</span>)
+    </button>
+    <small style="color:var(--pico-muted-color)">
+        Deleted payments won't be suggested again or rebuilt by an import.
+    </small>
+</div>
 <div style="overflow-x:auto">
 <table>
     <thead>
         <tr>
+            <th style="width:2rem">
+                <input type="checkbox" id="schedSelectAll" title="Select all" style="margin:0">
+            </th>
             <th>Description</th>
             <th>Account</th>
             <th>Amount</th>
@@ -46,6 +63,10 @@
     {% set sym = SYMBOLS.get(p.currency, p.currency ~ " ") %}
     {% set overdue = p.next_due_date < today %}
     <tr>
+        <td>
+            <input type="checkbox" name="payment_ids" value="{{ p.id }}"
+                   class="sched-select" style="margin:0">
+        </td>
         <td>
             {{ p.description }}
             {% if p.category %}<br><small style="color:var(--pico-muted-color)">{{ p.category.name }}</small>{% endif %}
@@ -84,15 +105,19 @@
         </td>
         <td style="white-space:nowrap">
             <a href="/scheduled/{{ p.id }}/edit" style="font-size:0.8rem;margin-right:0.5rem">Edit</a>
-            <form method="post" action="/scheduled/{{ p.id }}/toggle" style="display:inline;margin:0">
-                <button type="submit" class="outline" style="padding:0.1rem 0.5rem;font-size:0.78rem;margin:0">Pause</button>
-            </form>
+            <button type="submit" formaction="/scheduled/{{ p.id }}/toggle"
+                    onclick="this.form.__single = true"
+                    class="outline" style="padding:0.1rem 0.5rem;font-size:0.78rem;margin:0">Pause</button>
+            <button type="submit" formaction="/scheduled/{{ p.id }}/delete"
+                    onclick="this.form.__single = confirm('Delete this scheduled payment?'); return this.form.__single"
+                    class="outline" style="padding:0.1rem 0.5rem;font-size:0.78rem;margin:0;color:#dc2626;border-color:#dc2626">Delete</button>
         </td>
     </tr>
     {% endfor %}
     </tbody>
 </table>
 </div>
+</form>
 {% else %}
 <article style="text-align:center;padding:2rem;color:var(--pico-muted-color)">
     No active scheduled payments.
@@ -131,4 +156,66 @@
 </details>
 {% endif %}
 
+{% if dismissed %}
+<details style="margin-top:1.5rem">
+    <summary style="cursor:pointer;color:var(--pico-muted-color)">
+        Deleted payments <span style="font-weight:400">({{ dismissed|length }})</span>
+    </summary>
+    <small style="color:var(--pico-muted-color);display:block;margin:0.5rem 0">
+        These won't be suggested again or rebuilt by a statement import.
+        Restore one to let it be detected as normal.
+    </small>
+    <table>
+        <thead>
+            <tr><th>Payment</th><th>Account</th><th>Deleted</th><th></th></tr>
+        </thead>
+        <tbody>
+        {% for d in dismissed %}
+            <tr>
+                <td style="font-size:0.9rem">{{ d.original_description or d.description_key }}</td>
+                <td style="font-size:0.85rem;color:var(--pico-muted-color)">{{ acct_lookup.get(d.account_id, "Account " ~ d.account_id) }}</td>
+                <td style="font-size:0.8rem;color:var(--pico-muted-color)">{{ d.dismissed_at.strftime("%d %b %Y") if d.dismissed_at else "—" }}</td>
+                <td style="text-align:right">
+                    <form method="post" action="/scheduled/dismissed/{{ d.id }}/restore" style="margin:0">
+                        <button type="submit" class="outline" style="padding:0.1rem 0.5rem;font-size:0.78rem;margin:0">Restore</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</details>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const form = document.getElementById('schedBulkForm');
+    if (!form) return;
+    const all   = document.getElementById('schedSelectAll');
+    const btn   = document.getElementById('schedBulkBtn');
+    const count = document.getElementById('schedSelCount');
+    const boxes = () => Array.from(form.querySelectorAll('.sched-select'));
+
+    function sync() {
+        const n = boxes().filter(b => b.checked).length;
+        count.textContent = n;
+        btn.disabled = n === 0;
+        if (all) {
+            all.checked = n > 0 && n === boxes().length;
+            all.indeterminate = n > 0 && n < boxes().length;
+        }
+    }
+    if (all) all.addEventListener('change', () => {
+        boxes().forEach(b => { b.checked = all.checked; });
+        sync();
+    });
+    form.addEventListener('change', e => {
+        if (e.target.classList.contains('sched-select')) sync();
+    });
+    sync();
+})();
+</script>
 {% endblock %}

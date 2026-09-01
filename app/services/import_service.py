@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models.import_batch import ImportBatch, ImportStatus
+from app.models.import_batch import ImportBatch, ImportSource, ImportStatus
 from app.models.transaction import Transaction
 
 log = logging.getLogger(__name__)
@@ -524,6 +524,61 @@ def detect_currency_from_value(value) -> str | None:
     return None
 
 
+# Descriptions a liability export uses for money paid *towards* the debt.
+# These rows are the reliable landmark: whatever sign they carry in the file,
+# they must end up positive once stored.
+PAYMENT_DESCRIPTION_KEYWORDS = (
+    "payment", "autopay", "auto pay", "thank you", "pymt", "online pmt",
+    "direct debit", "bill pay",
+)
+
+
+def detect_liability_sign_flip(rows: "list[tuple[str, Decimal]]") -> bool:
+    """Whether a liability file's raw amounts must be negated when stored.
+
+    The app stores charges negative and payments positive on a liability, but
+    exports disagree about which way round the file itself is. Some (older
+    card exports, most loan statements) list a charge as a positive number;
+    others — Chase card activity among them — already use the app's own
+    convention, and negating those reverses every row.
+
+    So decide from the file rather than assuming: payment rows must come out
+    positive and charges negative. Falls back to the sign the bulk of the
+    rows carry, and finally to the historical flip when a file offers no
+    evidence at all.
+    """
+    payments_pos = payments_neg = charges_pos = charges_neg = 0
+    for desc, amount in rows:
+        if amount is None or amount == 0:
+            continue
+        lowered = (desc or "").lower()
+        if any(kw in lowered for kw in PAYMENT_DESCRIPTION_KEYWORDS):
+            if amount > 0:
+                payments_pos += 1
+            else:
+                payments_neg += 1
+        elif amount > 0:
+            charges_pos += 1
+        else:
+            charges_neg += 1
+
+    # Payments are the strongest signal, but only trust them when the charges
+    # point the same way — a file with both signs mixed is not evidence.
+    if payments_pos > payments_neg and charges_neg >= charges_pos:
+        return False
+    if payments_neg > payments_pos and charges_pos >= charges_neg:
+        return True
+
+    # No usable payment rows: a liability file is mostly charges, and charges
+    # must end up negative.
+    if charges_neg > charges_pos:
+        return False
+    if charges_pos > charges_neg:
+        return True
+
+    return True  # nothing to go on — keep the historical behaviour
+
+
 def import_transactions(
     db: Session,
     account_id: int,
@@ -564,7 +619,7 @@ def import_transactions(
         filename=path.name,
         file_type=path.suffix.lstrip(".").lower(),
         row_count=total_rows,
-        source="manual_upload",
+        source=ImportSource.MANUAL_UPLOAD.value,
         status=ImportStatus.PENDING,
     )
     db.add(batch)
@@ -598,33 +653,53 @@ def import_transactions(
     debit_col = column_mapping.get("debit")
     credit_col = column_mapping.get("credit")
 
-    for _, row in df.iterrows():
-        date_val = parse_date(
-            row.get(date_col_name, ""), dayfirst=dayfirst,
-        )
-        desc_val = str(row.get(column_mapping.get("description", ""), "")).strip()
-
+    def _row_amount(row):
+        """Raw amount for a row, before any liability sign handling."""
         if amount_col:
-            amount_val = parse_amount(row.get(amount_col, ""))
-        elif debit_col or credit_col:
+            return parse_amount(row.get(amount_col, ""))
+        if debit_col or credit_col:
             debit_raw = parse_amount(row.get(debit_col, "")) if debit_col else None
             credit_raw = parse_amount(row.get(credit_col, "")) if credit_col else None
             from decimal import Decimal as _D
             debit_amt = abs(debit_raw) if debit_raw is not None else _D("0")
             credit_amt = abs(credit_raw) if credit_raw is not None else _D("0")
             if debit_amt == 0 and credit_amt == 0:
-                amount_val = None
-            else:
-                amount_val = credit_amt - debit_amt
-        else:
-            amount_val = None
+                return None
+            return credit_amt - debit_amt
+        return None
+
+    desc_col_name = column_mapping.get("description", "")
+
+    # Read the file's own sign convention once, up front — a per-row guess
+    # would let one odd row flip half an import.
+    flip_liability = False
+    if is_liability:
+        flip_liability = detect_liability_sign_flip([
+            (str(row.get(desc_col_name, "")), _row_amount(row))
+            for _, row in df.iterrows()
+        ])
+        log.info(
+            "Liability sign convention for %s: %s",
+            path.name,
+            "charges positive in file — negating"
+            if flip_liability else "already charges-negative — keeping signs",
+        )
+
+    for _, row in df.iterrows():
+        date_val = parse_date(
+            row.get(date_col_name, ""), dayfirst=dayfirst,
+        )
+        desc_val = str(row.get(desc_col_name, "")).strip()
+        amount_val = _row_amount(row)
 
         if date_val is None or amount_val is None or not desc_val:
             skipped += 1
             continue
 
-        # Flip sign for liabilities so charges are negative and payments positive
-        if is_liability:
+        # Store charges negative and payments positive on a liability. Only
+        # negate when the file is the other way round — see
+        # detect_liability_sign_flip.
+        if flip_liability:
             amount_val = -amount_val
 
         # Duplicate check uses the final stored amount
@@ -710,6 +785,25 @@ def import_transactions(
             db.commit()
     except Exception:
         log.warning("Event classification failed for batch %d", batch.id, exc_info=True)
+
+    # On an account whose interest this app derives, newly discovered rows
+    # change the balance the monthly accrual is charged on — including for
+    # months already accrued, if the file carried backdated rows. Re-check.
+    try:
+        from app.models.account import Account
+        from app.services.interest_accrual import resync_account_interest
+        account = db.get(Account, account_id)
+        if account is not None:
+            result = resync_account_interest(db, account)
+            if result["created"] or result["removed"]:
+                db.commit()
+                log.info(
+                    "Interest re-accrued on account %d from %s: %d posted, %d rebuilt",
+                    account_id, result["from_month"],
+                    result["created"], result["removed"],
+                )
+    except Exception:
+        log.warning("Interest resync failed for account %d", account_id, exc_info=True)
 
     log.info(
         "Import complete: %d imported, %d skipped, %d duplicates, batch_id=%d",

@@ -67,6 +67,7 @@
         <tr>
             <th>Symbol</th>
             <th>Name</th>
+            <th>Account</th>
             <th style="text-align:right">Qty</th>
             <th style="text-align:right">Avg Cost</th>
             <th style="text-align:right">Current Price</th>
@@ -80,6 +81,12 @@
         <tr>
             <td><strong>{{ pos.symbol }}</strong></td>
             <td>{{ pos.name }}</td>
+            <td style="font-size:0.85rem;color:var(--pico-muted-color)">
+                {{ pos.account }}
+                {% if pos.priced_by == "statement" %}
+                <br><small title="Not exchange-listed — unit price comes from the latest statement">statement price</small>
+                {% endif %}
+            </td>
             <td style="text-align:right">{{ "{:,.4g}".format(pos.qty) }}</td>
             <td style="text-align:right">
                 {% if pos.cost_price_avg %}

@@ -828,6 +828,49 @@ def account_detail(
     except Exception:
         account_forecast = None  # scheduled_payments table may be absent on old DBs
 
+    # Future-dated rows now count towards the balance (a confirmed scheduled
+    # payment is a real ledger entry), so say so under the headline figure
+    # rather than letting the number quietly mean two different things.
+    _future = db.execute(
+        sa_select(
+            sa_func.count(Transaction.id),
+            sa_func.coalesce(sa_func.sum(Transaction.amount), 0),
+        ).where(
+            Transaction.account_id == account_id,
+            Transaction.date > naive_utc_now(),
+        )
+    ).one()
+    future_txn_count = _future[0] or 0
+    future_txn_total = Decimal(str(_future[1] or 0))
+    balance_today = balance - future_txn_total if future_txn_count else balance
+
+    # Scheduled payments for this account, managed inline further down the
+    # page. The forecast above is built from exactly these rows, so amending
+    # one and watching the projection move shouldn't need a trip to /scheduled.
+    from app.models.scheduled_payment import ScheduledPayment
+    from app.routers.scheduled_payments import FREQUENCIES as SCHEDULED_FREQUENCIES
+    try:
+        account_scheduled = db.execute(
+            sa_select(ScheduledPayment)
+            .where(ScheduledPayment.account_id == account_id)
+            .order_by(
+                ScheduledPayment.active.desc(), ScheduledPayment.next_due_date,
+            )
+        ).scalars().all()
+    except Exception:
+        account_scheduled = []
+
+    scheduled_categories = db.execute(
+        sa_select(Category).order_by(Category.name)
+    ).scalars().all()
+
+    # Earliest projected date per payment. Confirming any later occurrence
+    # silently skips the ones before it, so the template warns on those.
+    forecast_first_occurrence: dict[int, object] = {}
+    if account_forecast:
+        for _evt in account_forecast.events:      # already sorted by date
+            forecast_first_occurrence.setdefault(_evt.scheduled_payment_id, _evt.date)
+
     # RSU grants + vesting (for RSU accounts) and pension fund holdings.
     rsu_grants = None
     rsu_summary = None
@@ -859,6 +902,7 @@ def account_detail(
     # trades / dividends / lots, not generic Transaction rows), so surface it
     # here — otherwise these accounts look empty on their own page.
     broker_positions = broker_trades = broker_dividends = None
+    value_history = None
     if acct.account_type in _MARKET_ACCOUNT_TYPES:
         from app.models.instrument import Instrument, PositionLot
         from app.models.stock_dividend import StockDividend
@@ -890,17 +934,34 @@ def account_detail(
         except Exception:
             pass
 
+        # Value over time, split per holding, with cumulative dividends.
+        try:
+            from app.services.price_service import compute_account_value_by_symbol
+            _vh = compute_account_value_by_symbol(db, account_id)
+            if _vh.get("dates"):
+                value_history = _vh
+        except Exception:
+            log.warning("account_detail: value history failed for %s", account_id)
+
     return templates.TemplateResponse(request, "accounts/detail.html", {
         "account": acct,
         "balance": balance,
         "account_forecast": account_forecast,
         "forecast_months": forecast_months,
+        "future_txn_count": future_txn_count,
+        "future_txn_total": future_txn_total,
+        "balance_today": balance_today,
+        "account_scheduled": account_scheduled,
+        "scheduled_categories": scheduled_categories,
+        "scheduled_frequencies": SCHEDULED_FREQUENCIES,
+        "forecast_first_occurrence": forecast_first_occurrence,
         "rsu_grants": rsu_grants,
         "rsu_summary": rsu_summary,
         "pension_holdings": pension_holdings,
         "broker_positions": broker_positions,
         "broker_trades": broker_trades,
         "broker_dividends": broker_dividends,
+        "value_history": value_history,
         "balance_source": balance_result.balance_source_used,
         "balance_stale": balance_result.balance_stale,
         "transactions": recent_txns,
@@ -1174,6 +1235,46 @@ def account_reopen(account_id: int, db: Session = Depends(get_db)):
         return HTMLResponse("Account not found", status_code=404)
     reopen_account(db, acct)
     return RedirectResponse(url=f"/accounts/{account_id}?reopened=1", status_code=303)
+
+
+@router.post("/{account_id}/refresh-prices")
+def account_refresh_prices(account_id: int, db: Session = Depends(get_db)):
+    """Fetch live market prices for the holdings in a brokerage account."""
+    acct = get_account(db, account_id)
+    if not acct or acct.account_type not in _MARKET_ACCOUNT_TYPES:
+        return HTMLResponse("Not a market account", status_code=404)
+
+    from sqlalchemy import select as sa_select
+    from app.models.instrument import Instrument, PositionLot
+    from app.services.price_service import get_current_prices
+
+    symbols = [
+        s for (s,) in db.execute(
+            sa_select(Instrument.symbol)
+            .join(PositionLot, PositionLot.instrument_id == Instrument.id)
+            .where(
+                PositionLot.account_id == account_id,
+                PositionLot.source != "epa_pension",
+            )
+            .distinct()
+        ).all()
+    ]
+    if not symbols:
+        return RedirectResponse(
+            url=f"/accounts/{account_id}?priced=0", status_code=303,
+        )
+    try:
+        prices, _as_of, live = get_current_prices(symbols, db=db)
+        db.commit()
+    except Exception:
+        db.rollback()
+        return RedirectResponse(
+            url=f"/accounts/{account_id}?price_err=1", status_code=303,
+        )
+    return RedirectResponse(
+        url=f"/accounts/{account_id}?priced={len(prices)}&live={1 if live else 0}",
+        status_code=303,
+    )
 
 
 @router.post("/{account_id}/refresh-rsu-price")

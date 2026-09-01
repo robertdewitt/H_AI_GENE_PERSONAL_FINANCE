@@ -212,4 +212,15 @@ def init_db():
         for name, spec in _indexes:
             conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {spec}"))
 
+        # import_batches.source used to be a DB enum, which persisted member
+        # NAMES ("MANUAL_UPLOAD") while ad-hoc writers stored raw values
+        # ("revolut_pdf") that the enum could not resolve on read. It is a
+        # plain string now; fold the legacy names down to their values so a
+        # single representation is in the table. Idempotent — the names are
+        # exactly the upper-case of the values.
+        conn.execute(text(
+            "UPDATE import_batches SET source = LOWER(source) "
+            "WHERE source <> LOWER(source)"
+        ))
+
         conn.commit()

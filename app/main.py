@@ -29,7 +29,43 @@ async def lifespan(app: FastAPI):
     _seed_categories()
     _bootstrap_fx_rates()
     _encrypt_legacy_secrets()
+    _sync_interest_accruals()
     yield
+
+
+def _sync_interest_accruals() -> None:
+    """Bring self-calculated interest up to date on every app start.
+
+    Accounts whose balance is their ledger (a personal loan, a financed
+    vehicle) have their monthly interest posted by this app rather than by a
+    statement. The pass also re-checks earlier months, so a repayment that
+    turned up backdated since the last run has its compounding corrected
+    rather than left wrong. Never fatal to startup.
+    """
+    import logging
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database import engine
+    from app.services.interest_accrual import resync_all_interest_accounts
+
+    log = logging.getLogger(__name__)
+    db = sessionmaker(bind=engine)()
+    try:
+        totals = resync_all_interest_accounts(db)
+        if totals["created"] or totals["removed"]:
+            db.commit()
+            log.info(
+                "interest accrual: %d account(s) updated — %d posted, %d rebuilt",
+                totals["accounts"], totals["created"], totals["removed"],
+            )
+        else:
+            db.rollback()
+    except Exception as exc:
+        db.rollback()
+        log.warning("interest accrual sync skipped: %s", exc)
+    finally:
+        db.close()
 
 
 def _encrypt_legacy_secrets() -> None:

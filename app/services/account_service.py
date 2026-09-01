@@ -249,9 +249,23 @@ def _balance_from_txn_sum(
             .limit(1)
         ).one_or_none()
         if bal_after_row and bal_after_row.balance_after is not None:
+            marker_date = bal_after_row.date
+            # Anything recorded after that marker — a confirmed scheduled
+            # payment, a future-dated or manually added row — carries no
+            # running balance of its own. Without adding it the account
+            # reports a balance that predates its own ledger.
+            since_marker = db.execute(
+                select(func.coalesce(func.sum(Transaction.amount), 0))
+                .where(
+                    Transaction.account_id == account_id,
+                    Transaction.date > marker_date,
+                    Transaction.balance_after.is_(None),
+                )
+            ).scalar() or Decimal("0.00")
+            since_marker = Decimal(str(since_marker))
             return AccountBalanceResult(
-                value=Decimal(str(bal_after_row.balance_after)),
-                balance_as_of=bal_after_row.date,
+                value=Decimal(str(bal_after_row.balance_after)) + since_marker,
+                balance_as_of=now if since_marker else marker_date,
                 balance_source_used="latest_balance_after",
                 balance_confidence=0.92,
                 balance_stale=False,
@@ -388,15 +402,31 @@ def _balance_hybrid(
         stmt_bal = account.statement_balance
         stmt_date = account.statement_balance_as_of
         cutoff = as_of_date or now
-        delta = db.execute(
+        # No upper bound unless one was asked for: a historical query stops at
+        # its as_of_date, but the current balance includes everything on the
+        # ledger, future-dated rows included.
+        delta_query = (
             select(func.coalesce(func.sum(Transaction.amount), 0))
             .where(
                 Transaction.account_id == account_id,
                 Transaction.date > stmt_date,
-                Transaction.date <= cutoff,
             )
-        ).scalar() or Decimal("0.00")
-        balance = stmt_bal + Decimal(str(delta))
+        )
+        if as_of_date is not None:
+            delta_query = delta_query.where(Transaction.date <= as_of_date)
+        delta = db.execute(delta_query).scalar() or Decimal("0.00")
+        delta = Decimal(str(delta))
+
+        # The two inputs use opposite conventions on a liability:
+        # statement_balance is a positive magnitude of debt, while its
+        # transactions are cash-flow signed (a charge is negative, a payment
+        # positive). Adding them walks the balance the wrong way — a month of
+        # spending would appear to pay the card off — so subtract instead and
+        # stay in "amount owed" terms, the same units latest_statement
+        # reports for these accounts.
+        balance = (
+            stmt_bal - delta if not account.is_asset else stmt_bal + delta
+        )
         stale = (now - stmt_date).days > 45
         return AccountBalanceResult(
             value=balance,
@@ -522,6 +552,25 @@ def get_many_account_balances_rich(
                 latest_bal_after[row.account_id] = (
                     Decimal(str(row.balance_after)), row.date
                 )
+
+        # Rows added after each account's marker (confirmed scheduled
+        # payments, manual entries) carry no running balance of their own —
+        # see _balance_from_txn_sum. One query for every such account.
+        if latest_bal_after:
+            oldest_marker = min(d for _, d in latest_bal_after.values())
+            for row in db.execute(
+                select(Transaction.account_id, Transaction.date, Transaction.amount)
+                .where(
+                    Transaction.account_id.in_(list(latest_bal_after)),
+                    Transaction.date > oldest_marker,
+                    Transaction.balance_after.is_(None),
+                )
+            ).all():
+                marker_value, marker_date = latest_bal_after[row.account_id]
+                if row.date > marker_date:
+                    latest_bal_after[row.account_id] = (
+                        marker_value + Decimal(str(row.amount)), marker_date,
+                    )
 
     # Batch: transaction sums (used when balance_after not available)
     # Separate hybrid accounts that have a statement anchor from pure transaction_sum ones.

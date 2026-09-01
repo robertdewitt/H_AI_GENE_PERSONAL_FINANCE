@@ -234,3 +234,120 @@ def test_import_debit_credit_columns_yield_signed_amounts(db, tmp_path):
     ).scalars().all()
     # Debit is money out (negative); credit is money in (positive).
     assert [t.amount for t in txns] == [Decimal("-4.50"), Decimal("2000.00")]
+
+
+# ── Liability sign convention is read from the file, not assumed ──────────
+
+
+def test_detect_sign_flip_when_charges_are_positive():
+    """The older export shape: charges positive, payment negative."""
+    from app.services.import_service import detect_liability_sign_flip
+
+    assert detect_liability_sign_flip([
+        ("Coffee", Decimal("4.50")),
+        ("Restaurant", Decimal("80.00")),
+        ("Payment Thank You", Decimal("-150.00")),
+    ]) is True
+
+
+def test_detect_no_flip_when_file_already_matches_convention():
+    """Chase card activity: sales negative, payments positive."""
+    from app.services.import_service import detect_liability_sign_flip
+
+    assert detect_liability_sign_flip([
+        ("SAN DIEGO PARKING", Decimal("-3.75")),
+        ("ANTHROPIC", Decimal("-10.65")),
+        ("Payment Thank You Bill Pa", Decimal("250.00")),
+    ]) is False
+
+
+def test_detect_falls_back_to_the_charge_majority():
+    """No payment rows in the file — most rows are charges, and charges
+    must end up negative."""
+    from app.services.import_service import detect_liability_sign_flip
+
+    assert detect_liability_sign_flip([
+        ("Coffee", Decimal("-4.50")),
+        ("Restaurant", Decimal("-80.00")),
+        ("Refund", Decimal("12.00")),
+    ]) is False
+    assert detect_liability_sign_flip([
+        ("Coffee", Decimal("4.50")),
+        ("Restaurant", Decimal("80.00")),
+    ]) is True
+
+
+def test_detect_keeps_historical_behaviour_with_no_evidence():
+    from app.services.import_service import detect_liability_sign_flip
+
+    assert detect_liability_sign_flip([]) is True
+
+
+def test_chase_card_export_keeps_its_signs(db, tmp_path):
+    """Regression: a Chase activity CSV already stores charges negative and
+    payments positive. Negating it turned every purchase into a payment."""
+    card = _credit_card(db, currency="USD")
+    p = _write_csv(tmp_path, [
+        "Transaction Date,Post Date,Description,Category,Type,Amount,Memo",
+        "08/25/2026,08/26/2026,SAN DIEGO PARKING,Travel,Sale,-3.75,",
+        "08/24/2026,08/25/2026,ANTHROPIC,Shopping,Sale,-10.65,",
+        "08/17/2026,08/17/2026,Payment Thank You Bill Pa,,Payment,250.00,",
+    ])
+    import_transactions(
+        db, card.id, str(p),
+        column_mapping={
+            "date": "Transaction Date",
+            "description": "Description",
+            "amount": "Amount",
+        },
+        account_currency="USD",
+        is_liability=True,
+        dayfirst=False,
+    )
+    by_desc = {
+        t.description: t.amount
+        for t in db.execute(
+            select(Transaction).where(Transaction.account_id == card.id)
+        ).scalars().all()
+    }
+
+    assert by_desc["SAN DIEGO PARKING"] == Decimal("-3.75")
+    assert by_desc["ANTHROPIC"] == Decimal("-10.65")
+    assert by_desc["Payment Thank You Bill Pa"] == Decimal("250.00")
+
+
+def test_chase_rows_classify_as_purchases_not_settlements(db, tmp_path):
+    """The sign is what tells the truth layer a charge from a payment."""
+    from app.services.event_classifier import classify_transaction
+
+    card = _credit_card(db, currency="USD")
+    p = _write_csv(tmp_path, [
+        "Transaction Date,Description,Type,Amount",
+        "08/25/2026,SAN DIEGO PARKING,Sale,-3.75",
+        "08/17/2026,Payment Thank You,Payment,250.00",
+    ])
+    import_transactions(
+        db, card.id, str(p),
+        column_mapping={
+            "date": "Transaction Date",
+            "description": "Description",
+            "amount": "Amount",
+        },
+        account_currency="USD",
+        is_liability=True,
+        dayfirst=False,
+    )
+    rows = {
+        t.description: t
+        for t in db.execute(
+            select(Transaction).where(Transaction.account_id == card.id)
+        ).scalars().all()
+    }
+
+    purchase = rows["SAN DIEGO PARKING"]
+    assert classify_transaction(purchase, card).value == "card_purchase"
+    assert purchase.is_transfer is False
+    # A payment towards the card is money moved between the user's own
+    # accounts, so the importer flags it as a transfer — it can only spot it
+    # because the row came out positive.
+    assert rows["Payment Thank You"].is_transfer is True

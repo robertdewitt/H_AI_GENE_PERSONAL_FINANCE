@@ -27,6 +27,9 @@ _INVESTMENT_TYPES = {
     AccountType.ROTH_IRA,
     AccountType.PENSION,
     AccountType.FOUR_OH_ONE_K,
+    # RSU grants are a real equity holding — they belong in the portfolio
+    # even though they live in rsu_grants rather than position_lots.
+    AccountType.RSU,
 }
 
 _CURRENCY_SYMBOLS: dict[str, str] = {
@@ -62,23 +65,29 @@ def portfolio_dashboard(request: Request, db: Session = Depends(get_db)):
         .order_by(Instrument.symbol)
     ).all()
 
-    # Aggregate by symbol (multiple lots / accounts → single display row)
-    agg: dict[str, dict] = {}
+    acct_names = {a.id: a.name for a in investment_accounts}
+
+    # Aggregate by (symbol, account) so every row says which account holds it —
+    # merging across accounts loses that and makes the table hard to trust.
+    agg: dict[tuple, dict] = {}
     for lot, inst in position_rows:
-        sym = inst.symbol
-        if sym not in agg:
-            agg[sym] = {
-                "symbol": sym,
-                "name": inst.name or sym,
+        key = (inst.symbol, lot.account_id)
+        if key not in agg:
+            agg[key] = {
+                "symbol": inst.symbol,
+                "name": inst.name or inst.symbol,
+                "account": acct_names.get(lot.account_id, f"Account {lot.account_id}"),
                 "qty": 0.0,
                 "cost_basis_total": Decimal("0.00"),
                 "currency": inst.currency or "USD",
+                "priced_by": "market",
             }
-        agg[sym]["qty"] += float(lot.quantity)
-        cb = lot.cost_basis_total or Decimal("0.00")
-        agg[sym]["cost_basis_total"] += cb
+        agg[key]["qty"] += float(lot.quantity)
+        agg[key]["cost_basis_total"] += lot.cost_basis_total or Decimal("0.00")
 
-    symbols_held = list(agg.keys())
+    # Only market instruments go to the price feed. Pension units and RSU
+    # grants are priced separately below.
+    symbols_held = sorted({k[0] for k in agg})
 
     # ── Fetch current prices (with DB fallback + caching) ────────────────
     if symbols_held:
@@ -101,7 +110,74 @@ def portfolio_dashboard(request: Request, db: Session = Depends(get_db)):
     total_cost_basis = Decimal("0.00")
     total_unrealized_pnl = Decimal("0.00")
 
-    for sym, data in agg.items():
+    # ── Statement-priced pension units ────────────────────────────────────
+    # Not exchange-listed, so their unit price comes from the last statement
+    # rather than the market feed — but they are still holdings and belong here.
+    from app.models.instrument import PriceSnapshot as _PxSnap
+    pension_lots = db.execute(
+        select(PositionLot, Instrument)
+        .join(Instrument, PositionLot.instrument_id == Instrument.id)
+        .where(
+            PositionLot.account_id.in_([a.id for a in investment_accounts]),
+            Instrument.asset_class == "pension_fund",
+        )
+    ).all()
+    for lot, inst in pension_lots:
+        snap = db.execute(
+            select(_PxSnap).where(_PxSnap.instrument_id == inst.id)
+            .order_by(_PxSnap.as_of_date.desc()).limit(1)
+        ).scalar_one_or_none()
+        if snap is None:
+            continue
+        key = (inst.symbol, lot.account_id)
+        agg[key] = {
+            "symbol": inst.name or inst.symbol,
+            "name": "Pension fund unit",
+            "account": acct_names.get(lot.account_id, f"Account {lot.account_id}"),
+            "qty": float(lot.quantity),
+            "cost_basis_total": lot.cost_basis_total or Decimal("0.00"),
+            "currency": inst.currency or "GBP",
+            "priced_by": "statement",
+        }
+        current_prices[inst.symbol] = float(snap.price)
+        agg[key]["_price_symbol"] = inst.symbol
+
+    # ── RSU grants (unvested units × live price) ──────────────────────────
+    from app.models.rsu import RSUGrant
+    for acct in investment_accounts:
+        if acct.account_type != AccountType.RSU:
+            continue
+        try:
+            from app.services.rsu_service import _unvested_units
+            grant = db.execute(
+                select(RSUGrant).where(RSUGrant.account_id == acct.id).limit(1)
+            ).scalar_one_or_none()
+            if grant is None or grant.instrument_id is None:
+                continue
+            inst = db.get(Instrument, grant.instrument_id)
+            units = float(_unvested_units(db, acct.id))
+            if units <= 0 or inst is None:
+                continue
+            px = current_prices.get(inst.symbol)
+            if px is None:
+                fetched, _ao, _lv = get_current_prices([inst.symbol], db=db)
+                px = fetched.get(inst.symbol)
+                if px is not None:
+                    current_prices[inst.symbol] = px
+            agg[(inst.symbol, acct.id)] = {
+                "symbol": inst.symbol,
+                "name": f"{inst.name or inst.symbol} (unvested RSU)",
+                "account": acct.name,
+                "qty": units,
+                "cost_basis_total": Decimal("0.00"),
+                "currency": inst.currency or "USD",
+                "priced_by": "market",
+            }
+        except Exception:
+            log.warning("portfolio: could not add RSU holding for account %s", acct.id)
+
+    for key, data in agg.items():
+        sym = data.get("_price_symbol", key[0])
         qty = data["qty"]
         cb = data["cost_basis_total"]
         current_price = current_prices.get(sym, 0.0)
@@ -113,8 +189,11 @@ def portfolio_dashboard(request: Request, db: Session = Depends(get_db)):
         )
 
         positions.append({
-            "symbol": sym,
+            "symbol": data["symbol"],
             "name": data["name"],
+            "account": data.get("account", ""),
+            "priced_by": data.get("priced_by", "market"),
+            "currency": data.get("currency", "USD"),
             "qty": qty,
             "cost_basis_total": cb,
             "cost_price_avg": cost_price_avg,
@@ -131,14 +210,19 @@ def portfolio_dashboard(request: Request, db: Session = Depends(get_db)):
     positions.sort(key=lambda p: float(p["current_value"]), reverse=True)
 
     # ── Realized P&L ─────────────────────────────────────────────────────
+    # Scoped to the accounts on this page — an unscoped SUM silently folds in
+    # any account that isn't shown, so the totals wouldn't match the table.
+    _acct_ids = [a.id for a in investment_accounts]
     realized_row = db.execute(
         select(func.sum(StockTrade.realized_pnl))
+        .where(StockTrade.account_id.in_(_acct_ids))
     ).scalar()
     total_realized_pnl = Decimal(str(realized_row)) if realized_row is not None else Decimal("0.00")
 
     # ── Dividends ─────────────────────────────────────────────────────────
     div_total_row = db.execute(
         select(func.sum(StockDividend.amount_native))
+        .where(StockDividend.account_id.in_(_acct_ids))
     ).scalar()
     total_dividends = Decimal(str(div_total_row)) if div_total_row is not None else Decimal("0.00")
 
@@ -146,6 +230,7 @@ def portfolio_dashboard(request: Request, db: Session = Depends(get_db)):
     trade_rows_raw = db.execute(
         select(StockTrade, Instrument.symbol)
         .join(Instrument, StockTrade.instrument_id == Instrument.id)
+        .where(StockTrade.account_id.in_(_acct_ids))
         .order_by(StockTrade.trade_date.desc())
         .limit(100)
     ).all()
@@ -167,6 +252,7 @@ def portfolio_dashboard(request: Request, db: Session = Depends(get_db)):
     div_rows_raw = db.execute(
         select(StockDividend, Instrument.symbol)
         .join(Instrument, StockDividend.instrument_id == Instrument.id)
+        .where(StockDividend.account_id.in_(_acct_ids))
         .order_by(StockDividend.pay_date.desc())
     ).all()
 
