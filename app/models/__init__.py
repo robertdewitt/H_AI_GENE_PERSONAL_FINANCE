@@ -30,6 +30,7 @@ from app.models.user_profile import UserProfile
 from app.models.deleted_transaction import DeletedTransaction
 from app.models.dismissed_duplicate import DismissedDuplicate
 from app.models.description_embedding import DescriptionEmbedding
+from app.models.scheduled_match_proposal import ScheduledMatchProposal
 from app.models.dismissed_scheduled_payment import DismissedScheduledPayment
 from app.models.scheduled_payment import ScheduledPayment
 from app.models.plan_it_plan import PlanItPlan
@@ -71,6 +72,7 @@ __all__ = [
     "DeletedTransaction",
     "DismissedDuplicate",
     "DescriptionEmbedding",
+    "ScheduledMatchProposal",
     "DismissedScheduledPayment",
     "ScheduledPayment",
     "PlanItPlan",

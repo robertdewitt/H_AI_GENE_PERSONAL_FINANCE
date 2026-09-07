@@ -648,6 +648,25 @@ def import_transactions(
     # Also track keys added during this import to catch in-file duplicates
     new_keys: set[tuple] = set()
 
+    # Fingerprints of source rows already imported for this account. This is
+    # the exact layer: it identifies a statement line by the bytes it had in
+    # the file, so re-importing the same export is recognised even when the
+    # parsed date, sign or spacing has changed since. The (date, description,
+    # amount) key below stays as the fuzzy layer behind it.
+    from app.services.source_fingerprint import fingerprint
+
+    existing_hashes: set[str] = {
+        h for (h,) in db.execute(
+            select(Transaction.source_hash).where(
+                Transaction.account_id == account_id,
+                Transaction.source_hash.isnot(None),
+            )
+        ).all()
+    }
+    # How many times each identical source row has been seen in this file, so
+    # a statement that legitimately lists the same charge twice keeps both.
+    row_repeats: dict[str, int] = {}
+
     currency_col = column_mapping.get("currency")
     amount_col = column_mapping.get("amount")
     debit_col = column_mapping.get("debit")
@@ -702,13 +721,33 @@ def import_transactions(
         if flip_liability:
             amount_val = -amount_val
 
-        # Duplicate check uses the final stored amount
+        # Exact layer first: has this literal source row been imported before?
+        row_dict = {str(k): str(v) for k, v in row.items()}
+        base = fingerprint(account_id, row_dict, 0)
+        repeat = row_repeats.get(base, 0)
+        row_repeats[base] = repeat + 1
+        source_hash = fingerprint(account_id, row_dict, repeat)
+        if source_hash in existing_hashes:
+            duplicates += 1
+            continue
+        existing_hashes.add(source_hash)
+
+        # Fuzzy layer: catches the same transaction arriving from a *different*
+        # file, shaped differently, which the fingerprint cannot see.
+        #
+        # Deliberately not applied within this file. Two rows of one statement
+        # that share a date, description and amount are usually two real
+        # charges — a card used twice at the same parking meter — and the
+        # fingerprint has already established they are distinct source rows.
+        # Collapsing them here silently lost a transaction, which is worse
+        # than importing a visible duplicate that the duplicates tool can
+        # find.
         dedup_key = (
             date_val.strftime("%Y-%m-%d"),
             desc_val.strip().lower(),
             round(amount_val, 2),
         )
-        if dedup_key in existing_keys or dedup_key in new_keys:
+        if dedup_key in existing_keys:
             duplicates += 1
             continue
         new_keys.add(dedup_key)
@@ -752,6 +791,7 @@ def import_transactions(
             balance_after=balance_val,
             import_batch_id=batch.id,
             raw_data=raw,
+            source_hash=source_hash,
             is_transfer=is_payment_transfer,
         )
         pending_objects.append(txn)
@@ -818,6 +858,26 @@ def preview_file(filepath: str, max_rows: int = 10) -> dict:
     df = read_file(filepath)
     mapping = detect_columns(df)
     preview_df = df.head(max_rows)
+    preview_rows = preview_df.fillna("").to_dict(orient="records")
+
+    # The hint lists only recognise the common header wordings. When they
+    # leave a required field empty, ask a local model to name the column —
+    # it suggests a *mapping*, never values, and the user confirms it on the
+    # mapping screen before anything is read.
+    llm_filled: list[str] = []
+    try:
+        from app.services.column_mapping_llm import fill_mapping_gaps
+
+        mapping, llm_filled = fill_mapping_gaps(
+            mapping, list(df.columns), preview_rows,
+        )
+        if llm_filled:
+            log.info(
+                "Column mapping for %s: %s suggested by the local model",
+                Path(filepath).name, ", ".join(llm_filled),
+            )
+    except Exception:
+        log.warning("LLM column-mapping fallback skipped", exc_info=True)
 
     # Auto-detect date format from the mapped date column
     date_detection = None
@@ -827,7 +887,8 @@ def preview_file(filepath: str, max_rows: int = 10) -> dict:
     return {
         "columns": list(df.columns),
         "mapping": mapping,
-        "preview": preview_df.fillna("").to_dict(orient="records"),
+        "llm_filled": llm_filled,
+        "preview": preview_rows,
         "total_rows": len(df),
         "date_detection": date_detection,
     }

@@ -83,7 +83,10 @@ def scheduled_list(request: Request, db: Session = Depends(get_db)):
     from app.services.scheduled_dismissal import list_dismissed
     dismissed = list_dismissed(db)
     acct_lookup = {a.id: a.name for a in _all_accounts(db)}
+    from app.services.scheduled_matcher import pending_proposals
+
     return templates.TemplateResponse(request, "scheduled/list.html", {
+        "pending_review": len(pending_proposals(db)),
         "payments": payments,
         "today": date.today(),
         "levels": levels,
@@ -285,6 +288,64 @@ def scheduled_restore_dismissed(dismissal_id: int, db: Session = Depends(get_db)
     restore(db, dismissal_id)
     db.commit()
     return RedirectResponse(url="/scheduled?restored=1", status_code=303)
+
+
+# ── Review queue: matches proposed but not certain ────────────────────────────
+
+@router.get("/review", response_class=HTMLResponse)
+def scheduled_review(request: Request, db: Session = Depends(get_db)):
+    """Transactions that probably settled a schedule, awaiting a decision."""
+    import json
+
+    from app.models.transaction import Transaction
+    from app.services.scheduled_matcher import pending_proposals
+
+    rows = []
+    for proposal in pending_proposals(db):
+        payment = db.get(ScheduledPayment, proposal.scheduled_payment_id)
+        txn = db.get(Transaction, proposal.transaction_id)
+        if payment is None or txn is None:
+            continue
+        try:
+            components = json.loads(proposal.components or "{}")
+        except (TypeError, ValueError):
+            components = {}
+        rows.append({
+            "proposal": proposal, "payment": payment, "txn": txn,
+            "components": components,
+            "account": db.get(Account, payment.account_id),
+        })
+
+    return templates.TemplateResponse(request, "scheduled/review.html", {
+        "rows": rows,
+        "today": date.today(),
+    })
+
+
+@router.post("/review/{proposal_id}/confirm")
+def scheduled_review_confirm(
+    proposal_id: int,
+    return_to: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    from app.services.scheduled_matcher import confirm_proposal
+
+    confirm_proposal(db, proposal_id)
+    db.commit()
+    return _back(return_to, "/scheduled/review", confirmed="1")
+
+
+@router.post("/review/{proposal_id}/reject")
+def scheduled_review_reject(
+    proposal_id: int,
+    return_to: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    from app.services.scheduled_matcher import reject_proposal
+
+    reject_proposal(db, proposal_id)
+    db.commit()
+    return _back(return_to, "/scheduled/review", rejected="1")
 
 
 # ── Confirm a projected occurrence into the ledger ────────────────────────────

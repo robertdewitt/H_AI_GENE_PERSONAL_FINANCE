@@ -19,6 +19,7 @@
     <a href="/scheduled/new" role="button" style="padding:0.4rem 1rem;font-size:0.9rem">+ Add payment</a>
     <a href="/scheduled/detect" role="button" class="outline" style="padding:0.4rem 1rem;font-size:0.9rem">&#128269; Detect from history</a>
     <a href="/scheduled/forecast" role="button" class="outline" style="padding:0.4rem 1rem;font-size:0.9rem">&#128200; Cash flow forecast</a>
+    <a href="/scheduled/review" role="button" class="outline" style="padding:0.4rem 1rem;font-size:0.9rem">&#9878; Review matches{% if pending_review %} ({{ pending_review }}){% endif %}</a>
 </div>
 
 {% set active_payments = payments | selectattr('active') | list %}

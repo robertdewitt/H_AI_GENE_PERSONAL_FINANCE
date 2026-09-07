@@ -11,6 +11,7 @@ Returns a dict with match counts for the import summary banner.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 from typing import TYPE_CHECKING
@@ -55,6 +56,117 @@ def _amount_satisfies(txn_amt: float, pmt_amt: float, is_liability: bool) -> boo
     if is_liability and abs(txn_amt + pmt_amt) / abs(pmt_amt) <= AMOUNT_TOLERANCE:
         return True
     return False
+
+
+# ── Scoring ───────────────────────────────────────────────────────────────
+#
+# The gates above are a blunt instrument: any one of them failing means no
+# match, silently and permanently. That is how a mortgage sat "overdue by 65
+# days" with three payments for it on the ledger — the sign check failed, and
+# "no match" looks exactly like "hasn't happened yet".
+#
+# A weighted score degrades instead. One weak signal pulls the total down
+# rather than vetoing, and the total decides between settling the schedule
+# outright, proposing it for a human, and ignoring it.
+
+AUTO_THRESHOLD = 0.80      # settle the schedule without asking
+PROPOSE_THRESHOLD = 0.55   # surface for confirmation
+SCORE_DATE_WINDOW = 12     # days beyond which date evidence is worthless
+
+# Amount and date carry most of the weight because they are objective: the
+# money either moved on the day it was due or it did not. Wording is the
+# weakest signal — statements reword the same obligation month to month — so
+# an exact amount on the exact due date clears the bar on its own, whatever
+# the description says. History then lifts a repeat of an already-confirmed
+# pairing over the line, so a schedule asks once and flows thereafter.
+WEIGHTS = {"amount": 0.50, "date": 0.25, "description": 0.15, "history": 0.10}
+
+
+@dataclass
+class MatchScore:
+    total: float
+    amount: float
+    date: float
+    description: float
+    history: float
+
+    def as_dict(self) -> dict:
+        return {
+            "total": round(self.total, 3),
+            "amount": round(self.amount, 3),
+            "date": round(self.date, 3),
+            "description": round(self.description, 3),
+            "history": round(self.history, 3),
+        }
+
+
+def _amount_score(txn_amt: float, pmt_amt: float, is_liability: bool) -> float:
+    """1.0 for an exact hit, tapering to 0 at 15% off."""
+    if pmt_amt == 0:
+        return 1.0 if abs(txn_amt) < 0.01 else 0.0
+    direct = abs(txn_amt - pmt_amt) / abs(pmt_amt)
+    # A liability records a payment with the opposite sign to the schedule —
+    # see _amount_satisfies — so the flipped reading is equally valid there.
+    best = min(direct, abs(txn_amt + pmt_amt) / abs(pmt_amt)) if is_liability else direct
+    if best <= 0.005:
+        return 1.0
+    if best >= 0.15:
+        return 0.0
+    return 1.0 - (best - 0.005) / 0.145
+
+
+def _date_score(day_gap: int) -> float:
+    if day_gap <= 1:
+        return 1.0
+    if day_gap >= SCORE_DATE_WINDOW:
+        return 0.0
+    return 1.0 - (day_gap - 1) / (SCORE_DATE_WINDOW - 1)
+
+
+def _history_score(db, payment, description: str) -> float:
+    """Has this schedule been settled by a transaction worded like this before?
+
+    The strongest signal available and the one a single-shot comparison
+    cannot see: eleven previous months of the same wording says far more
+    than any similarity ratio.
+    """
+    if payment.last_matched_txn_id is None:
+        return 0.0
+    from app.models.transaction import Transaction
+    from app.services.recurring_detector import _normalize
+
+    previous = db.get(Transaction, payment.last_matched_txn_id)
+    if previous is None or not previous.description:
+        return 0.0
+    return 1.0 if _normalize(previous.description) == _normalize(description) else 0.0
+
+
+def score_match(db, txn, payment, account) -> MatchScore:
+    """How strongly this transaction looks like this scheduled payment."""
+    txn_date = txn.date.date() if hasattr(txn.date, "date") else txn.date
+    is_liability = account is not None and not account.is_asset
+
+    amount = _amount_score(float(txn.amount), float(payment.amount), is_liability)
+    date_gap = abs((txn_date - payment.next_due_date).days)
+    date = _date_score(date_gap)
+
+    if (payment.amount_type or "fixed") == "variable":
+        # The amount is only an anchor for these, so wording carries the load.
+        description = _desc_similarity(txn.description or "", payment.description)
+    else:
+        description = _desc_similarity(txn.description or "", payment.description)
+    history = _history_score(db, payment, txn.description or "")
+
+    total = (
+        WEIGHTS["amount"] * amount
+        + WEIGHTS["date"] * date
+        + WEIGHTS["description"] * description
+        + WEIGHTS["history"] * history
+    )
+    # Rounded so a total that is arithmetically exactly the threshold is not
+    # pushed under it by binary floating point (0.45 + 0.25 + 0.10 lands on
+    # 0.7999999999999999, which silently demoted an obvious match).
+    return MatchScore(round(total, 6), amount, date, description, history)
 
 
 def _advance_next_due(payment, matched_date: date) -> None:
@@ -193,7 +305,10 @@ def backfill_matches(
     once per period), so the pass repeats until nothing more matches, which
     walks a schedule that has fallen months behind back up to the present.
 
-    Returns ``{"matched": int, "passes": int}``.
+    Strong evidence settles a schedule outright; the band below that is
+    recorded as a proposal for a human rather than discarded.
+
+    Returns ``{"matched": int, "proposed": int, "passes": int}``.
     """
     from sqlalchemy import select
 
@@ -202,6 +317,7 @@ def backfill_matches(
     from app.models.transaction import Transaction
 
     since = since or (date.today() - timedelta(days=730))
+    proposed = 0
 
     payment_query = select(ScheduledPayment).where(
         ScheduledPayment.active.is_(True)
@@ -250,33 +366,42 @@ def backfill_matches(
             txn_date = txn.date.date() if hasattr(txn.date, "date") else txn.date
             txn_amt = float(txn.amount)
 
-            best_payment, best_score = None, 0.0
+            best_payment, best = None, None
             for pmt in by_account.get(txn.account_id, []):
                 if pmt.id in used_payments:
                     continue
-                date_diff = abs((txn_date - pmt.next_due_date).days)
-                if date_diff > DATE_WINDOW:
+                # A period already settled is not a candidate again. Without
+                # this, every historical occurrence of a long-running direct
+                # debit scores 1.0 on amount, wording and history and floods
+                # the queue with payments made years ago.
+                if pmt.last_matched_date and txn_date <= pmt.last_matched_date:
                     continue
                 account = accounts.get(pmt.account_id)
-                is_liability = account is not None and not account.is_asset
-                if not _amount_satisfies(txn_amt, float(pmt.amount), is_liability):
-                    continue
-                desc_sim = _desc_similarity(txn.description or "", pmt.description)
-                if pmt.amount_type == "variable":
-                    desc_sim = max(desc_sim, DESC_THRESHOLD)
-                if desc_sim < DESC_THRESHOLD:
-                    continue
-                score = desc_sim * (1.0 - date_diff / (DATE_WINDOW + 1))
-                if score > best_score:
-                    best_score, best_payment = score, pmt
+                scored = score_match(db, txn, pmt, account)
+                if best is None or scored.total > best.total:
+                    best, best_payment = scored, pmt
 
-            if best_payment is not None:
+            if best_payment is None or best.total < PROPOSE_THRESHOLD:
+                continue
+            # An occurrence is defined by when it fell due, so a transaction
+            # outside the date window is not evidence about *this* one however
+            # well everything else lines up. The repeated passes advance the
+            # schedule, so genuine history is still walked through in order —
+            # each occurrence matched against the date it was actually due.
+            if best.date <= 0.0:
+                continue
+
+            if best.total >= AUTO_THRESHOLD:
                 best_payment.last_matched_txn_id = txn.id
                 best_payment.last_matched_date = txn_date
                 _advance_next_due(best_payment, txn_date)
                 used_payments.add(best_payment.id)
                 claimed.add(txn.id)
                 matched_this_pass += 1
+            else:
+                # The middle band: plausible but not certain. Recorded rather
+                # than acted on, so it is visible instead of silently dropped.
+                proposed += _record_proposal(db, best_payment, txn, best)
 
         if matched_this_pass == 0:
             break
@@ -284,4 +409,96 @@ def backfill_matches(
         total_matched += matched_this_pass
         passes += 1
 
-    return {"matched": total_matched, "passes": passes}
+    db.flush()
+    return {"matched": total_matched, "proposed": proposed, "passes": passes}
+
+
+def _record_proposal(db: "Session", payment, txn, scored: "MatchScore") -> int:
+    """Record a plausible-but-uncertain match. Returns 1 if newly added."""
+    import json
+
+    from sqlalchemy import select
+
+    from app.models.scheduled_match_proposal import (
+        STATUS_PENDING, ScheduledMatchProposal,
+    )
+
+    existing = db.execute(
+        select(ScheduledMatchProposal).where(
+            ScheduledMatchProposal.scheduled_payment_id == payment.id,
+            ScheduledMatchProposal.transaction_id == txn.id,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        # Already decided, or already waiting — never re-ask a question the
+        # user has answered.
+        return 0
+
+    db.add(ScheduledMatchProposal(
+        scheduled_payment_id=payment.id,
+        transaction_id=txn.id,
+        score=scored.total,
+        components=json.dumps(scored.as_dict()),
+        status=STATUS_PENDING,
+    ))
+    return 1
+
+
+def pending_proposals(db: "Session") -> list:
+    """Proposals awaiting a decision, strongest first."""
+    from sqlalchemy import select
+
+    from app.models.scheduled_match_proposal import (
+        STATUS_PENDING, ScheduledMatchProposal,
+    )
+
+    return db.execute(
+        select(ScheduledMatchProposal)
+        .where(ScheduledMatchProposal.status == STATUS_PENDING)
+        .order_by(ScheduledMatchProposal.score.desc())
+    ).scalars().all()
+
+
+def confirm_proposal(db: "Session", proposal_id: int) -> bool:
+    """Accept a proposal: settle the schedule against that transaction."""
+    from app.models.scheduled_match_proposal import (
+        STATUS_CONFIRMED, STATUS_PENDING, ScheduledMatchProposal,
+    )
+    from app.models.scheduled_payment import ScheduledPayment
+    from app.models.transaction import Transaction
+    from app.services.clock import naive_utc_now
+
+    proposal = db.get(ScheduledMatchProposal, proposal_id)
+    if proposal is None or proposal.status != STATUS_PENDING:
+        return False
+    payment = db.get(ScheduledPayment, proposal.scheduled_payment_id)
+    txn = db.get(Transaction, proposal.transaction_id)
+    if payment is None or txn is None:
+        return False
+
+    txn_date = txn.date.date() if hasattr(txn.date, "date") else txn.date
+    payment.last_matched_txn_id = txn.id
+    payment.last_matched_date = txn_date
+    if payment.next_due_date <= txn_date:
+        _advance_next_due(payment, txn_date)
+
+    proposal.status = STATUS_CONFIRMED
+    proposal.resolved_at = naive_utc_now()
+    db.flush()
+    return True
+
+
+def reject_proposal(db: "Session", proposal_id: int) -> bool:
+    """Decline a proposal. It is remembered, so it is not offered again."""
+    from app.models.scheduled_match_proposal import (
+        STATUS_PENDING, STATUS_REJECTED, ScheduledMatchProposal,
+    )
+    from app.services.clock import naive_utc_now
+
+    proposal = db.get(ScheduledMatchProposal, proposal_id)
+    if proposal is None or proposal.status != STATUS_PENDING:
+        return False
+    proposal.status = STATUS_REJECTED
+    proposal.resolved_at = naive_utc_now()
+    db.flush()
+    return True

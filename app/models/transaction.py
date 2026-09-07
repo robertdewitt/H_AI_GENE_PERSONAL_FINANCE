@@ -68,6 +68,10 @@ class Transaction(Base):
     )
 
     raw_data: Mapped[str | None] = mapped_column(Text)
+    # Identity of the row as it appeared in the source file — see
+    # source_fingerprint. Survives changes in how the row is later parsed,
+    # which the (date, description, amount) key does not.
+    source_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )

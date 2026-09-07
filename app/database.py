@@ -149,6 +149,8 @@ def init_db():
         # ── v2 split / document columns ──────────────────────
         _col("transaction_splits", "document_line_id", "INTEGER")
 
+        _col("transactions", "source_hash", "VARCHAR(64)")
+
         # ── Soft-delete log: preserve truth-layer + FX + balance fields ──
         _col("deleted_transactions", "amount_base",                "REAL")
         _col("deleted_transactions", "exchange_rate",              "REAL")
@@ -208,6 +210,7 @@ def init_db():
             ("ix_stock_div_inst",     "stock_dividends (instrument_id)"),
             ("ix_sched_pay_account",  "scheduled_payments (account_id, next_due_date)"),
             ("ix_sched_pay_active",   "scheduled_payments (active, next_due_date)"),
+            ("ix_sched_proposal_status", "scheduled_match_proposals (status)"),
         ]
         for name, spec in _indexes:
             conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {spec}"))

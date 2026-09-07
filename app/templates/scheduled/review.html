@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Review Matches — Financial Hygiene{% endblock %}
+{% block content %}
+
+{% set SYMBOLS = {"GBP": "£", "EUR": "€", "USD": "$", "CAD": "CA$", "AUD": "A$"} %}
+
+<hgroup>
+    <h1>Review Matches</h1>
+    <p>Transactions that look like they settled a scheduled payment, but not clearly enough to decide on their own</p>
+</hgroup>
+
+{% if request.query_params.get('confirmed') %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid #16a34a;background:#f0fdf4">
+    &#10003; Match confirmed — the schedule has moved on to its next date.
+</article>
+{% elif request.query_params.get('rejected') %}
+<article style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid var(--pico-muted-border-color)">
+    Rejected. This pairing won't be suggested again.
+</article>
+{% endif %}
+
+<div style="display:flex;gap:0.75rem;margin-bottom:1.5rem;flex-wrap:wrap">
+    <a href="/scheduled" role="button" class="outline" style="padding:0.4rem 1rem;font-size:0.9rem">&#8592; Scheduled payments</a>
+</div>
+
+{% if not rows %}
+<article style="text-align:center;padding:2rem;color:var(--pico-muted-color)">
+    Nothing waiting. Every schedule either matched a transaction outright or
+    has nothing on the ledger that resembles it.
+</article>
+{% else %}
+
+<p style="font-size:0.9rem;color:var(--pico-muted-color);margin-bottom:1rem">
+    {{ rows|length }} awaiting a decision. Confirming settles the schedule
+    against that transaction and advances it; rejecting is remembered, so the
+    same pairing isn't offered twice.
+</p>
+
+<div style="overflow-x:auto">
+<table>
+    <thead>
+        <tr>
+            <th>Scheduled payment</th>
+            <th>Looks like this transaction</th>
+            <th style="text-align:center;white-space:nowrap">Why</th>
+            <th style="text-align:right;white-space:nowrap">Confidence</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for row in rows %}
+    {% set p = row.payment %}
+    {% set t = row.txn %}
+    {% set c = row.components %}
+    {% set sym = SYMBOLS.get(p.currency, (p.currency ~ " ") if p.currency else "") %}
+    <tr>
+        <td>
+            <strong style="font-size:0.9rem">{{ p.description }}</strong><br>
+            <small style="color:var(--pico-muted-color)">
+                {{ row.account.name if row.account else "—" }} &bull;
+                due {{ p.next_due_date.strftime("%d %b %Y") }} &bull;
+                {% if p.amount < 0 %}&minus;{% endif %}{{ sym }}{{ "%.2f"|format(p.amount|float|abs) }}
+            </small>
+        </td>
+        <td>
+            <strong style="font-size:0.9rem">{{ t.description }}</strong><br>
+            <small style="color:var(--pico-muted-color)">
+                {{ t.date.strftime("%d %b %Y") }} &bull;
+                {% if t.amount < 0 %}&minus;{% endif %}{{ sym }}{{ "%.2f"|format(t.amount|float|abs) }}
+            </small>
+        </td>
+        <td style="font-size:0.75rem;white-space:nowrap;color:var(--pico-muted-color)">
+            {# Spell out the signals rather than showing a bare number the
+               reader has no way to judge. #}
+            {% for label, key in [("amount","amount"), ("date","date"),
+                                  ("wording","description"), ("seen before","history")] %}
+            {% set v = c.get(key, 0) %}
+            <div>
+                <span style="display:inline-block;width:5.5rem">{{ label }}</span>
+                <span style="display:inline-block;width:3rem;height:0.5rem;background:var(--pico-muted-border-color);border-radius:2px;vertical-align:middle">
+                    <span style="display:block;width:{{ (v * 100)|round|int }}%;height:100%;border-radius:2px;background:{% if v >= 0.8 %}#16a34a{% elif v >= 0.4 %}#d97706{% else %}#dc2626{% endif %}"></span>
+                </span>
+                {{ "%.2f"|format(v) }}
+            </div>
+            {% endfor %}
+        </td>
+        <td style="text-align:right;font-weight:600;white-space:nowrap">
+            {{ "%.0f"|format(row.proposal.score * 100) }}%
+        </td>
+        <td style="white-space:nowrap;text-align:right">
+            <form method="post" action="/scheduled/review/{{ row.proposal.id }}/confirm"
+                  style="display:inline-block;margin:0">
+                <button type="submit" style="padding:0.15rem 0.7rem;font-size:0.8rem;margin:0;width:auto">Confirm</button>
+            </form>
+            <form method="post" action="/scheduled/review/{{ row.proposal.id }}/reject"
+                  style="display:inline-block;margin:0">
+                <button type="submit" class="outline"
+                        style="padding:0.15rem 0.7rem;font-size:0.8rem;margin:0;width:auto">Not this</button>
+            </form>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}
+
+{% endblock %}
