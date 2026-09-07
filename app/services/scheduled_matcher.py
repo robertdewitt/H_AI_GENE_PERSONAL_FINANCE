@@ -24,18 +24,31 @@ AMOUNT_TOLERANCE  = 0.05 # fractional tolerance (5%)
 DESC_THRESHOLD    = 0.40 # minimum description similarity
 
 
-def _desc_similarity(a: str, b: str) -> float:
-    """Similarity on the same normalised form the detector groups by.
+def _desc_similarity(a: str, b: str, db: "Session | None" = None) -> float:
+    """Similarity between a transaction's wording and a schedule's.
 
     Statements reword the same obligation month to month and stamp the due
     date into it — "RegularPayment-(Due06/01/2026)" one month, "Payments
     Irregular" the next. Comparing the raw strings scores that pair 0.33 and
-    rejects it; comparing what the detector actually keyed on scores 0.50.
+    rejects it; comparing normalised forms scores 0.50, and embeddings score
+    it 0.65.
+
+    Embeddings are used when a ``db`` is available to cache them and a local
+    model is reachable. Measured against confirmed duplicate decisions they
+    did not help — that is a different question — but on this one they do,
+    which is why they are wired here and not there.
     """
-    from app.services.recurring_detector import _normalize
+    if db is not None:
+        from app.services.embeddings import similarity
+
+        return similarity(db, a or "", b or "")
+
+    from app.services.text_keys import comparison_key
 
     raw = SequenceMatcher(None, (a or "").lower(), (b or "").lower()).ratio()
-    normalised = SequenceMatcher(None, _normalize(a), _normalize(b)).ratio()
+    normalised = SequenceMatcher(
+        None, comparison_key(a), comparison_key(b)
+    ).ratio()
     return max(raw, normalised)
 
 
@@ -150,11 +163,9 @@ def score_match(db, txn, payment, account) -> MatchScore:
     date_gap = abs((txn_date - payment.next_due_date).days)
     date = _date_score(date_gap)
 
-    if (payment.amount_type or "fixed") == "variable":
-        # The amount is only an anchor for these, so wording carries the load.
-        description = _desc_similarity(txn.description or "", payment.description)
-    else:
-        description = _desc_similarity(txn.description or "", payment.description)
+    description = _desc_similarity(
+        txn.description or "", payment.description, db,
+    )
     history = _history_score(db, payment, txn.description or "")
 
     total = (
@@ -442,6 +453,30 @@ def _record_proposal(db: "Session", payment, txn, scored: "MatchScore") -> int:
         status=STATUS_PENDING,
     ))
     return 1
+
+
+def drop_proposals_for_payment(db: "Session", payment_id: int) -> int:
+    """Remove a schedule's proposals before it is deleted.
+
+    scheduled_match_proposals.scheduled_payment_id is a foreign key with no
+    cascade, so deleting a schedule that has one raises IntegrityError — the
+    same shape of bug as last_matched_txn_id, and it takes out the delete
+    button rather than surfacing anywhere useful.
+    """
+    from sqlalchemy import select
+
+    from app.models.scheduled_match_proposal import ScheduledMatchProposal
+
+    rows = db.execute(
+        select(ScheduledMatchProposal).where(
+            ScheduledMatchProposal.scheduled_payment_id == payment_id
+        )
+    ).scalars().all()
+    for row in rows:
+        db.delete(row)
+    if rows:
+        db.flush()
+    return len(rows)
 
 
 def pending_proposals(db: "Session") -> list:

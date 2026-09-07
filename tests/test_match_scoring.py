@@ -232,3 +232,36 @@ def test_proposals_are_not_duplicated_across_runs(db):
     db.commit()
 
     assert len(db.execute(select(ScheduledMatchProposal)).scalars().all()) == 1
+
+
+# ── Deleting a schedule that has a proposal ──────────────────────────────
+
+
+def test_deleting_a_schedule_with_a_proposal_does_not_500(db):
+    """scheduled_match_proposals.scheduled_payment_id has no cascade, so the
+    delete button raised IntegrityError on any schedule the matcher had
+    proposed something for."""
+    from app.routers.scheduled_payments import scheduled_delete
+
+    pmt, _txn_, proposal = _one_proposal(db)
+    payment_id = pmt.id
+    assert db.get(ScheduledMatchProposal, proposal.id) is not None
+
+    resp = scheduled_delete(payment_id, return_to="", db=db)
+
+    assert resp.status_code == 303
+    assert db.get(ScheduledPayment, payment_id) is None
+    assert db.get(ScheduledMatchProposal, proposal.id) is None
+
+
+def test_bulk_delete_clears_proposals_too(db):
+    from app.routers.scheduled_payments import scheduled_bulk_delete
+
+    pmt, _txn_, proposal = _one_proposal(db)
+    payment_id = pmt.id
+
+    resp = scheduled_bulk_delete(payment_ids=[str(payment_id)], db=db)
+
+    assert resp.status_code == 303
+    assert db.get(ScheduledPayment, payment_id) is None
+    assert db.get(ScheduledMatchProposal, proposal.id) is None

@@ -247,9 +247,11 @@ def scheduled_delete(
     rebuilds it from history, which made deleting appear not to work at all.
     """
     from app.services.scheduled_dismissal import dismiss
+    from app.services.scheduled_matcher import drop_proposals_for_payment
 
     payment = db.get(ScheduledPayment, payment_id)
     if payment:
+        drop_proposals_for_payment(db, payment.id)
         dismiss(db, payment.account_id, payment.description)
         db.delete(payment)
         db.commit()
@@ -263,6 +265,7 @@ def scheduled_bulk_delete(
 ):
     """Delete several scheduled payments at once, tombstoning each."""
     from app.services.scheduled_dismissal import dismiss
+    from app.services.scheduled_matcher import drop_proposals_for_payment
 
     deleted = 0
     for raw in payment_ids:
@@ -273,6 +276,7 @@ def scheduled_bulk_delete(
         payment = db.get(ScheduledPayment, pid)
         if payment is None:
             continue
+        drop_proposals_for_payment(db, payment.id)
         dismiss(db, payment.account_id, payment.description)
         db.delete(payment)
         deleted += 1

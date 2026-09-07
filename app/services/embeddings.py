@@ -43,9 +43,12 @@ _unavailable_until = 0.0
 
 
 def _normalise(text: str) -> str:
-    from app.services.recurring_detector import _normalize
+    # comparison_key, not the grouping key: reference numbers are often the
+    # only thing separating two different payments, and stripping them made
+    # unrelated rows score 1.00 against each other.
+    from app.services.text_keys import comparison_key
 
-    return _normalize(text or "")
+    return comparison_key(text)
 
 
 def fallback_similarity(a: str, b: str) -> float:
