@@ -25,8 +25,35 @@ class DuplicateGroup:
     ollama_suggested: bool = False      # True when LLM says likely duplicate
 
 
-def _description_similarity(a: str, b: str) -> float:
+def _description_similarity(a: str, b: str, db: "Session | None" = None) -> float:
+    """Similarity between two merchant strings, in [0, 1].
+
+    Prefers embeddings when a local model is reachable — characters are the
+    wrong unit for merchant names — and falls back to the sequence ratio
+    otherwise, which is what this always did. ``db`` is optional so existing
+    callers and tests keep working without one.
+    """
+    if db is not None:
+        from app.services.embeddings import similarity
+        return similarity(db, a, b)
     return SequenceMatcher(None, (a or "").lower(), (b or "").lower()).ratio()
+
+
+def _group_similarity(db: "Session", descriptions: list[str]) -> float:
+    """Weakest pairwise similarity across a candidate group.
+
+    The whole group is embedded in one request rather than a call per pair.
+    """
+    if len(descriptions) < 2:
+        return 1.0
+    from app.services.embeddings import similarity_matrix
+
+    matrix = similarity_matrix(db, descriptions)
+    return min(
+        matrix[i][j]
+        for i in range(len(descriptions))
+        for j in range(i + 1, len(descriptions))
+    )
 
 
 def _dismissed_keys(db: Session) -> set[tuple]:
@@ -74,12 +101,7 @@ def find_dismissed_groups(db: Session) -> list[DuplicateGroup]:
         if len(txn_list) < 2:
             continue
         descs = [t.description or "" for t in txn_list]
-        pairs = [
-            _description_similarity(descs[i], descs[j])
-            for i in range(len(descs))
-            for j in range(i + 1, len(descs))
-        ]
-        confidence = min(pairs) if pairs else 1.0
+        confidence = _group_similarity(db, descs)
         batch_ids = {t.import_batch_id for t in txn_list}
         acct = accounts.get(acct_id)
         result.append(DuplicateGroup(
@@ -162,7 +184,7 @@ def find_near_duplicate_groups(db: Session) -> list[DuplicateGroup]:
                 pair_key = frozenset([t1.id, t2.id])
                 if pair_key in seen_pairs:
                     continue
-                sim = _description_similarity(t1.description, t2.description)
+                sim = _description_similarity(t1.description, t2.description, db)
                 if sim < 0.85:
                     continue
                 # Check dismissed using the earlier date
@@ -244,12 +266,7 @@ def find_duplicate_groups(db: Session) -> list[DuplicateGroup]:
         if (acct_id, str(date), amount) in dismissed:
             continue
         descs = [t.description or "" for t in txn_list]
-        pairs = [
-            _description_similarity(descs[i], descs[j])
-            for i in range(len(descs))
-            for j in range(i + 1, len(descs))
-        ]
-        confidence = min(pairs) if pairs else 1.0
+        confidence = _group_similarity(db, descs)
 
         batch_ids = {t.import_batch_id for t in txn_list}
         cross_batch = len(batch_ids) > 1

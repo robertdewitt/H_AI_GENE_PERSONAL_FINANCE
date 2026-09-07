@@ -148,6 +148,48 @@ async def upload_file(
             "parsed": parsed_rsu,
         })
 
+    # A PDF with no text layer is a screenshot or a scan. Every parser below
+    # reads extracted text, so without this the upload silently imports
+    # nothing and looks like it did nothing at all.
+    if ext == ".pdf":
+        from app.services.vision_extract import (
+            extract_pension_balances, has_text_layer, vision_model_available,
+        )
+        if not has_text_layer(str(dest)):
+            parsed_pension = extract_pension_balances(str(dest))
+            if parsed_pension is not None and parsed_pension.is_valid:
+                account = db.get(Account, account_id)
+                return templates.TemplateResponse(request, "imports/epa_preview.html", {
+                    "account_id": account_id,
+                    "account_name": account.name if account else f"Account {account_id}",
+                    "filepath": str(dest),
+                    "parsed": parsed_pension,
+                    "from_image": True,
+                })
+            if vision_model_available():
+                detail = (
+                    "A local vision model read the page but the figures did not "
+                    "reconcile — units x unit price must match each fund value, "
+                    "and the funds must sum to the stated total. Nothing was "
+                    "imported."
+                )
+            else:
+                detail = (
+                    "No local vision model is installed, so there is nothing "
+                    f"that can read it. Install one (ollama pull "
+                    f"{settings.ollama_vision_model}) or enter the values "
+                    "manually on the account page."
+                )
+            return templates.TemplateResponse(request, "imports/upload.html", {
+                "accounts": db.execute(
+                    select(Account).order_by(Account.name)
+                ).scalars().all(),
+                "error": (
+                    "This PDF contains no text — it looks like a screenshot or "
+                    f"a scan. {detail}"
+                ),
+            })
+
     # Detect WTW ePA pension "My Fund Balance" PDF — dedicated preview
     if ext == ".pdf" and is_epa_pension_pdf(str(dest)):
         try:
@@ -269,8 +311,13 @@ def confirm_import(
     # can investigate why the post-import banner doesn't show matches.
     extraction_warnings: list[str] = []
     try:
-        from app.services.scheduled_matcher import match_batch
+        from app.services.scheduled_matcher import backfill_matches, match_batch
         match_batch(db, batch.id)
+        # The batch pass only sees this file's rows. Sweep the account too, so
+        # a schedule left behind by an earlier import or a manual entry
+        # catches up instead of staying overdue.
+        backfill_matches(db, account_id=account_id)
+        db.commit()
     except Exception as exc:
         log.warning(
             "scheduled_matcher.match_batch failed for batch %s: %s",

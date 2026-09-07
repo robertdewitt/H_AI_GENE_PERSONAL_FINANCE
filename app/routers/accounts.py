@@ -707,10 +707,15 @@ def account_detail(
     # Mortgage payoff projection data
     mortgage_payoff = None
     if acct.account_type.value == "mortgage":
+        # Start from the balance the page is showing. statement_balance used
+        # to be preferred as "more accurate", which was true when the computed
+        # balance was a bare transaction sum that could be missing history —
+        # but a statement-anchored balance already starts from that statement
+        # and adds the payments made since, so preferring the raw statement
+        # projects from a figure that is one or more payments out of date.
         current_balance = abs(float(balance)) if balance else 0.0
-        # Use statement_balance if available and more accurate
-        if acct.statement_balance and float(acct.statement_balance) > 0:
-            current_balance = float(acct.statement_balance)
+        if current_balance <= 0 and acct.statement_balance:
+            current_balance = abs(float(acct.statement_balance))
         rate = float(acct.interest_rate) if acct.interest_rate else None
         payment = float(acct.monthly_payment) if acct.monthly_payment else None
         if current_balance > 0 and rate and payment and payment > 0:

@@ -30,7 +30,43 @@ async def lifespan(app: FastAPI):
     _bootstrap_fx_rates()
     _encrypt_legacy_secrets()
     _sync_interest_accruals()
+    _sync_scheduled_matches()
     yield
+
+
+def _sync_scheduled_matches() -> None:
+    """Reconcile scheduled payments against transactions already on the ledger.
+
+    Matching used to happen only inside an import, so a payment entered by
+    hand, confirmed from an account page, or imported while its schedule was
+    worded differently left the schedule sitting overdue while the ledger
+    plainly showed it paid. Never fatal to startup.
+    """
+    import logging
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database import engine
+    from app.services.scheduled_matcher import backfill_matches
+
+    log = logging.getLogger(__name__)
+    db = sessionmaker(bind=engine)()
+    try:
+        result = backfill_matches(db)
+        if result["matched"]:
+            db.commit()
+            log.info(
+                "scheduled payments: %d occurrence(s) matched to existing "
+                "transactions over %d pass(es)",
+                result["matched"], result["passes"],
+            )
+        else:
+            db.rollback()
+    except Exception as exc:
+        db.rollback()
+        log.warning("scheduled match backfill skipped: %s", exc)
+    finally:
+        db.close()
 
 
 def _sync_interest_accruals() -> None:

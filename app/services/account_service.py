@@ -723,8 +723,13 @@ def get_many_account_balances_rich(
                 stmt_bal, stmt_date = hybrid_anchored[acct.id]
                 delta = hybrid_deltas.get(acct.id, Decimal("0.00"))
                 stale = (now - stmt_date).days > 45
+                # Same convention clash as _balance_hybrid: on a liability the
+                # statement is an amount owed while its transactions are
+                # cash-flow signed, so the delta comes off rather than on.
+                # Kept in step with the single-account path or the accounts
+                # list and the account page report different numbers.
                 result = AccountBalanceResult(
-                    value=stmt_bal + delta,
+                    value=stmt_bal - delta if not acct.is_asset else stmt_bal + delta,
                     balance_as_of=now,
                     balance_source_used="statement_anchored",
                     balance_confidence=0.9 if not stale else 0.6,

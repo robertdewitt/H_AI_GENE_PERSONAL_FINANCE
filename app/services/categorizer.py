@@ -18,10 +18,21 @@ from app.models.category import Category
 from app.models.category_rule import CategoryRule
 from app.models.transaction import Transaction
 
+from app.config import settings
+
 log = logging.getLogger(__name__)
 
-OLLAMA_URL = "http://localhost:11434"
-OLLAMA_MODEL = "llama3.2"
+# Resolved from settings on each call rather than frozen at import, so
+# changing the model in config takes effect without a restart. These two
+# services pointed at a hardcoded "llama3.2" that was never installed on this
+# machine, so every call 404'd and fell back silently — the LLM tier had
+# never actually run.
+def _ollama_url() -> str:
+    return settings.ollama_url
+
+
+def _ollama_model() -> str:
+    return settings.ollama_model
 
 KEYWORD_MAP = {
     "groceries": [
@@ -438,18 +449,13 @@ def ask_ollama(
     )
 
     try:
-        resp = httpx.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.1, "num_predict": 20},
-            },
-            timeout=15,
+        from app.services.ollama_client import generate
+
+        answer = generate(
+            prompt, think=False, num_predict=20, temperature=0.1, timeout=15,
         )
-        resp.raise_for_status()
-        answer = resp.json().get("response", "").strip()
+        if not answer:
+            return None
         clean = answer.strip().strip('"').strip("'").strip(".")
 
         for cat in categories:

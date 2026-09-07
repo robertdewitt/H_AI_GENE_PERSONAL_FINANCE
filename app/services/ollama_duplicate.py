@@ -14,11 +14,22 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from app.config import settings
+
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
-OLLAMA_URL = "http://localhost:11434"
-OLLAMA_MODEL = "llama3.2"
+# Resolved from settings on each call rather than frozen at import, so
+# changing the model in config takes effect without a restart. These two
+# services pointed at a hardcoded "llama3.2" that was never installed on this
+# machine, so every call 404'd and fell back silently — the LLM tier had
+# never actually run.
+def _ollama_url() -> str:
+    return settings.ollama_url
+
+
+def _ollama_model() -> str:
+    return settings.ollama_model
 OLLAMA_TIMEOUT = 10  # seconds per group
 
 
@@ -148,24 +159,16 @@ def score_group(
     import json
 
     prompt = _build_prompt(descriptions, dupes, non_dupes)
-    try:
-        resp = httpx.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "format": "json",
-                "options": {"temperature": 0.0, "num_predict": 40},
-            },
-            timeout=OLLAMA_TIMEOUT,
-        )
-        resp.raise_for_status()
-    except (httpx.RequestError, httpx.HTTPStatusError) as exc:
-        raise OllamaTransportError(str(exc)) from exc
+    from app.services.ollama_client import generate
+
+    raw = generate(
+        prompt, think=False, num_predict=80, temperature=0.0,
+        response_format="json", timeout=OLLAMA_TIMEOUT,
+    )
+    if raw is None:
+        raise OllamaTransportError("ollama unavailable")
 
     try:
-        raw = resp.json().get("response", "").strip()
         data = json.loads(raw)
         is_dup = bool(data.get("is_duplicate", False))
         conf = float(data.get("confidence", 0.5))

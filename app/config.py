@@ -41,6 +41,25 @@ class Settings(BaseSettings):
     # Import performance — rows flushed per batch for bulk inserts
     import_batch_size: int = 5000
 
+    # ── Local LLM (Ollama) ──
+    # Kept here rather than as module constants so the model can be changed
+    # without a code edit. Every caller degrades gracefully when the daemon
+    # is absent — the app must work with no local model installed.
+    ollama_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen3.6:35b-a3b"
+    ollama_embed_model: str = "embeddinggemma"
+    ollama_timeout: int = 10
+    # Multimodal model, for documents that arrive as screenshots or scans
+    # with no text layer. Vision runs are slower than text, hence the
+    # separate timeout.
+    ollama_vision_model: str = "gemma4"
+    ollama_vision_timeout: int = 120
+    # Embedding-backed description similarity. Merchant strings compare far
+    # better as vectors than as character sequences ("TST* KI'S RESTAURANT"
+    # vs "KIS RESTAURANT LONDON"), and vectors are cached so the comparison
+    # is cheap enough to run over every candidate pair.
+    use_embeddings: bool = True
+
     # ── Authentication (WebAuthn passkeys + sessions) ──
     # rp_id ("relying party id") must match the *hostname* the browser
     # sees (no scheme, no port). For localhost / 127.0.0.1 the browser

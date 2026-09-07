@@ -519,3 +519,44 @@ def test_bulk_delete_skips_ids_that_do_not_exist(db):
 
     assert resp.status_code == 303
     assert _txns(db, acct) == []
+
+
+def test_list_and_detail_agree_on_a_hybrid_liability(db):
+    """The accounts list computes balances in a batched query and the account
+    page one at a time. Both carry the liability sign rule, or the two pages
+    quote different numbers for the same mortgage."""
+    from datetime import datetime, timedelta
+
+    from app.models.account import AccountType
+    from app.models.enums import BalanceTruthSource
+    from app.services.account_service import (
+        get_account_balance_rich, get_many_account_balances_rich,
+    )
+
+    mortgage = Account(
+        name="Mortgage", account_type=AccountType.MORTGAGE, currency="GBP",
+        is_asset=False, balance_truth_source=BalanceTruthSource.HYBRID.value,
+    )
+    mortgage.statement_balance = Decimal("188697.72")
+    mortgage.statement_balance_as_of = datetime.combine(
+        date.today() - timedelta(days=20), datetime.min.time(),
+    )
+    db.add(mortgage)
+    db.flush()
+    db.add(Transaction(
+        account_id=mortgage.id,
+        date=datetime.combine(date.today() - timedelta(days=3), datetime.min.time()),
+        description="Payments Irregular", amount=Decimal("3290.00"),
+        original_currency="GBP",
+    ))
+    db.commit()
+
+    single = get_account_balance_rich(
+        db, mortgage.id, target_currency="GBP",
+    ).value
+    batched = get_many_account_balances_rich(
+        db, accounts=[mortgage], target_currency="GBP",
+    )[mortgage.id].value
+
+    assert single == Decimal("185407.72")
+    assert batched == single
