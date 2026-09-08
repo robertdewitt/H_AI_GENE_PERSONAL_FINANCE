@@ -29,8 +29,10 @@ def db():
 @pytest.fixture(autouse=True)
 def _reset_availability_cache():
     emb._unavailable_until = 0.0
+    emb._available_until = 0.0
     yield
     emb._unavailable_until = 0.0
+    emb._available_until = 0.0
 
 
 def _stub_model(monkeypatch, vectors: dict[str, list[float]]):

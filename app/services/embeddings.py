@@ -40,6 +40,10 @@ log = logging.getLogger(__name__)
 # timeout on every single comparison.
 _UNAVAILABLE_FOR = 60.0
 _unavailable_until = 0.0
+# The positive answer is cached too. Without it every cache miss paid an HTTP
+# round trip to /api/tags, and the matcher asks per candidate pair.
+_AVAILABLE_FOR = 30.0
+_available_until = 0.0
 
 
 def _normalise(text: str) -> str:
@@ -65,6 +69,9 @@ def available() -> bool:
         return False
     if time.monotonic() < _unavailable_until:
         return False
+    global _available_until
+    if time.monotonic() < _available_until:
+        return True
     try:
         resp = httpx.get(f"{settings.ollama_url}/api/tags", timeout=2.0)
         resp.raise_for_status()
@@ -74,6 +81,7 @@ def available() -> bool:
                    or n.split(":")[0] == base for n in names):
             _unavailable_until = time.monotonic() + _UNAVAILABLE_FOR
             return False
+        _available_until = time.monotonic() + _AVAILABLE_FOR
         return True
     except Exception:
         _unavailable_until = time.monotonic() + _UNAVAILABLE_FOR

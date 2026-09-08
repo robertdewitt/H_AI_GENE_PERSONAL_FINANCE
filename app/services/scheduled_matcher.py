@@ -155,13 +155,36 @@ def _history_score(db, payment, description: str) -> float:
 
 
 def score_match(db, txn, payment, account) -> MatchScore:
-    """How strongly this transaction looks like this scheduled payment."""
+    """How strongly this transaction looks like this scheduled payment.
+
+    Amount and date are arithmetic on values already in hand. Wording and
+    history are not — wording embeds the text (a cache lookup, sometimes a
+    model call) and history loads the previously matched row. This runs for
+    every transaction against every schedule, so the cheap signals are
+    computed first and the expensive ones are skipped whenever they cannot
+    change the outcome.
+    """
     txn_date = txn.date.date() if hasattr(txn.date, "date") else txn.date
     is_liability = account is not None and not account.is_asset
 
     amount = _amount_score(float(txn.amount), float(payment.amount), is_liability)
     date_gap = abs((txn_date - payment.next_due_date).days)
     date = _date_score(date_gap)
+
+    # Best total still reachable if wording and history both came back
+    # perfect. Below the proposal threshold there is no point asking them —
+    # this is an upper bound, not a gate: nothing that could have qualified
+    # is discarded.
+    ceiling = (
+        WEIGHTS["amount"] * amount
+        + WEIGHTS["date"] * date
+        + WEIGHTS["description"]
+        + WEIGHTS["history"]
+    )
+    if ceiling < PROPOSE_THRESHOLD:
+        return MatchScore(round(ceiling - WEIGHTS["description"]
+                                - WEIGHTS["history"], 6),
+                          amount, date, 0.0, 0.0)
 
     description = _desc_similarity(
         txn.description or "", payment.description, db,
@@ -386,6 +409,12 @@ def backfill_matches(
                 # debit scores 1.0 on amount, wording and history and floods
                 # the queue with payments made years ago.
                 if pmt.last_matched_date and txn_date <= pmt.last_matched_date:
+                    continue
+                # An occurrence is defined by when it fell due, so anything
+                # outside the date window is not evidence about it. Checked
+                # here rather than after scoring: it eliminates almost every
+                # pair, and each survivor costs an embedding lookup.
+                if abs((txn_date - pmt.next_due_date).days) >= SCORE_DATE_WINDOW:
                     continue
                 account = accounts.get(pmt.account_id)
                 scored = score_match(db, txn, pmt, account)
