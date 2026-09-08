@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.user import User
+from app.services.safe_redirect import safe_return_to
 from app.services.rate_limit import login_limiter
 from app.services.sessions import create_session, revoke_session
 from app.templating import templates
@@ -77,8 +78,9 @@ def login_submit(
         )
 
     token = create_session(db, user.id)
-    # Don't redirect to arbitrary off-site URLs.
-    safe_target = return_to if return_to.startswith("/") and not return_to.startswith("//") else "/"
+    # Same-origin paths only — the old "//" check let "/\\evil" through,
+    # which the browser normalises into "//evil". See safe_redirect.
+    safe_target = safe_return_to(return_to, "/")
     response = RedirectResponse(url=safe_target, status_code=303)
     response.set_cookie(
         "session", token,

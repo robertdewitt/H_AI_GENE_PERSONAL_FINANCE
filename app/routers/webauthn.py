@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
 from app.models.webauthn_credential import WebAuthnCredential
+from app.services.safe_redirect import safe_return_to
 from app.services.auth import get_current_user
 from app.services.clock import naive_utc_now
 from app.services.sessions import create_session
@@ -209,10 +210,8 @@ def webauthn_login_verify(
     db.commit()
 
     token = create_session(db, user.id)
-    safe_target = (
-        return_to if return_to.startswith("/") and not return_to.startswith("//")
-        else "/"
-    )
+    # Same-origin paths only — see safe_redirect for what the old check missed.
+    safe_target = safe_return_to(return_to, "/")
     response = JSONResponse({"ok": True, "redirect": safe_target})
     response.set_cookie(
         "session", token,

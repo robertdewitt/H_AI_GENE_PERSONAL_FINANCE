@@ -19,6 +19,7 @@ from app.models.transaction_split import TransactionSplit
 from app.models.scheduled_payment import ScheduledPayment
 from app.models.transfer_link import TransferLink
 from app.services.split_service import list_splits, replace_transaction_splits
+from app.services.safe_redirect import safe_return_to
 from app.services.transaction_truth import apply_truth_after_transaction_update
 from app.services.categorizer import (
     categorize_batch,
@@ -362,7 +363,7 @@ def transaction_create(
     db.commit()
     _resync_interest(db, account_id)
 
-    redirect = return_url.strip() or f"/accounts/{account_id}"
+    redirect = safe_return_to(return_url, f"/accounts/{account_id}")
     return RedirectResponse(url=redirect, status_code=303)
 
 
@@ -513,7 +514,7 @@ def transaction_update(
     db.commit()
     _resync_interest(db, txn.account_id)
 
-    redirect_to = return_url.strip() if return_url else f"/accounts/{txn.account_id}"
+    redirect_to = safe_return_to(return_url, f"/accounts/{txn.account_id}")
     return RedirectResponse(url=redirect_to, status_code=303)
 
 
@@ -627,7 +628,7 @@ def transaction_delete(
     _delete_txn_safe(db, txn)
     db.commit()
     _resync_interest(db, account_id)
-    redirect = return_url if return_url else f"/accounts/{account_id}"
+    redirect = safe_return_to(return_url, f"/accounts/{account_id}")
     return RedirectResponse(url=redirect, status_code=303)
 
 
@@ -828,7 +829,10 @@ def recover_transactions(
         restored += 1
 
     db.commit()
-    return RedirectResponse(url=f"{return_url}?recovered={restored}", status_code=303)
+    return RedirectResponse(
+        url=f"{safe_return_to(return_url, '/transactions/recover')}?recovered={restored}",
+        status_code=303,
+    )
 
 
 # ── Bulk operations ──────────────────────────────────────────────────
@@ -852,7 +856,7 @@ def bulk_set_category(
             learn_from_correction(db, txn.description, category_id)
 
     db.commit()
-    return RedirectResponse(url=return_url, status_code=303)
+    return RedirectResponse(url=safe_return_to(return_url, "/transactions"), status_code=303)
 
 
 @router.post("/bulk/delete")
@@ -870,7 +874,7 @@ def bulk_delete(
     db.commit()
     for account_id in touched:
         _resync_interest(db, account_id)
-    return RedirectResponse(url=return_url, status_code=303)
+    return RedirectResponse(url=safe_return_to(return_url, "/transactions"), status_code=303)
 
 
 @router.post("/bulk/toggle-transfer")
@@ -887,7 +891,7 @@ def bulk_toggle_transfer(
     for txn in txns:
         txn.is_transfer = is_transfer
     db.commit()
-    return RedirectResponse(url=return_url, status_code=303)
+    return RedirectResponse(url=safe_return_to(return_url, "/transactions"), status_code=303)
 
 
 # ── Auto-categorize ─────────────────────────────────────────────────

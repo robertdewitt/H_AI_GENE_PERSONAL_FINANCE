@@ -22,16 +22,15 @@ AMOUNT_TYPES = ["fixed", "estimated", "variable"]
 
 
 def _safe_return_to(return_to: str, fallback: str) -> str:
-    """Same-site paths only — a caller-supplied origin would be an open redirect.
+    """Same-site paths only — see app.services.safe_redirect.
 
-    Tests call these routes as plain functions, where an unfilled ``Form()``
-    default arrives instead of a string, so anything non-str means "no
-    destination given" rather than an error.
+    Kept as a thin alias so the existing call sites and tests are untouched.
+    The earlier inline check looked only for a leading "//" and let
+    "/\\evil" through, which a browser normalises into "//evil".
     """
-    dest = return_to.strip() if isinstance(return_to, str) else ""
-    if dest.startswith("/") and not dest.startswith("//"):
-        return dest
-    return fallback
+    from app.services.safe_redirect import safe_return_to
+
+    return safe_return_to(return_to, fallback)
 
 
 def _back(return_to: str, fallback: str, **params: str) -> RedirectResponse:
