@@ -182,24 +182,33 @@ async def auth_gate(request: Request, call_next):
     from sqlalchemy.orm import sessionmaker
     from app.database import engine
     from app.services.sessions import lookup_session
+    from fastapi.responses import RedirectResponse
+
     SessionLocal = sessionmaker(bind=engine)
     db = SessionLocal()
     try:
         if setup.needs_setup(db):
-            from fastapi.responses import RedirectResponse
             return RedirectResponse(url="/setup", status_code=303)
         raw = request.cookies.get("session")
         sess = lookup_session(db, raw) if raw else None
-        if sess is None:
-            from fastapi.responses import RedirectResponse
-            target = path + (f"?{request.url.query}" if request.url.query else "")
-            return RedirectResponse(
-                url=f"/login?return_to={target}", status_code=303,
-            )
     except Exception:
-        pass
+        # Fail CLOSED. This used to be `pass`, which fell through to the
+        # protected route — so any database error (SQLite's "database is
+        # locked" happens under ordinary use) let a request with an arbitrary
+        # session cookie straight in. An unverifiable session is no session.
+        import logging
+        logging.getLogger(__name__).exception(
+            "auth gate could not verify the session; denying %s", path,
+        )
+        sess = None
     finally:
         db.close()
+
+    if sess is None:
+        target = path + (f"?{request.url.query}" if request.url.query else "")
+        return RedirectResponse(
+            url=f"/login?return_to={target}", status_code=303,
+        )
 
     return await call_next(request)
 
