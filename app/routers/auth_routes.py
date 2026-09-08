@@ -18,7 +18,7 @@ from app.database import get_db
 from app.models.user import User
 from app.services.safe_redirect import safe_return_to
 from app.services.rate_limit import login_limiter
-from app.services.sessions import create_session, revoke_session
+from app.services.sessions import create_session, revoke_session, attach_session_cookie
 from app.templating import templates
 
 log = logging.getLogger(__name__)
@@ -82,11 +82,7 @@ def login_submit(
     # which the browser normalises into "//evil". See safe_redirect.
     safe_target = safe_return_to(return_to, "/")
     response = RedirectResponse(url=safe_target, status_code=303)
-    response.set_cookie(
-        "session", token,
-        httponly=True, samesite="lax", secure=False,
-        max_age=60 * 60 * 24 * 7,
-    )
+    attach_session_cookie(response, request, token)
     return response
 
 

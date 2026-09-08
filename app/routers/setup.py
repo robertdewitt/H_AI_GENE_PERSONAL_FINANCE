@@ -19,6 +19,7 @@ from app.config import settings
 from app.database import get_db
 from app.models.user import User
 from app.models.user_profile import UserProfile
+from app.services.sessions import attach_session_cookie
 from app.services.setup_claim import (
     BackupFailed, ClaimIntegrityError,
     backup_sqlite_db, claim_all_rows, format_integrity_summary,
@@ -143,11 +144,5 @@ def setup_claim(
     from app.services.sessions import create_session
     session_token = create_session(db, admin.id)
     response = RedirectResponse(url="/?welcome=1", status_code=303)
-    response.set_cookie(
-        "session", session_token,
-        httponly=True,
-        samesite="lax",
-        secure=False,  # localhost — flipped to True in non-dev settings (Phase 2.3)
-        max_age=60 * 60 * 24 * 7,  # idle window matches session expiry
-    )
+    attach_session_cookie(response, request, session_token)
     return response

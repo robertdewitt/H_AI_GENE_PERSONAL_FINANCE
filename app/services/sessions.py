@@ -82,3 +82,22 @@ def revoke_session(db: Session, raw_token: str) -> None:
         )
     )
     db.commit()
+
+
+SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
+
+
+def attach_session_cookie(response, request, token: str) -> None:
+    """Set the session cookie with the flags every login path must share.
+
+    ``Secure`` follows the request scheme instead of being hard-coded off:
+    on plain-HTTP localhost the cookie still works, and the moment this sits
+    behind TLS (uvicorn --proxy-headers, so the scheme is reported as https)
+    the browser refuses to send it over a cleartext hop.
+    """
+    response.set_cookie(
+        "session", token,
+        httponly=True, samesite="lax",
+        secure=(request.url.scheme == "https"),
+        max_age=SESSION_COOKIE_MAX_AGE,
+    )

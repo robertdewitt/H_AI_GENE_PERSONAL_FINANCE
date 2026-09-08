@@ -25,10 +25,11 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
 from app.models.webauthn_credential import WebAuthnCredential
+from app.services.rate_limit import login_limiter
 from app.services.safe_redirect import safe_return_to
 from app.services.auth import get_current_user
 from app.services.clock import naive_utc_now
-from app.services.sessions import create_session
+from app.services.sessions import create_session, attach_session_cookie
 from app.services.webauthn_service import (
     begin_authentication, begin_registration,
     finish_authentication, finish_registration,
@@ -124,6 +125,14 @@ def webauthn_login_options(
     list, which results in a failed ceremony — same outcome as a wrong
     user, no enumeration.
     """
+    # Same budget as the password form — 10 per 15 min per (IP, username) —
+    # so a passkey ceremony cannot be spammed without limit while /login is.
+    _ip = request.client.host if request.client else "unknown"
+    if not login_limiter.hit(f"{_ip}:{username.strip().lower()}"):
+        return JSONResponse(
+            {"ok": False, "error": "Too many attempts — try again later"},
+            status_code=429,
+        )
     user = db.execute(
         select(User).where(User.username == username.strip()).limit(1)
     ).scalar_one_or_none()
@@ -153,6 +162,14 @@ def webauthn_login_verify(
     to py_webauthn.
     """
     username = (body.pop("username", "") or "").strip()
+    # Same budget as the password form — 10 per 15 min per (IP, username) —
+    # so a passkey ceremony cannot be spammed without limit while /login is.
+    _ip = request.client.host if request.client else "unknown"
+    if not login_limiter.hit(f"{_ip}:{username.lower()}"):
+        return JSONResponse(
+            {"ok": False, "error": "Too many attempts — try again later"},
+            status_code=429,
+        )
     return_to = body.pop("return_to", "/") or "/"
     payload = body
 
@@ -213,9 +230,5 @@ def webauthn_login_verify(
     # Same-origin paths only — see safe_redirect for what the old check missed.
     safe_target = safe_return_to(return_to, "/")
     response = JSONResponse({"ok": True, "redirect": safe_target})
-    response.set_cookie(
-        "session", token,
-        httponly=True, samesite="lax", secure=False,
-        max_age=60 * 60 * 24 * 7,
-    )
+    attach_session_cookie(response, request, token)
     return response
