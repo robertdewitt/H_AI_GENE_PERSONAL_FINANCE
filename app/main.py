@@ -191,14 +191,19 @@ async def auth_gate(request: Request, call_next):
             return RedirectResponse(url="/setup", status_code=303)
         raw = request.cookies.get("session")
         sess = lookup_session(db, raw) if raw else None
-    except Exception:
+    except Exception as exc:
         # Fail CLOSED. This used to be `pass`, which fell through to the
         # protected route — so any database error (SQLite's "database is
         # locked" happens under ordinary use) let a request with an arbitrary
         # session cookie straight in. An unverifiable session is no session.
         import logging
-        logging.getLogger(__name__).exception(
-            "auth gate could not verify the session; denying %s", path,
+        # Deliberately not .exception(): a SQLAlchemy traceback embeds the
+        # failing statement and its bound parameters, which would put
+        # ledger data back into the log that turning off SQL echo just
+        # took out of it.
+        logging.getLogger(__name__).warning(
+            "auth gate could not verify the session; denying %s (%s)",
+            path, exc.__class__.__name__,
         )
         sess = None
     finally:
@@ -211,6 +216,18 @@ async def auth_gate(request: Request, call_next):
         )
 
     return await call_next(request)
+
+
+# Registered after the auth gate so it ends up *outermost*: add_middleware
+# prepends, and the body has to be refused before anything else runs —
+# before a DB session is opened for the gate, and long before FastAPI
+# parses the multipart body. The upload route's own cap cannot do this: it
+# only sees the upload once the whole body is already spooled to disk.
+from app.middleware.body_limit import BodySizeLimitMiddleware
+
+app.add_middleware(
+    BodySizeLimitMiddleware, max_bytes=settings.max_upload_bytes,
+)
 
 
 @app.get("/", response_class=HTMLResponse)

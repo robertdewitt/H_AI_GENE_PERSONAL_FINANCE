@@ -829,9 +829,12 @@ def recover_transactions(
         restored += 1
 
     db.commit()
+    # Append with the right separator: the destination may already carry a
+    # query, and "?a=b?recovered=3" silently loses the parameter.
+    dest = safe_return_to(return_url, "/transactions/recover")
+    joiner = "&" if "?" in dest else "?"
     return RedirectResponse(
-        url=f"{safe_return_to(return_url, '/transactions/recover')}?recovered={restored}",
-        status_code=303,
+        url=f"{dest}{joiner}recovered={restored}", status_code=303,
     )
 
 

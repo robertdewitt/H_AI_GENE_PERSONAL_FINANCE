@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from decimal import Decimal
 
-from pydantic import ValidationInfo, field_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -70,16 +70,21 @@ class Settings(BaseSettings):
     ollama_vision_model: str = "gemma4"
     ollama_vision_timeout: int = 120
 
-    @field_validator("ollama_url")
-    @classmethod
-    def _ollama_url_must_be_loopback(cls, value: str, info: ValidationInfo) -> str:
+    @model_validator(mode="after")
+    def _ollama_url_must_be_loopback(self):
+        """Run after every field is set, so field order cannot matter.
+
+        As a field_validator this read ollama_allow_remote out of
+        ``info.data``, which Pydantic populates only for fields defined
+        *earlier*. It worked by one position. Moving either field would have
+        silently stopped the override being seen — rejecting a host the user
+        had deliberately allowed, with nothing to explain why.
+        """
         from urllib.parse import urlparse
 
-        host = (urlparse(value).hostname or "").lower()
-        if host in ("localhost", "127.0.0.1", "::1"):
-            return value
-        if info.data.get("ollama_allow_remote"):
-            return value
+        host = (urlparse(self.ollama_url).hostname or "").lower()
+        if host in ("localhost", "127.0.0.1", "::1") or self.ollama_allow_remote:
+            return self
         raise ValueError(
             f"ollama_url points at {host!r}, which is not this machine. "
             "Financial data and statement images are sent to it. Set "
