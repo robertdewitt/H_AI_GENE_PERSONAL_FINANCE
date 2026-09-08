@@ -111,8 +111,18 @@ async def upload_file(
             "error": f"Unsupported file type '{ext}'. Please upload a CSV, XLS, XLSX, or PDF.",
         })
 
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    from app.services.upload_safety import UploadTooLarge, copy_with_limit
+    try:
+        copy_with_limit(file.file, dest, settings.max_upload_bytes)
+    except UploadTooLarge:
+        limit_mb = settings.max_upload_bytes // (1024 * 1024)
+        return templates.TemplateResponse(request, "imports/upload.html", {
+            "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+            "error": (
+                f"That file is larger than the {limit_mb} MB upload limit. "
+                "A statement export should be well under that."
+            ),
+        })
 
     # Detect Revolut GBP PDF statement
     if ext == ".pdf" and is_revolut_pdf(str(dest)):

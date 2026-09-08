@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     # Import performance — rows flushed per batch for bulk inserts
     import_batch_size: int = 5000
 
+    # Upload cap. A bank statement is kilobytes; the largest real one seen
+    # here is a few MB. Without a bound the route wrote a body of any size to
+    # disk and then read it whole into pandas.
+    max_upload_bytes: int = 25 * 1024 * 1024
+
     # ── Local LLM (Ollama) ──
     # Kept here rather than as module constants so the model can be changed
     # without a code edit. Every caller degrades gracefully when the daemon

@@ -116,3 +116,43 @@ def assert_user_owns_path(
     if not candidate.exists():
         raise UnsafeFilenameError(f"filepath {candidate!s} does not exist")
     return candidate
+
+
+class UploadTooLarge(ValueError):
+    """Raised by copy_with_limit once an upload passes the configured cap."""
+
+    def __init__(self, limit: int):
+        super().__init__(f"upload exceeds {limit} bytes")
+        self.limit = limit
+
+
+def copy_with_limit(src, dest, max_bytes: int, chunk_size: int = 1024 * 1024) -> int:
+    """Stream ``src`` to ``dest``, refusing once ``max_bytes`` is passed.
+
+    The upload route used shutil.copyfileobj with no bound, so a multi-GB
+    body was written to disk in full and then handed to pandas to read
+    whole. Counting as we copy stops it at the limit instead, and the
+    partial file is removed so a refused upload leaves nothing behind.
+    Returns the number of bytes written.
+    """
+    from pathlib import Path
+
+    target = Path(dest)
+    written = 0
+    try:
+        with open(target, "wb") as out:
+            while True:
+                chunk = src.read(chunk_size)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    raise UploadTooLarge(max_bytes)
+                out.write(chunk)
+    except UploadTooLarge:
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        raise
+    return written
