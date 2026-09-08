@@ -15,7 +15,10 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "Financial Hygiene"
-    debug: bool = True
+    # Off by default: SQLAlchemy echo is wired to this and prints every
+    # query WITH its parameters — descriptions, amounts, account numbers —
+    # to stdout. Opt in per run with DEBUG=true.
+    debug: bool = False
 
     # Major.minor prefix — patch is auto-derived from git commit count (see app/build_info.py).
     # Bump this manually only for significant feature releases.

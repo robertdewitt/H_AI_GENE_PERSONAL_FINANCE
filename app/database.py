@@ -78,9 +78,55 @@ def _add_column_if_missing(
     conn.execute(text(ddl))
 
 
+def _harden_at_rest() -> None:
+    """Owner-only permissions on the ledger and uploads.
+
+    The database stores source rows verbatim — statement columns such as
+    "Account #" and "Card Member" — and uploads/ holds the statements
+    themselves. They were created world-readable (0644 / 0755), so any local
+    user or process could read the lot. Idempotent; a failure here is logged,
+    never fatal, because a read-only mount must not stop the app starting.
+    """
+    import logging
+    import os
+    from pathlib import Path
+
+    log = logging.getLogger(__name__)
+    # Files this process creates from here on (WAL, uploads, .env) default
+    # to owner-only.
+    os.umask(0o077)
+
+    targets: list[tuple[Path, int]] = []
+    url = settings.database_url
+    if url.startswith("sqlite:///"):
+        db_path = Path(url[len("sqlite:///"):])
+        targets.append((db_path.parent, 0o700))
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            targets.append((Path(str(db_path) + suffix), 0o600))
+    # The whole uploads tree, not just its root: per-user subdirectories and
+    # the statements inside them were created 0755 / 0644 too. A 0700 parent
+    # already blocks other users, but owner-only should hold on its own at
+    # every level rather than depend on the ancestor.
+    upload_root = Path(settings.upload_dir)
+    targets.append((upload_root, 0o700))
+    if upload_root.is_dir():
+        for dirpath, dirnames, filenames in os.walk(upload_root):
+            base = Path(dirpath)
+            targets.extend((base / d, 0o700) for d in dirnames)
+            targets.extend((base / f, 0o600) for f in filenames)
+
+    for path, mode in targets:
+        try:
+            if path.exists() and (path.stat().st_mode & 0o777) != mode:
+                os.chmod(path, mode)
+        except OSError as exc:
+            log.warning("could not set %o on %s: %s", mode, path, exc)
+
+
 def init_db():
     import app.models  # noqa: F401 — ensure models are registered
     Base.metadata.create_all(bind=engine)
+    _harden_at_rest()
 
     dialect = "sqlite" if settings.db_backend == "sqlite" else "postgresql"
 

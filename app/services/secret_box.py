@@ -43,11 +43,12 @@ def _resolve_secret_key() -> str:
     env_path = Path(__file__).resolve().parents[2] / ".env"
     generated = secrets.token_urlsafe(48)
     line = f"SECRET_KEY={generated}\n"
-    if env_path.exists():
-        with env_path.open("a") as fh:
-            fh.write(line)
-    else:
-        env_path.write_text(line)
+    # The master key must never be world-readable. write_text would have
+    # created it 0644 under the default umask.
+    fd = os.open(str(env_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a") as fh:
+        fh.write(line)
+    os.chmod(env_path, 0o600)
     log.warning(
         "SECRET_KEY was not set — generated one and wrote it to %s. "
         "Back this file up: losing it makes every encrypted column unreadable.",
