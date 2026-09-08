@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from decimal import Decimal
 
+from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -53,6 +54,12 @@ class Settings(BaseSettings):
     # Kept here rather than as module constants so the model can be changed
     # without a code edit. Every caller degrades gracefully when the daemon
     # is absent — the app must work with no local model installed.
+    # Everything sent to the model — descriptions, amounts, column samples,
+    # and full statement page images — crosses this URL. It must stay on this
+    # machine unless you deliberately say otherwise: a single edited .env
+    # line would otherwise ship the ledger to a remote host with no other
+    # sign anything changed. Set ollama_allow_remote=true to override.
+    ollama_allow_remote: bool = False
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3.6:35b-a3b"
     ollama_embed_model: str = "embeddinggemma"
@@ -62,6 +69,22 @@ class Settings(BaseSettings):
     # separate timeout.
     ollama_vision_model: str = "gemma4"
     ollama_vision_timeout: int = 120
+
+    @field_validator("ollama_url")
+    @classmethod
+    def _ollama_url_must_be_loopback(cls, value: str, info: ValidationInfo) -> str:
+        from urllib.parse import urlparse
+
+        host = (urlparse(value).hostname or "").lower()
+        if host in ("localhost", "127.0.0.1", "::1"):
+            return value
+        if info.data.get("ollama_allow_remote"):
+            return value
+        raise ValueError(
+            f"ollama_url points at {host!r}, which is not this machine. "
+            "Financial data and statement images are sent to it. Set "
+            "OLLAMA_ALLOW_REMOTE=true if that is really intended."
+        )
     # Embedding-backed description similarity. Merchant strings compare far
     # better as vectors than as character sequences ("TST* KI'S RESTAURANT"
     # vs "KIS RESTAURANT LONDON"), and vectors are cached so the comparison
