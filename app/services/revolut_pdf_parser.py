@@ -72,7 +72,10 @@ def _parse_date(words: list[str]) -> datetime | None:
         return None
     try:
         d = int(words[0])
-        m = _MONTHS.get(words[1].lower())
+        # Revolut Bank UK Ltd statements (post-migration, Aug 2026) write
+        # "5 Sept 2026" where the e-money ones wrote "5 Sep 2026"; the
+        # first three letters name the month either way.
+        m = _MONTHS.get(words[1].lower()[:3])
         y = int(words[2])
         if m is None:
             return None
@@ -186,17 +189,46 @@ def _is_column_header(row_text: str) -> bool:
 
 # ── Public API ─────────────────────────────────────────────────────
 
+def _leading_text(path: str, pages: int = 3) -> str:
+    import pdfplumber
+    with pdfplumber.open(path) as pdf:
+        return "\n".join((pg.extract_text() or "") for pg in pdf.pages[:pages])
+
+
 def is_revolut_pdf(path: str) -> bool:
-    """Quick check — returns True if the file looks like a Revolut statement."""
+    """Quick check — returns True if the file looks like a Revolut statement.
+
+    Reads the first few pages: the post-migration statements open with a
+    page-long notice about the move to Revolut Bank UK Ltd, and the
+    statement itself starts on page two.
+    """
     try:
-        import pdfplumber
-        with pdfplumber.open(path) as pdf:
-            text = pdf.pages[0].extract_text() or ""
-            return "Revolut" in text and (
-                "Money out" in text or "Account transactions" in text
-            )
+        text = _leading_text(path)
+        return "Revolut" in text and (
+            "Money out" in text or "Account transactions" in text
+        )
     except Exception:
         return False
+
+
+_STATEMENT_CCY = re.compile(r"\b([A-Z]{3})\s+Statement\b")
+
+
+def statement_currency_from_text(text: str) -> str | None:
+    """The currency a Revolut statement is for — "GBP Statement", "USD
+    Statement" — from its header text; None if it does not say."""
+    m = _STATEMENT_CCY.search(text or "")
+    return m.group(1) if m else None
+
+
+def revolut_statement_currency(path: str) -> str | None:
+    """Which currency this statement is for. Revolut exports one file per
+    currency and names them by hash, so a USD statement is easily dropped
+    on the GBP account; the header knows which it is."""
+    try:
+        return statement_currency_from_text(_leading_text(path))
+    except Exception:
+        return None
 
 
 def detect_revolut_sections(path: str) -> list[RevolutSection]:

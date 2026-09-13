@@ -26,6 +26,7 @@ from app.services.revolut_pdf_parser import (
     detect_revolut_sections,
     is_revolut_pdf,
     parse_revolut_pdf,
+    revolut_statement_currency,
 )
 from app.services.rsu_service import (
     import_rsu_grants,
@@ -137,11 +138,28 @@ async def upload_file(
                 "error": f"Failed to read Revolut PDF: {exc}",
             })
         account = db.get(Account, account_id)
+        # Revolut exports one file per currency and names them by hash, so
+        # a USD statement lands on the GBP account by a slip of the mouse —
+        # 81 dollar rows once went into the pound account and 606 pound
+        # rows into the dollar one. The header says which it is.
+        stmt_ccy = revolut_statement_currency(str(dest))
+        if account is not None and stmt_ccy and (account.currency or "").upper() != stmt_ccy:
+            matching = [a for a in owned_accounts(db, user) if (a.currency or "").upper() == stmt_ccy]
+            hint = (f" Accounts in {stmt_ccy}: " + ", ".join(a.name for a in matching) + "."
+                    if matching else "")
+            return templates.TemplateResponse(request, "imports/upload.html", {
+                "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
+                "error": (
+                    f"This is a {stmt_ccy} statement but {account.name} is a "
+                    f"{account.currency} account. Pick the {stmt_ccy} account.{hint}"
+                ),
+            })
         return templates.TemplateResponse(request, "imports/revolut_preview.html", {
             "account_id": account_id,
             "account_name": account.name if account else f"Account {account_id}",
             "filepath": str(dest),
             "sections": sections,
+            "statement_currency": stmt_ccy,
         })
 
     # Detect Merrill / BofA RSU award-summary CSV — dedicated preview
@@ -993,8 +1011,20 @@ def revolut_confirm(
 
     include = set(sections) if sections else {"main"}
 
+    stmt_ccy = revolut_statement_currency(filepath)
+    if stmt_ccy and (account.currency or "").upper() != stmt_ccy:
+        accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
+        return templates.TemplateResponse(request, "imports/upload.html", {
+            "accounts": accounts,
+            "error": f"This is a {stmt_ccy} statement but {account.name} is a {account.currency} account.",
+        })
+
+    from app.services.revolut_import import import_revolut_statement
     try:
-        txns = parse_revolut_pdf(filepath, include_sections=include)
+        batch = import_revolut_statement(
+            db, account_id, filepath, include_sections=include,
+            account_currency=account.currency or "GBP",
+        )
     except Exception as exc:
         accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
         return templates.TemplateResponse(request, "imports/upload.html", {
@@ -1002,64 +1032,9 @@ def revolut_confirm(
             "error": f"Revolut PDF import failed: {exc}",
         })
 
-    # Build dedup set from existing transactions for this account
-    from sqlalchemy import func as _func
-    existing_keys: set[tuple] = set()
-    for row in db.execute(
-        select(Transaction.date, Transaction.description, Transaction.amount)
-        .where(Transaction.account_id == account_id)
-    ).all():
-        existing_keys.add((
-            row.date.strftime("%Y-%m-%d"),
-            (row.description or "").strip().lower(),
-            round(float(row.amount), 2),
-        ))
-
-    batch = ImportBatch(
-        account_id=account_id,
-        user_id=owner_of_account(db, account_id),
-        filename=Path(filepath).name,
-        file_type="pdf",
-        row_count=0,
-        source=ImportSource.REVOLUT_PDF.value,
-    )
-    db.add(batch)
-    db.flush()
-
-    imported = 0
-    dupes = 0
-    for t in txns:
-        key = (
-            t["date"].strftime("%Y-%m-%d"),
-            t["description"].strip().lower(),
-            round(float(t["amount"]), 2),
-        )
-        if key in existing_keys:
-            dupes += 1
-            continue
-        existing_keys.add(key)
-
-        txn = Transaction(
-            account_id=account_id,
-            date=t["date"],
-            description=t["description"],
-            amount=t["amount"],
-            balance_after=t["balance"],
-            import_batch_id=batch.id,
-        )
-        db.add(txn)
-        imported += 1
-
-    batch.row_count = imported
-    db.commit()
-
-    # Auto-categorize
-    cat_stats = categorize_batch(
-        db, transaction_ids=[t.id for t in batch.transactions],
-    )
-
+    imported = batch.row_count
+    dupes = getattr(batch, "_duplicates_skipped", 0)
     return RedirectResponse(
-        url=f"/accounts/{account_id}?imported={imported}&duplicates={dupes}"
-            f"&categorized={cat_stats['rules'] + cat_stats['keywords'] + cat_stats['llm']}",
+        url=f"/accounts/{account_id}?imported={imported}&duplicates={dupes}",
         status_code=303,
     )

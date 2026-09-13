@@ -4,7 +4,7 @@
 {% block content %}
 <hgroup>
     <h1>Revolut Statement Preview</h1>
-    <p>Choose which sections of this statement to import into <strong>{{ account_name }}</strong></p>
+    <p>Choose which sections of this {% if statement_currency %}<strong>{{ statement_currency }}</strong> {% endif %}statement to import into <strong>{{ account_name }}</strong></p>
 </hgroup>
 
 {% if not sections %}
