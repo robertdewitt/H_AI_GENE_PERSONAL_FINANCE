@@ -202,7 +202,9 @@ def match_keyword(description: str, amount: float | None = None) -> str | None:
     return None
 
 
-def match_learned_rule(db: Session, description: str) -> int | None:
+def match_learned_rule(
+    db: Session, description: str, rules: list | None = None,
+) -> int | None:
     """Check stored rules from previous user corrections.
 
     Matching uses two strategies in priority order:
@@ -217,9 +219,13 @@ def match_learned_rule(db: Session, description: str) -> int | None:
     # Pre-extract tokens from the incoming description once
     desc_tokens = set(_pattern_tokens(desc))
 
-    rules = db.execute(
-        select(CategoryRule).order_by(CategoryRule.hit_count.desc())
-    ).scalars().all()
+    # Callers processing a batch pass the rules in once. Loading them here
+    # per call meant an import of 279 rows pulled 1,557 rule objects 279
+    # times — most of the non-model CPU in a categorisation run.
+    if rules is None:
+        rules = db.execute(
+            select(CategoryRule).order_by(CategoryRule.hit_count.desc())
+        ).scalars().all()
 
     for rule in rules:
         pattern_lower = (rule.pattern or "").lower().strip()
@@ -581,14 +587,132 @@ def suggest_categories(
     return suggestions
 
 
+LLM_BATCH_SIZE = 20
+
+
+def _parse_batch_answer(text: str, categories: list[str]) -> dict[int, str]:
+    """``"3 | Groceries"`` lines -> {index: canonical category name}.
+
+    Only a category that exists, matched case-insensitively, is accepted;
+    the model cannot invent one. Delimited lines rather than JSON, for the
+    reason established elsewhere in this app: this model writes reliable
+    lines and unreliable JSON.
+    """
+    by_lower = {c.lower(): c for c in categories}
+    out: dict[int, str] = {}
+    for line in (text or "").splitlines():
+        if "|" not in line:
+            continue
+        idx, _, name = line.partition("|")
+        idx = idx.strip().rstrip(".").strip()
+        name = name.strip().strip('"').strip("'").strip(".")
+        if not idx.isdigit():
+            continue
+        canonical = by_lower.get(name.lower())
+        if canonical is not None:
+            out[int(idx) - 1] = canonical
+    return out
+
+
+def ask_ollama_batch(
+    items: list[tuple[str, float | None]], categories: list[str],
+) -> list[str | None]:
+    """Categorise many descriptions in one model call.
+
+    One forward pass answers twenty descriptions for roughly the cost of
+    answering two, because the prompt (the category list, the instructions)
+    dominates each single call and is paid once here. Anything the model
+    leaves out or answers with an unknown category comes back as None so the
+    caller can fall back to a single call for just that item.
+    """
+    if not items:
+        return []
+    from app.services.ollama_client import generate
+
+    lines = []
+    for n, (desc, amount) in enumerate(items, start=1):
+        hint = ""
+        if amount is not None:
+            direction = "credit/income" if amount >= 0 else "debit/expense"
+            hint = f" [{direction} {abs(amount):.2f}]"
+        lines.append(f"{n}. {desc}{hint}")
+    prompt = (
+        "You are a personal finance categorizer. For each numbered bank "
+        "transaction below, pick the single best category from the list.\n\n"
+        f"Categories: {', '.join(categories)}\n\n"
+        "Transactions:\n" + "\n".join(lines) + "\n\n"
+        "Answer with one line per transaction, in the form\n"
+        "<number> | <category>\n"
+        "using the category name exactly as listed. Output nothing else."
+    )
+    answer = generate(
+        prompt, think=False, temperature=0.0,
+        num_predict=16 * len(items) + 16, timeout=60,
+    )
+    if not answer:
+        return [None] * len(items)
+    parsed = _parse_batch_answer(answer, categories)
+    return [parsed.get(i) for i in range(len(items))]
+
+
+def _learn_from_llm(
+    db: Session, description: str, category_id: int, user_id: int | None,
+    rules: list | None = None,
+) -> CategoryRule | None:
+    """Remember a model answer as a rule, so the question is never asked twice.
+
+    Strictly additive. A rule already covering this pattern — above all a
+    user's own correction — is never re-pointed by a model guess; that
+    authority belongs to learn_from_correction alone. The rule pays off on
+    the *next* run: answers are applied after the tier loop, so rows of the
+    same batch have already been placed by then.
+    """
+    pattern = _normalize(description)
+    if not pattern or not _pattern_tokens(pattern):
+        return None
+    if user_id is None:
+        from app.models.category import Category as _Cat
+        cat = db.get(_Cat, category_id)
+        user_id = cat.user_id if cat is not None else None
+    exists = db.execute(
+        select(CategoryRule).where(
+            CategoryRule.pattern == pattern, CategoryRule.user_id == user_id,
+        ).limit(1)
+    ).scalar_one_or_none()
+    if exists is not None:
+        return None
+    rule = CategoryRule(
+        pattern=pattern, category_id=category_id, user_id=user_id,
+        source="llm", hit_count=1,
+    )
+    db.add(rule)
+    db.flush()
+    if rules is not None:
+        rules.append(rule)
+    return rule
+
+
 def categorize_batch(
     db: Session,
     transaction_ids: list[int] | None = None,
     limit: int = 500,
+    use_llm: bool = True,
 ) -> dict[str, int]:
     """Auto-categorize uncategorized transactions in bulk.
 
-    Returns stats: {rules: N, keywords: N, llm: N, failed: N}.
+    Three tiers, cheapest first: learned rules, keyword heuristics, then the
+    local model. The model tier is where an import used to spend two
+    minutes of a 23 GB model at full tilt, and four things here take that
+    away without changing the model or what it is asked:
+
+    * rules are loaded once per batch, not once per row;
+    * identical descriptions are asked once — a row that repeats five times
+      in a statement is one question, not five;
+    * descriptions are sent to the model twenty to a prompt;
+    * every answer is stored as a rule, so the same merchant is answered by
+      tier one on every future import and the model is never asked again.
+
+    Returns stats: {rules: N, keywords: N, llm: N, failed: N, total: N}.
     """
     query = select(Transaction).where(Transaction.category_id.is_(None))
     if transaction_ids:
@@ -597,45 +721,61 @@ def categorize_batch(
 
     txns = db.execute(query).scalars().all()
     stats = {"rules": 0, "keywords": 0, "llm": 0, "failed": 0, "total": len(txns)}
+    if not txns:
+        return stats
 
-    all_cats = db.execute(select(Category.name)).scalars().all()
-    cat_list = list(all_cats)
+    cat_rows = db.execute(select(Category)).scalars().all()
+    cat_by_lower = {c.name.lower(): c for c in cat_rows}
+    cat_list = [c.name for c in cat_rows]
+    rules = db.execute(
+        select(CategoryRule).order_by(CategoryRule.hit_count.desc())
+    ).scalars().all()
 
+    # Rows the cheap tiers could not place, grouped by normalised
+    # description so each distinct wording is one question.
+    pending: dict[str, list[Transaction]] = {}
     for txn in txns:
-        # 1. Learned rules
-        rule_cat_id = match_learned_rule(db, txn.description)
+        rule_cat_id = match_learned_rule(db, txn.description, rules=rules)
         if rule_cat_id:
             txn.category_id = rule_cat_id
             stats["rules"] += 1
             continue
 
-        # 2. Keywords
         kw_match = match_keyword(txn.description, amount=txn.amount)
-        if kw_match:
-            cat = db.execute(
-                select(Category).where(
-                    func.lower(Category.name) == kw_match.lower()
-                )
-            ).scalar_one_or_none()
-            if cat:
-                txn.category_id = cat.id
-                stats["keywords"] += 1
-                continue
+        if kw_match and kw_match.lower() in cat_by_lower:
+            txn.category_id = cat_by_lower[kw_match.lower()].id
+            stats["keywords"] += 1
+            continue
 
-        # 3. LLM
-        llm_match = ask_ollama(txn.description, cat_list, amount=txn.amount)
-        if llm_match:
-            cat = db.execute(
-                select(Category).where(
-                    func.lower(Category.name) == llm_match.lower()
-                )
-            ).scalar_one_or_none()
-            if cat:
-                txn.category_id = cat.id
-                stats["llm"] += 1
-                continue
+        pending.setdefault(_normalize(txn.description), []).append(txn)
 
-        stats["failed"] += 1
+    if pending and use_llm:
+        keys = list(pending)
+        answers: dict[str, str | None] = {}
+        for i in range(0, len(keys), LLM_BATCH_SIZE):
+            chunk = keys[i:i + LLM_BATCH_SIZE]
+            items = [(pending[k][0].description, pending[k][0].amount) for k in chunk]
+            for k, ans in zip(chunk, ask_ollama_batch(items, cat_list)):
+                answers[k] = ans
+        # Anything the batch left unanswered gets one plain call, the way
+        # every row used to — so the batch path can only reduce calls.
+        for k in keys:
+            if answers.get(k) is None:
+                first = pending[k][0]
+                answers[k] = ask_ollama(first.description, cat_list, amount=first.amount)
+
+        for k, group in pending.items():
+            ans = answers.get(k)
+            cat = cat_by_lower.get(ans.lower()) if ans else None
+            if cat is None:
+                stats["failed"] += len(group)
+                continue
+            for txn in group:
+                txn.category_id = cat.id
+            stats["llm"] += len(group)
+            _learn_from_llm(db, group[0].description, cat.id, cat.user_id, rules)
+    else:
+        stats["failed"] += sum(len(g) for g in pending.values())
 
     db.commit()
     return stats
