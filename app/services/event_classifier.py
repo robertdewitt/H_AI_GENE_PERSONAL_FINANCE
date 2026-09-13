@@ -35,6 +35,10 @@ _SPEND_METADATA: dict[str, tuple[str, bool]] = {
     EconomicEventType.CARD_PURCHASE.value:             (SpendType.LIFESTYLE.value, True),
     EconomicEventType.INTERNAL_TRANSFER.value:         (SpendType.NON_SPEND_CASH_USE.value, False),
     EconomicEventType.CARD_PAYMENT_SETTLEMENT.value:   (SpendType.NON_SPEND_CASH_USE.value, False),
+    # A refund is spend with the sign reversed: it nets against the
+    # purchase in the same bucket rather than reading as income.
+    EconomicEventType.MERCHANT_REFUND.value:           (SpendType.LIFESTYLE.value, True),
+    EconomicEventType.CARD_CREDIT.value:               (SpendType.LIFESTYLE.value, True),
     EconomicEventType.LIABILITY_PAYMENT.value:         (SpendType.DEBT_COST.value, True),
     EconomicEventType.MORTGAGE_PAYMENT.value:          (SpendType.DEBT_COST.value, True),
     EconomicEventType.MORTGAGE_INTEREST.value:         (SpendType.DEBT_COST.value, True),
@@ -102,6 +106,56 @@ _PAYROLL_KEYWORDS = {
     "net pay", "employer",
 }
 
+# Credits on a card. A positive row is a payment only when it says so —
+# by keyword, or by the source's own row type (Chase exports carry
+# "Payment" / "Return"; Amex rows carry nothing). Every other credit is
+# money coming back from a merchant, not money the cardholder sent.
+_REFUND_KEYWORDS = {
+    "refund", "return", "reversal", "chargeback", "rebate", "cashback",
+    "cash back", "goodwill", "statement credit", "credit adjustment",
+}
+_PLAN_CREDIT_KEYWORDS = {
+    "instalment plan", "installment plan", "plan it", "pay over time",
+}
+_CARD_FEE_PHRASES = {"plan fee", "interest charge", "annual fee", "late fee",
+                     "foreign transaction fee", "cash advance fee", "membership fee"}
+
+
+def _source_row_type(txn: Transaction) -> str:
+    """The row type the bank's own export gave this row, lowercased, or ''."""
+    import json
+
+    raw = txn.raw_data
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return ""
+    if not isinstance(raw, dict):
+        return ""
+    return str(raw.get("Type") or raw.get("type") or raw.get("Transaction Type") or "").strip().lower()
+
+
+def _classify_card_row(txn: Transaction, desc_lower: str) -> EconomicEventType:
+    src = _source_row_type(txn)
+    is_fee = (any(p in desc_lower for p in _CARD_FEE_PHRASES)
+              or _INTEREST_RE.search(desc_lower) is not None
+              or _FEE_WORD_RE.search(desc_lower) is not None)
+    if txn.amount <= 0:
+        return EconomicEventType.FEE if is_fee else EconomicEventType.CARD_PURCHASE
+    # Credits, most specific signal first.
+    if any(kw in desc_lower for kw in _REFUND_KEYWORDS):
+        return EconomicEventType.MERCHANT_REFUND
+    if src == "payment" or any(kw in desc_lower for kw in PAYMENT_KEYWORDS):
+        return EconomicEventType.CARD_PAYMENT_SETTLEMENT
+    if is_fee:
+        return EconomicEventType.FEE            # a fee or interest reversal nets the charge
+    if any(kw in desc_lower for kw in _PLAN_CREDIT_KEYWORDS):
+        return EconomicEventType.CARD_CREDIT
+    if src in ("return", "refund", "credit", "adjustment"):
+        return EconomicEventType.MERCHANT_REFUND
+    return EconomicEventType.MERCHANT_REFUND
+
 
 def classify_transaction(txn: Transaction, account: Account) -> EconomicEventType:
     """Pure function: derive event_type from txn + account context."""
@@ -113,9 +167,7 @@ def classify_transaction(txn: Transaction, account: Account) -> EconomicEventTyp
 
     # Account-type-specific classification takes priority
     if acct_type == AccountType.CREDIT_CARD:
-        if txn.amount > 0:
-            return EconomicEventType.CARD_PAYMENT_SETTLEMENT
-        return EconomicEventType.CARD_PURCHASE
+        return _classify_card_row(txn, desc_lower)
 
     if acct_type == AccountType.MORTGAGE:
         if txn.amount > 0:

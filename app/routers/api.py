@@ -274,6 +274,12 @@ def api_spending_monthly(
             EconomicEventType.CARD_PAYMENT_SETTLEMENT.value,
         ]))
     )
+    # A refund is a credit that belongs on the spending side, netting the
+    # purchase it reverses; it must not read as income.
+    refund_types = [
+        EconomicEventType.MERCHANT_REFUND.value,
+        EconomicEventType.CARD_CREDIT.value,
+    ]
     ym = _year_month(Transaction.date).label("month")
     rows = db.execute(
         select(
@@ -281,11 +287,13 @@ def api_spending_monthly(
             func.sum(
                 case(
                     (Transaction.amount < 0, Transaction.amount),
+                    (Transaction.event_type.in_(refund_types), Transaction.amount),
                     else_=0,
                 )
             ).label("spending"),
             func.sum(
                 case(
+                    (Transaction.event_type.in_(refund_types), 0),
                     (Transaction.amount > 0, Transaction.amount),
                     else_=0,
                 )
@@ -451,6 +459,8 @@ def api_agent_context(db: Session = Depends(get_db)):
             Transaction.event_type.notin_([
                 EconomicEventType.INTERNAL_TRANSFER.value,
                 EconomicEventType.CARD_PAYMENT_SETTLEMENT.value,
+                EconomicEventType.MERCHANT_REFUND.value,   # money back, not income
+                EconomicEventType.CARD_CREDIT.value,
             ]),
         )
     ).scalar() or Decimal("0.00")

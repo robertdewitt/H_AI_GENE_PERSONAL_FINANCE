@@ -13,6 +13,8 @@ class EconomicEventType(str, enum.Enum):
     INTERNAL_TRANSFER = "internal_transfer"
     CARD_PURCHASE = "card_purchase"
     CARD_PAYMENT_SETTLEMENT = "card_payment_settlement"
+    MERCHANT_REFUND = "merchant_refund"        # money back on something bought
+    CARD_CREDIT = "card_credit"                # other credit on a card: plan reclass, goodwill
     LIABILITY_PAYMENT = "liability_payment"
     MORTGAGE_PAYMENT = "mortgage_payment"
     MORTGAGE_INTEREST = "mortgage_interest"
