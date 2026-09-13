@@ -614,8 +614,11 @@ def import_transactions(
     if dayfirst is None:
         dayfirst = settings.date_dayfirst
 
+    from app.services.scoping import owner_of_account
+
     batch = ImportBatch(
         account_id=account_id,
+        user_id=owner_of_account(db, account_id),
         filename=path.name,
         file_type=path.suffix.lstrip(".").lower(),
         row_count=total_rows,

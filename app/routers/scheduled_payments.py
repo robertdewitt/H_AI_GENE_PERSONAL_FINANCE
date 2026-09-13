@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.services.scoping import owner_of_account
 from app.models.account import Account
 from app.models.category import Category
 from app.models.scheduled_payment import ScheduledPayment
@@ -132,6 +133,7 @@ def scheduled_create(
         amount_type=amount_type,
         currency=currency,
         account_id=account_id,
+        user_id=owner_of_account(db, account_id),
         category_id=int(category_id) if category_id.strip() else None,
         frequency=frequency,
         next_due_date=date.fromisoformat(next_due_date),
@@ -456,6 +458,7 @@ def detect_confirm(
             amount_type=at.strip() or "fixed",
             currency=cur,
             account_id=int(acct),
+            user_id=owner_of_account(db, int(acct)),
             category_id=int(cat) if cat.strip() else None,
             frequency=freq,
             next_due_date=date.fromisoformat(ndd),

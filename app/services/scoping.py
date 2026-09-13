@@ -100,3 +100,126 @@ def owned_category_rules(db: Session, user: User) -> list[CategoryRule]:
 
 def owned_import_batches(db: Session, user: User) -> list[ImportBatch]:
     return db.execute(_owned(db, ImportBatch, user)).scalars().all()
+
+
+# ── Rows owned through their account ──────────────────────────────────
+#
+# These tables either carry no user_id or cannot be trusted to: rows created
+# after the first-run claim by code paths that never set it were found with
+# user_id NULL on 23 of 31 scheduled payments. Ownership therefore flows from
+# the account, which the claim guarantees and which every constructor now
+# sets. The join is the same shape as owned_transaction_query.
+
+
+def _owned_via_account(model: Type[M], user: User):
+    return (
+        select(model)
+        .join(Account, model.account_id == Account.id)
+        .where(Account.user_id == user.id)
+    )
+
+
+def _one_or_404(db: Session, stmt, what: str):
+    row = db.execute(stmt.limit(1)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"{what} not found",
+        )
+    return row
+
+
+def owned_scheduled_payment_query(user: User):
+    from app.models.scheduled_payment import ScheduledPayment
+
+    return _owned_via_account(ScheduledPayment, user)
+
+
+def get_owned_scheduled_payment_or_404(db: Session, user: User, payment_id: int):
+    from app.models.scheduled_payment import ScheduledPayment
+
+    return _one_or_404(
+        db, owned_scheduled_payment_query(user).where(ScheduledPayment.id == payment_id),
+        "Scheduled payment",
+    )
+
+
+def owned_scheduled_payment_ids(db: Session, user: User, ids: list[int]) -> list[int]:
+    """The subset of ``ids`` this user actually owns — for bulk actions."""
+    from app.models.scheduled_payment import ScheduledPayment
+
+    if not ids:
+        return []
+    return [
+        p.id for p in db.execute(
+            owned_scheduled_payment_query(user).where(ScheduledPayment.id.in_(ids))
+        ).scalars().all()
+    ]
+
+
+def owned_transaction_ids(db: Session, user: User, ids: list[int]) -> list[int]:
+    """The subset of ``ids`` this user actually owns — for bulk actions.
+
+    A bulk endpoint must never act on an id just because it was posted;
+    filtering the list here means a foreign id is silently dropped rather
+    than acted on or reported.
+    """
+    if not ids:
+        return []
+    return [
+        t.id for t in db.execute(
+            owned_transaction_query(user).where(Transaction.id.in_(ids))
+        ).scalars().all()
+    ]
+
+
+def get_owned_proposal_or_404(db: Session, user: User, proposal_id: int):
+    from app.models.scheduled_match_proposal import ScheduledMatchProposal
+    from app.models.scheduled_payment import ScheduledPayment
+
+    stmt = (
+        select(ScheduledMatchProposal)
+        .join(ScheduledPayment,
+              ScheduledMatchProposal.scheduled_payment_id == ScheduledPayment.id)
+        .join(Account, ScheduledPayment.account_id == Account.id)
+        .where(Account.user_id == user.id, ScheduledMatchProposal.id == proposal_id)
+    )
+    return _one_or_404(db, stmt, "Proposal")
+
+
+def owned_deleted_transaction_query(user: User):
+    from app.models.deleted_transaction import DeletedTransaction
+
+    return _owned_via_account(DeletedTransaction, user)
+
+
+def owned_dismissed_duplicate_query(user: User):
+    from app.models.dismissed_duplicate import DismissedDuplicate
+
+    return _owned_via_account(DismissedDuplicate, user)
+
+
+def owner_of_account(db: Session, account_id: int | None) -> int | None:
+    """The user_id an account belongs to, for stamping rows created under it.
+
+    Every constructor of an account-scoped row uses this so ownership is
+    written at creation rather than repaired later. Rows created after the
+    first-run claim by paths that skipped it were found with user_id NULL —
+    23 of 31 scheduled payments — which scoped queries would then hide from
+    their own owner.
+    """
+    if account_id is None:
+        return None
+    acct = db.get(Account, account_id)
+    return acct.user_id if acct is not None else None
+
+
+def get_owned_dismissed_scheduled_or_404(db: Session, user: User, dismissal_id: int):
+    from app.models.dismissed_scheduled_payment import DismissedScheduledPayment
+
+    return _one_or_404(
+        db,
+        _owned_via_account(DismissedScheduledPayment, user).where(
+            DismissedScheduledPayment.id == dismissal_id
+        ),
+        "Dismissed payment",
+    )

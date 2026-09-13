@@ -76,7 +76,9 @@ def get_account(db: Session, account_id: int, user_id: int | None = None) -> Acc
     return acct
 
 
-def create_account(db: Session, data: AccountCreate) -> Account:
+def create_account(
+    db: Session, data: AccountCreate, user_id: int | None = None,
+) -> Account:
     is_asset = data.account_type not in LIABILITY_TYPES
     if data.is_asset is not None:
         is_asset = data.is_asset
@@ -90,6 +92,9 @@ def create_account(db: Session, data: AccountCreate) -> Account:
         current_value=data.current_value,
         value_as_of_date=data.value_as_of_date,
         notes=data.notes,
+        # Ten of twenty-five accounts were found with no owner — every one
+        # created here, after the first-run claim had already run.
+        user_id=user_id,
     )
     db.add(account)
     db.commit()

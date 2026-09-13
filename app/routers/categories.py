@@ -4,6 +4,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.user import User
+from app.services.auth import get_current_user
 from app.templating import templates
 from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule
@@ -46,6 +48,7 @@ def category_add(
     category_type: str = Form(...),
     parent_id: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     existing = db.execute(
         select(Category).where(func.lower(Category.name) == name.strip().lower())
@@ -79,6 +82,7 @@ def category_add(
         category_type=CategoryType(category_type),
         parent_id=int(parent_id) if parent_id.strip() else None,
         is_system=False,
+        user_id=user.id,
     )
     db.add(cat)
     db.commit()

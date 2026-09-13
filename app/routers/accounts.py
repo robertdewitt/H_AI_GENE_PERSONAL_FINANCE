@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 log = logging.getLogger(__name__)
 
 from app.database import get_db
+from app.models.user import User
+from app.services.auth import get_current_user
 from app.models.account import AccountType, LIABILITY_TYPES
 from app.schemas.account import AccountCreate
 from app.templating import templates
@@ -393,6 +395,7 @@ def account_create(
     overdraft_as_of: str = Form(""),
     payment_due_date: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     acct_type = AccountType(account_type)
     is_asset = acct_type not in LIABILITY_TYPES
@@ -408,7 +411,7 @@ def account_create(
         value_as_of_date=naive_utc_now() if val is not None else None,
         notes=notes or None,
     )
-    acct = create_account(db, data)
+    acct = create_account(db, data, user_id=user.id)
 
     _PHYSICAL_ASSET_TYPES = {AccountType.REAL_ESTATE, AccountType.VEHICLE, AccountType.COLLECTIBLE}
     if acct_type in _PHYSICAL_ASSET_TYPES:

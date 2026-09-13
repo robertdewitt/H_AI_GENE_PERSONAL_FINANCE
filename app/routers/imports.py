@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 
 from app.config import settings
 from app.database import get_db
+from app.services.scoping import owner_of_account
 from app.templating import templates
 from app.models.account import Account
 from app.services.categorizer import categorize_batch
@@ -312,8 +313,12 @@ def confirm_import(
         dayfirst=dayfirst,
     )
 
-    # Auto-categorize the newly imported transactions
-    cat_stats = categorize_batch(db, limit=batch.row_count + 100)
+    # Auto-categorize the newly imported transactions — only those. With a
+    # bare limit this re-ran the model over every old uncategorised row in
+    # the ledger on each import, 209 of them, none of which were new.
+    cat_stats = categorize_batch(
+        db, transaction_ids=[t.id for t in batch.transactions],
+    )
 
     # Match against scheduled payments and advance next_due_dates.
     # Best-effort — a matching failure must not block the import, but it
@@ -823,6 +828,7 @@ def confirm_import(
                     else:
                         db.add(ScheduledPayment(
                             account_id=account_id,
+                            user_id=owner_of_account(db, account_id),
                             description=plan_desc,
                             amount=plan_amount,
                             amount_type="estimated",
@@ -1013,6 +1019,7 @@ def revolut_confirm(
 
     batch = ImportBatch(
         account_id=account_id,
+        user_id=owner_of_account(db, account_id),
         filename=Path(filepath).name,
         file_type="pdf",
         row_count=0,
@@ -1049,7 +1056,9 @@ def revolut_confirm(
     db.commit()
 
     # Auto-categorize
-    cat_stats = categorize_batch(db, limit=imported + 100)
+    cat_stats = categorize_batch(
+        db, transaction_ids=[t.id for t in batch.transactions],
+    )
 
     return RedirectResponse(
         url=f"/accounts/{account_id}?imported={imported}&duplicates={dupes}"

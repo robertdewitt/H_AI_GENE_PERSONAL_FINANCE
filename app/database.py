@@ -123,10 +123,65 @@ def _harden_at_rest() -> None:
             log.warning("could not set %o on %s: %s", mode, path, exc)
 
 
+# Every top-level owned table. Kept here, next to the code that repairs
+# them, rather than duplicated from CLAUDE.md.
+OWNED_TABLES = (
+    "accounts", "categories", "category_rules", "import_batches",
+    "rental_properties", "asset_valuations", "scheduled_payments",
+    "plan_it_plans", "account_balance_snapshots", "asset_valuation_snapshots",
+    "liability_balance_snapshots", "household_snapshots", "financial_documents",
+    "property_pnl_snapshots", "user_profile",
+)
+
+
+def _assign_orphans_to_sole_user() -> dict[str, int]:
+    """Give rows with user_id NULL to the only user, when there is only one.
+
+    The first-run claim attributes every existing row, but code paths that
+    create rows afterwards did not all set user_id — ten of twenty-five
+    accounts were found orphaned that way. Scoped queries would hide those
+    from their own owner. With exactly one user the attribution is
+    unambiguous and matches what the claim would have done; with more than
+    one it is not, so nothing is touched and the count is logged for a
+    human to resolve.
+    """
+    import logging
+
+    log = logging.getLogger(__name__)
+    fixed: dict[str, int] = {}
+    with engine.connect() as conn:
+        users = [r[0] for r in conn.execute(text("SELECT id FROM users")).fetchall()]
+        for table in OWNED_TABLES:
+            try:
+                orphans = conn.execute(
+                    text(f"SELECT COUNT(*) FROM {table} WHERE user_id IS NULL")
+                ).scalar() or 0
+            except Exception:
+                continue           # table absent on this schema
+            if not orphans:
+                continue
+            if len(users) == 1:
+                conn.execute(
+                    text(f"UPDATE {table} SET user_id = :uid WHERE user_id IS NULL"),
+                    {"uid": users[0]},
+                )
+                fixed[table] = orphans
+            else:
+                log.warning(
+                    "%d row(s) in %s have no owner and there are %d users — "
+                    "not guessing; assign them by hand", orphans, table, len(users),
+                )
+        conn.commit()
+    if fixed:
+        log.info("attributed orphaned rows to the sole user: %s", fixed)
+    return fixed
+
+
 def init_db():
     import app.models  # noqa: F401 — ensure models are registered
     Base.metadata.create_all(bind=engine)
     _harden_at_rest()
+    _assign_orphans_to_sole_user()
 
     dialect = "sqlite" if settings.db_backend == "sqlite" else "postgresql"
 

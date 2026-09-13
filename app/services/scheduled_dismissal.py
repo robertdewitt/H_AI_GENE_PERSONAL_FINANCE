@@ -36,6 +36,11 @@ def dismiss(
     if existing is not None:
         return existing
 
+    if user_id is None:
+        # No caller passes one; the account knows who owns it.
+        from app.services.scoping import owner_of_account
+        user_id = owner_of_account(db, account_id)
+
     row = DismissedScheduledPayment(
         account_id=account_id,
         description_key=key,
