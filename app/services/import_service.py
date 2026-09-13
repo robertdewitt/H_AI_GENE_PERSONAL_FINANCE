@@ -683,15 +683,71 @@ def import_transactions(
     # so duplicate detection is O(1) per row instead of a DB query each time.
     existing_rows = db.execute(
         select(
+            Transaction.id,
             Transaction.date,
             Transaction.description,
             Transaction.amount,
+            Transaction.balance_after,
+            Transaction.import_batch_id,
+            Transaction.raw_data,
         ).where(Transaction.account_id == account_id)
     ).all()
     existing_keys: set[tuple] = {
         (r.date.strftime("%Y-%m-%d"), r.description.strip().lower(), round(r.amount, 2))
         for r in existing_rows
     }
+    # A row already on the ledger without the bank's running balance — a
+    # confirmed schedule occurrence, a manual entry, a row from a file
+    # without a balance column — takes it from the file row that repeats it.
+    # Otherwise the day's closing balance is never known and the account
+    # reads from an older marker for good.
+    unbalanced_by_key: dict[tuple, list[int]] = {}
+    unbalanced_by_day_amount: dict[tuple, list[int]] = {}
+    for r in existing_rows:
+        if r.balance_after is None:
+            k = (r.date.strftime("%Y-%m-%d"), r.description.strip().lower(), round(r.amount, 2))
+            unbalanced_by_key.setdefault(k, []).append(r.id)
+            unbalanced_by_day_amount.setdefault((k[0], k[2]), []).append(r.id)
+    # Rows the user put on the ledger ahead of the bank — a confirmed
+    # schedule occurrence or a manual entry, neither from a file — are
+    # expectations. When the bank's row for the same amount lands within a
+    # few days it is the same transaction: the expectation takes the bank's
+    # date, running balance and source, and no second row is created. Each
+    # expectation is used once.
+    placeholders: list[tuple[int, datetime, Decimal, int]] = []     # (id, date, amount, window_days)
+    for r in existing_rows:
+        if r.import_batch_id is None and r.balance_after is None:
+            scheduled = bool(r.raw_data) and "scheduled_confirm" in r.raw_data
+            placeholders.append((r.id, r.date, Decimal(str(r.amount)), 7 if scheduled else 3))
+    placeholders_used: set[int] = set()
+    reconciled = 0
+    carried = 0
+
+    def _carry_balance(txn_id: int, balance_val, raw: str, source_hash: str) -> None:
+        nonlocal carried
+        existing = db.get(Transaction, txn_id)
+        if existing is None or existing.balance_after is not None:
+            return
+        if balance_val is not None:
+            existing.balance_after = balance_val
+        if existing.raw_data is None:
+            existing.raw_data = raw
+        if existing.source_hash is None:
+            existing.source_hash = source_hash
+        if existing.import_batch_id is None:
+            existing.import_batch_id = batch.id
+        carried += 1
+
+    def _placeholder_for(date_val: datetime, amount_val) -> int | None:
+        amt = Decimal(str(amount_val)).quantize(Decimal("0.01"))
+        best: tuple[int, int] | None = None
+        for pid, pdate, pamt, window in placeholders:
+            if pid in placeholders_used or pamt.quantize(Decimal("0.01")) != amt:
+                continue
+            gap = abs((date_val.date() - pdate.date()).days)
+            if gap <= window and (best is None or gap < best[0]):
+                best = (gap, pid)
+        return best[1] if best else None
     # Third layer: the same transaction arriving with its description worded
     # differently. A PDF statement recorded a payment as "Payment Thank You
     # Bill Pay Service"; the CSV export of the same month truncated it to
@@ -809,17 +865,40 @@ def import_transactions(
             desc_val.strip().lower(),
             round(amount_val, 2),
         )
+        balance_col = column_mapping.get("balance")
+        balance_val = parse_amount(row.get(balance_col, "")) if balance_col else None
+        raw = json.dumps(
+            {str(k): str(v) for k, v in row.items()},
+            default=str,
+        )
+
         if dedup_key in existing_keys:
             duplicates += 1
+            twins = unbalanced_by_key.get(dedup_key)
+            if twins:
+                _carry_balance(twins.pop(0), balance_val, raw, source_hash)
             continue
         wordings = existing_wordings.get((dedup_key[0], dedup_key[2]))
         if wordings and _wording_matches_existing(desc_val, wordings):
             duplicates += 1
+            twins = unbalanced_by_day_amount.get((dedup_key[0], dedup_key[2]))
+            if twins:
+                _carry_balance(twins.pop(0), balance_val, raw, source_hash)
             continue
+        placeholder_id = _placeholder_for(date_val, amount_val)
+        if placeholder_id is not None:
+            placeholders_used.add(placeholder_id)
+            existing = db.get(Transaction, placeholder_id)
+            if existing is not None:
+                existing.date = date_val
+                existing.balance_after = balance_val
+                existing.raw_data = raw           # the bank's wording is kept here; the user's stays on the row
+                existing.source_hash = source_hash
+                existing.import_batch_id = batch.id
+                reconciled += 1
+                existing_keys.add(dedup_key)
+                continue
         new_keys.add(dedup_key)
-
-        balance_col = column_mapping.get("balance")
-        balance_val = parse_amount(row.get(balance_col, "")) if balance_col else None
 
         # Determine transaction currency
         txn_currency = account_currency
@@ -831,11 +910,6 @@ def import_transactions(
             )
             if detected:
                 txn_currency = detected
-
-        raw = json.dumps(
-            {str(k): str(v) for k, v in row.items()},
-            default=str,
-        )
 
         # Auto-detect payments on liability accounts as transfers
         is_payment_transfer = False
@@ -912,10 +986,13 @@ def import_transactions(
         log.warning("Interest resync failed for account %d", account_id, exc_info=True)
 
     log.info(
-        "Import complete: %d imported, %d skipped, %d duplicates, batch_id=%d",
-        imported, skipped, duplicates, batch.id,
+        "Import complete: %d imported, %d skipped, %d duplicates, "
+        "%d expectations reconciled, %d balances carried, batch_id=%d",
+        imported, skipped, duplicates, reconciled, carried, batch.id,
     )
     batch._duplicates_skipped = duplicates
+    batch._placeholders_reconciled = reconciled
+    batch._balances_carried = carried
     return batch
 
 

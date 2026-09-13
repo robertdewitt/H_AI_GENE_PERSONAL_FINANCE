@@ -237,6 +237,57 @@ def get_account_balance_rich(
 # ── Balance dispatch helpers ────────────────────────────────────────
 
 
+# ── Which row carries the day's closing balance ────────────────────────
+#
+# A bank export lists a day's rows in whichever order it likes — Mission
+# FCU's is newest-first — so the row with the highest id is not the last
+# one posted. The running balances say which came last: row B follows row
+# A when B.balance_after - B.amount == A.balance_after, and the closing row
+# is the one nothing follows. Picking by id read a $7,721 balance on a day
+# that closed at $6,318.
+
+
+def _closing_row(rows: list[tuple]) -> tuple:
+    """``rows`` are (id, amount, balance_after) for one account on one day;
+    returns the one whose balance_after is that day's closing balance."""
+    if len(rows) == 1:
+        return rows[0]
+    by_balance: dict[Decimal, tuple] = {}
+    for r in rows:
+        by_balance.setdefault(Decimal(str(r[2])).quantize(Decimal("0.01")), r)
+    followed: set[int] = set()
+    for r in rows:
+        prev = (Decimal(str(r[2])) - Decimal(str(r[1]))).quantize(Decimal("0.01"))
+        before = by_balance.get(prev)
+        if before is not None and before[0] != r[0]:
+            followed.add(before[0])
+    ends = [r for r in rows if r[0] not in followed]
+    if len(ends) == 1:
+        return ends[0]
+    return max(rows, key=lambda r: r[0])       # no chain to read: fall back to id
+
+
+def _latest_balance_marker(db: Session, account_id: int) -> tuple[Decimal, datetime] | None:
+    """(closing balance_after, date) of the latest day that has one."""
+    last_day = db.execute(
+        select(func.max(Transaction.date)).where(
+            Transaction.account_id == account_id,
+            Transaction.balance_after.isnot(None),
+        )
+    ).scalar()
+    if last_day is None:
+        return None
+    rows = db.execute(
+        select(Transaction.id, Transaction.amount, Transaction.balance_after).where(
+            Transaction.account_id == account_id,
+            Transaction.balance_after.isnot(None),
+            func.date(Transaction.date) == last_day.date(),
+        )
+    ).all()
+    end = _closing_row([(r.id, r.amount, r.balance_after) for r in rows])
+    return Decimal(str(end[2])), last_day
+
+
 def _balance_from_txn_sum(
     db: Session, account: Account, account_id: int,
     as_of_date: datetime | None, now: datetime,
@@ -244,17 +295,9 @@ def _balance_from_txn_sum(
     # Prefer the bank's own running balance when transactions include balance_after.
     # This gives accurate balances even when transaction history is incomplete.
     if not as_of_date:
-        bal_after_row = db.execute(
-            select(Transaction.balance_after, Transaction.date)
-            .where(
-                Transaction.account_id == account_id,
-                Transaction.balance_after.isnot(None),
-            )
-            .order_by(Transaction.date.desc(), Transaction.id.desc())
-            .limit(1)
-        ).one_or_none()
-        if bal_after_row and bal_after_row.balance_after is not None:
-            marker_date = bal_after_row.date
+        marker = _latest_balance_marker(db, account_id)
+        if marker is not None:
+            marker_value, marker_date = marker
             # Anything recorded after that marker — a confirmed scheduled
             # payment, a future-dated or manually added row — carries no
             # running balance of its own. Without adding it the account
@@ -269,11 +312,12 @@ def _balance_from_txn_sum(
             ).scalar() or Decimal("0.00")
             since_marker = Decimal(str(since_marker))
             return AccountBalanceResult(
-                value=Decimal(str(bal_after_row.balance_after)) + since_marker,
+                value=marker_value + since_marker,
                 balance_as_of=now if since_marker else marker_date,
                 balance_source_used="latest_balance_after",
                 balance_confidence=0.92,
                 balance_stale=False,
+                currency=account.currency,
             )
 
     query = select(
@@ -609,11 +653,12 @@ def get_many_account_balances_rich(
     # Batch: latest balance_after per account (most accurate when available)
     latest_bal_after: dict[int, tuple[Decimal, datetime]] = {}
     if txn_sum_ids:
-        # Subquery: latest transaction id with balance_after per account
+        # Latest day with a running balance per account, then every row of
+        # that day: the closing row is read off the chain, not the id.
         sq = (
             select(
                 Transaction.account_id,
-                func.max(Transaction.id).label("max_id"),
+                func.max(Transaction.date).label("max_date"),
             )
             .where(
                 Transaction.account_id.in_(txn_sum_ids),
@@ -622,14 +667,20 @@ def get_many_account_balances_rich(
             .group_by(Transaction.account_id)
             .subquery()
         )
+        day_rows: dict[int, list[tuple]] = {}
+        day_of: dict[int, datetime] = {}
         for row in db.execute(
-            select(Transaction.account_id, Transaction.balance_after, Transaction.date)
-            .join(sq, (Transaction.account_id == sq.c.account_id) & (Transaction.id == sq.c.max_id))
+            select(Transaction.account_id, Transaction.id, Transaction.amount,
+                   Transaction.balance_after, Transaction.date)
+            .join(sq, (Transaction.account_id == sq.c.account_id)
+                  & (func.date(Transaction.date) == func.date(sq.c.max_date)))
+            .where(Transaction.balance_after.isnot(None))
         ).all():
-            if row.balance_after is not None:
-                latest_bal_after[row.account_id] = (
-                    Decimal(str(row.balance_after)), row.date
-                )
+            day_rows.setdefault(row.account_id, []).append((row.id, row.amount, row.balance_after))
+            day_of[row.account_id] = max(day_of.get(row.account_id, row.date), row.date)
+        for aid, rows in day_rows.items():
+            end = _closing_row(rows)
+            latest_bal_after[aid] = (Decimal(str(end[2])), day_of[aid])
 
         # Rows added after each account's marker (confirmed scheduled
         # payments, manual entries) carry no running balance of their own —
@@ -1099,13 +1150,37 @@ def get_many_account_balances_series(
         return total
 
     def _latest_bal_after_at(account_id: int, when: datetime) -> tuple[Decimal, datetime] | None:
+        """The closing balance of the latest day with one on or before ``when``,
+        plus the rows after that day that carry no running balance of their
+        own — the same reading the single and batched paths give, so the
+        history ends where the balance card starts."""
         result: tuple[Decimal, datetime] | None = None
-        for d, _amt, bal_after, _tid in txns_by_account.get(account_id, ()):
+        day: datetime | None = None
+        day_rows: list[tuple] = []
+        tail = Decimal("0.00")
+
+        def close_day() -> None:
+            nonlocal result, tail
+            cands = [(tid, amt, bal) for _d, amt, bal, tid in day_rows if bal is not None]
+            if cands:
+                result = (Decimal(str(_closing_row(cands)[2])), day)
+                tail = Decimal("0.00")
+            elif result is not None:
+                tail += sum((amt for _d, amt, _b, _t in day_rows), Decimal("0.00"))
+
+        for d, amt, bal_after, tid in txns_by_account.get(account_id, ()):
             if d > when:
                 break
-            if bal_after is not None:
-                result = (bal_after, d)
-        return result
+            if day is not None and d.date() != day.date():
+                close_day()
+                day_rows = []
+            day = d
+            day_rows.append((d, amt, bal_after, tid))
+        if day_rows:
+            close_day()
+        if result is None:
+            return None
+        return (result[0] + tail, result[1])
 
     def _latest_val_at(account_id: int, when: datetime) -> tuple[datetime, Decimal, str] | None:
         result = None
