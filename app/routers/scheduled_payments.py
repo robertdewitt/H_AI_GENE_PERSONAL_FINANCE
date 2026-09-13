@@ -10,7 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.services.scoping import owner_of_account
+from app.services.auth import get_current_user
+from app.models.user import User
+from app.services.scoping import (
+    get_owned_account, get_owned_account_or_404, get_owned_dismissed_scheduled_or_404, get_owned_proposal_or_404, get_owned_scheduled_payment, get_owned_transaction, owned_account_ids, owned_accounts, owned_categories, owned_scheduled_payment_query, owner_of_account,
+)
 from app.models.account import Account
 from app.models.category import Category
 from app.models.scheduled_payment import ScheduledPayment
@@ -53,20 +57,27 @@ def _back(return_to: str, fallback: str, **params: str) -> RedirectResponse:
     return RedirectResponse(url=dest, status_code=303)
 
 
-def _all_accounts(db: Session) -> list[Account]:
-    return db.execute(select(Account).order_by(Account.name)).scalars().all()
+def _all_accounts(db: Session, user: User) -> list[Account]:
+    return sorted(owned_accounts(db, user), key=lambda a: a.name)
 
 
-def _all_categories(db: Session) -> list[Category]:
-    return db.execute(select(Category).order_by(Category.name)).scalars().all()
+def _all_categories(db: Session, user: User) -> list[Category]:
+    return sorted(owned_categories(db, user), key=lambda c: c.name)
+
+
+def _owned_proposals(db: Session, user: User) -> list:
+    """Pending proposals on this user's schedules only."""
+    from app.services.scheduled_matcher import pending_proposals
+    owned = set(owned_account_ids(db, user))
+    return [p for p in pending_proposals(db) if p.scheduled_payment.account_id in owned]
 
 
 # ── List ──────────────────────────────────────────────────────────────────────
 
 @router.get("", response_class=HTMLResponse)
-def scheduled_list(request: Request, db: Session = Depends(get_db)):
+def scheduled_list(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     payments = db.execute(
-        select(ScheduledPayment)
+        owned_scheduled_payment_query(user)
         .order_by(ScheduledPayment.active.desc(), ScheduledPayment.next_due_date)
     ).scalars().all()
 
@@ -81,12 +92,13 @@ def scheduled_list(request: Request, db: Session = Depends(get_db)):
         [p for p in payments if p.active], accounts_map,
     )
     from app.services.scheduled_dismissal import list_dismissed
-    dismissed = list_dismissed(db)
-    acct_lookup = {a.id: a.name for a in _all_accounts(db)}
+    owned_ids = set(owned_account_ids(db, user))
+    dismissed = [d for d in list_dismissed(db) if d.account_id in owned_ids]
+    acct_lookup = {a.id: a.name for a in _all_accounts(db, user)}
     from app.services.scheduled_matcher import pending_proposals
 
     return templates.TemplateResponse(request, "scheduled/list.html", {
-        "pending_review": len(pending_proposals(db)),
+        "pending_review": len(_owned_proposals(db, user)),
         "payments": payments,
         "today": date.today(),
         "levels": levels,
@@ -99,11 +111,11 @@ def scheduled_list(request: Request, db: Session = Depends(get_db)):
 # ── New / Create ──────────────────────────────────────────────────────────────
 
 @router.get("/new", response_class=HTMLResponse)
-def scheduled_new(request: Request, db: Session = Depends(get_db)):
+def scheduled_new(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return templates.TemplateResponse(request, "scheduled/form.html", {
         "payment": None,
-        "accounts": _all_accounts(db),
-        "categories": _all_categories(db),
+        "accounts": _all_accounts(db, user),
+        "categories": _all_categories(db, user),
         "frequencies": FREQUENCIES,
         "amount_types": AMOUNT_TYPES,
         "today": date.today().isoformat(),
@@ -126,7 +138,9 @@ def scheduled_create(
     notes: str = Form(""),
     return_to: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    get_owned_account_or_404(db, user, account_id)   # form-supplied
     payment = ScheduledPayment(
         description=description.strip(),
         amount=Decimal(amount),
@@ -151,14 +165,14 @@ def scheduled_create(
 # ── Edit / Update ─────────────────────────────────────────────────────────────
 
 @router.get("/{payment_id}/edit", response_class=HTMLResponse)
-def scheduled_edit(payment_id: int, request: Request, db: Session = Depends(get_db)):
-    payment = db.get(ScheduledPayment, payment_id)
+def scheduled_edit(payment_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    payment = get_owned_scheduled_payment(db, user, payment_id)
     if not payment:
         return RedirectResponse(url="/scheduled", status_code=303)
     return templates.TemplateResponse(request, "scheduled/form.html", {
         "payment": payment,
-        "accounts": _all_accounts(db),
-        "categories": _all_categories(db),
+        "accounts": _all_accounts(db, user),
+        "categories": _all_categories(db, user),
         "frequencies": FREQUENCIES,
         "amount_types": AMOUNT_TYPES,
         "today": date.today().isoformat(),
@@ -183,11 +197,13 @@ def scheduled_update(
     active: str = Form("on"),
     return_to: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    payment = db.get(ScheduledPayment, payment_id)
+    payment = get_owned_scheduled_payment(db, user, payment_id)
     if not payment:
         return _back(return_to, "/scheduled")
 
+    get_owned_account_or_404(db, user, account_id)   # form-supplied
     payment.description = description.strip()
     payment.amount = Decimal(amount)
     payment.amount_type = amount_type
@@ -211,8 +227,9 @@ def scheduled_set_flag_level(
     payment_id: int,
     flag_level: str = Form(...),  # "auto" | "reminder" | "default"
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    payment = db.get(ScheduledPayment, payment_id)
+    payment = get_owned_scheduled_payment(db, user, payment_id)
     if payment:
         payment.flag_level = flag_level if flag_level in ("auto", "reminder") else None
         db.commit()
@@ -226,8 +243,9 @@ def scheduled_toggle(
     payment_id: int,
     return_to: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    payment = db.get(ScheduledPayment, payment_id)
+    payment = get_owned_scheduled_payment(db, user, payment_id)
     if payment:
         payment.active = not payment.active
         db.commit()
@@ -241,6 +259,7 @@ def scheduled_delete(
     payment_id: int,
     return_to: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Delete a scheduled payment and remember the deletion.
 
@@ -250,7 +269,7 @@ def scheduled_delete(
     from app.services.scheduled_dismissal import dismiss
     from app.services.scheduled_matcher import drop_proposals_for_payment
 
-    payment = db.get(ScheduledPayment, payment_id)
+    payment = get_owned_scheduled_payment(db, user, payment_id)
     if payment:
         drop_proposals_for_payment(db, payment.id)
         dismiss(db, payment.account_id, payment.description)
@@ -263,6 +282,7 @@ def scheduled_delete(
 def scheduled_bulk_delete(
     payment_ids: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Delete several scheduled payments at once, tombstoning each."""
     from app.services.scheduled_dismissal import dismiss
@@ -274,7 +294,7 @@ def scheduled_bulk_delete(
             pid = int(raw)
         except (TypeError, ValueError):
             continue
-        payment = db.get(ScheduledPayment, pid)
+        payment = get_owned_scheduled_payment(db, user, pid)
         if payment is None:
             continue
         drop_proposals_for_payment(db, payment.id)
@@ -286,10 +306,11 @@ def scheduled_bulk_delete(
 
 
 @router.post("/dismissed/{dismissal_id}/restore")
-def scheduled_restore_dismissed(dismissal_id: int, db: Session = Depends(get_db)):
+def scheduled_restore_dismissed(dismissal_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Allow a dismissed payment to be detected again."""
     from app.services.scheduled_dismissal import restore
 
+    get_owned_dismissed_scheduled_or_404(db, user, dismissal_id)
     restore(db, dismissal_id)
     db.commit()
     return RedirectResponse(url="/scheduled?restored=1", status_code=303)
@@ -298,7 +319,7 @@ def scheduled_restore_dismissed(dismissal_id: int, db: Session = Depends(get_db)
 # ── Review queue: matches proposed but not certain ────────────────────────────
 
 @router.get("/review", response_class=HTMLResponse)
-def scheduled_review(request: Request, db: Session = Depends(get_db)):
+def scheduled_review(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Transactions that probably settled a schedule, awaiting a decision."""
     import json
 
@@ -306,9 +327,9 @@ def scheduled_review(request: Request, db: Session = Depends(get_db)):
     from app.services.scheduled_matcher import pending_proposals
 
     rows = []
-    for proposal in pending_proposals(db):
-        payment = db.get(ScheduledPayment, proposal.scheduled_payment_id)
-        txn = db.get(Transaction, proposal.transaction_id)
+    for proposal in _owned_proposals(db, user):
+        payment = get_owned_scheduled_payment(db, user, proposal.scheduled_payment_id)
+        txn = get_owned_transaction(db, user, proposal.transaction_id)
         if payment is None or txn is None:
             continue
         try:
@@ -318,7 +339,7 @@ def scheduled_review(request: Request, db: Session = Depends(get_db)):
         rows.append({
             "proposal": proposal, "payment": payment, "txn": txn,
             "components": components,
-            "account": db.get(Account, payment.account_id),
+            "account": get_owned_account(db, user, payment.account_id),
         })
 
     return templates.TemplateResponse(request, "scheduled/review.html", {
@@ -332,9 +353,11 @@ def scheduled_review_confirm(
     proposal_id: int,
     return_to: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     from app.services.scheduled_matcher import confirm_proposal
 
+    get_owned_proposal_or_404(db, user, proposal_id)
     confirm_proposal(db, proposal_id)
     db.commit()
     return _back(return_to, "/scheduled/review", confirmed="1")
@@ -345,9 +368,11 @@ def scheduled_review_reject(
     proposal_id: int,
     return_to: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     from app.services.scheduled_matcher import reject_proposal
 
+    get_owned_proposal_or_404(db, user, proposal_id)
     reject_proposal(db, proposal_id)
     db.commit()
     return _back(return_to, "/scheduled/review", rejected="1")
@@ -362,6 +387,7 @@ def scheduled_confirm(
     amount: str = Form(""),
     return_to: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Record one forecast occurrence as a real transaction on the account.
 
@@ -371,7 +397,7 @@ def scheduled_confirm(
     """
     from app.services.scheduled_confirm import confirm_occurrence
 
-    payment = db.get(ScheduledPayment, payment_id)
+    payment = get_owned_scheduled_payment(db, user, payment_id)
     if payment is None:
         return _back(return_to, "/scheduled")
 
@@ -398,11 +424,11 @@ def scheduled_confirm(
 # ── Detect recurring from history ─────────────────────────────────────────────
 
 @router.get("/detect", response_class=HTMLResponse)
-def detect_page(request: Request, db: Session = Depends(get_db)):
+def detect_page(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     from app.services.recurring_detector import detect_recurring_payments
-    suggestions = detect_recurring_payments(db)
+    suggestions = detect_recurring_payments(db, user_id=user.id)
     # Filter out ones already in scheduled_payments (by description + account)
-    existing = db.execute(select(ScheduledPayment)).scalars().all()
+    existing = db.execute(owned_scheduled_payment_query(user)).scalars().all()
     from app.models.dismissed_scheduled_payment import normalize_description
     from app.services.scheduled_dismissal import dismissed_keys
 
@@ -417,8 +443,8 @@ def detect_page(request: Request, db: Session = Depends(get_db)):
         if (s["account_id"], normalize_description(s["description"]))
         not in existing_keys
     ]
-    accounts = {a.id: a for a in _all_accounts(db)}
-    categories = _all_categories(db)
+    accounts = {a.id: a for a in _all_accounts(db, user)}
+    categories = _all_categories(db, user)
     return templates.TemplateResponse(request, "scheduled/detect.html", {
         "suggestions": suggestions,
         "accounts": accounts,
@@ -439,7 +465,9 @@ def detect_confirm(
     category_ids: list[str] = Form(default=[]),
     frequencies: list[str] = Form(default=[]),
     next_due_dates: list[str] = Form(default=[]),
+    user: User = Depends(get_current_user),
 ):
+    owned_ids = set(owned_account_ids(db, user))
     # Pad amount_types so older clients (no hidden field) still work.
     if len(amount_types) < len(descriptions):
         amount_types = list(amount_types) + ["fixed"] * (
@@ -452,6 +480,8 @@ def detect_confirm(
     ):
         if not desc.strip():
             continue
+        if int(acct) not in owned_ids:
+            continue        # never create a schedule on someone else's account
         db.add(ScheduledPayment(
             description=desc.strip(),
             amount=Decimal(amt),
@@ -478,10 +508,11 @@ def forecast(
     request: Request,
     months: int = 3,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     from app.services.forecast_service import build_forecast
     months = max(1, min(months, 12))
-    forecast_data = build_forecast(db, months=months)
+    forecast_data = build_forecast(db, months=months, account_ids=set(owned_account_ids(db, user)))
     return templates.TemplateResponse(request, "scheduled/forecast.html", {
         "forecast": forecast_data,
         "months": months,

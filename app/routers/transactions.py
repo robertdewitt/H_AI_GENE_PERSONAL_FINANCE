@@ -9,6 +9,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.services.auth import get_current_user
+from app.models.user import User
+from app.services.scoping import (
+    get_owned_account, get_owned_transaction, owned_account_ids, owned_accounts, owned_categories, owned_deleted_transaction_query, owned_dismissed_duplicate_query, owned_scheduled_payment_query, owned_transaction_query,
+)
 from app.templating import templates
 
 log = logging.getLogger(__name__)
@@ -105,6 +110,17 @@ def _delete_txn_safe(db: Session, txn: Transaction) -> None:
     db.delete(txn)
 
 
+def _only_owned_groups(groups, owned_ids):
+    """Duplicate groups whose every transaction belongs to this user.
+
+    The detector scans the whole ledger; a group is shown only to the user
+    whose accounts it lives in. Groups are keyed by account, so a group can
+    never span two users and all-or-nothing is exact.
+    """
+    owned = set(owned_ids)
+    return [g for g in groups if all(t.account_id in owned for t in g.transactions)]
+
+
 def _build_filters(
     account_id, category_id, date_from, date_to, search, is_transfer,
     amount_min, amount_max, currency, uncategorized,
@@ -185,6 +201,7 @@ def transactions_list(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=10, le=200),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     account_id_val = _safe_int(account_id)
     category_id_val = _safe_int(category_id)
@@ -203,6 +220,8 @@ def transactions_list(
         uncategorized,
     )
 
+    clauses.append(Transaction.account_id.in_(owned_account_ids(db, user)))
+
     total_count = db.execute(
         select(func.count(Transaction.id)).where(*clauses)
     ).scalar() or 0
@@ -215,12 +234,8 @@ def transactions_list(
         .limit(per_page)
     ).scalars().all()
 
-    accounts = db.execute(
-        select(Account).order_by(Account.name)
-    ).scalars().all()
-    categories = db.execute(
-        select(Category).order_by(Category.name)
-    ).scalars().all()
+    accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
+    categories = sorted(owned_categories(db, user), key=lambda c: c.name)
 
     currencies = db.execute(
         select(Transaction.original_currency)
@@ -287,9 +302,10 @@ def transaction_new_form(
     account_id: int | None = Query(None),
     return_url: str | None = Query(None),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    accounts = db.execute(select(Account).order_by(Account.name)).scalars().all()
-    categories = db.execute(select(Category).order_by(Category.name)).scalars().all()
+    accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
+    categories = sorted(owned_categories(db, user), key=lambda c: c.name)
     return templates.TemplateResponse(request, "transactions/new.html", {
         "accounts": accounts,
         "categories": categories,
@@ -333,8 +349,9 @@ def transaction_create(
     transfer_account_id: str = Form(""),
     return_url: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    account = db.get(Account, account_id)
+    account = get_owned_account(db, user, account_id)
     if account is None:
         return HTMLResponse("Account not found", status_code=404)
     try:
@@ -357,7 +374,8 @@ def transaction_create(
     if is_transfer and transfer_account_id.strip():
         dest = int(transfer_account_id)
         if dest != account_id:
-            _link_transfer(db, txn, dest)
+            if get_owned_account(db, user, dest) is not None:
+                _link_transfer(db, txn, dest)
 
     apply_truth_after_transaction_update(db, txn, None)
     db.commit()
@@ -373,17 +391,14 @@ def transaction_edit_form(
     txn_id: int,
     return_url: str | None = Query(None),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    txn = db.get(Transaction, txn_id)
+    txn = get_owned_transaction(db, user, txn_id)
     if not txn:
         return HTMLResponse("Transaction not found", status_code=404)
 
-    categories = db.execute(
-        select(Category).order_by(Category.name)
-    ).scalars().all()
-    accounts = db.execute(
-        select(Account).order_by(Account.name)
-    ).scalars().all()
+    categories = sorted(owned_categories(db, user), key=lambda c: c.name)
+    accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
 
     # Splits serialised as category + amount only — spend metadata is system-derived
     splits_rows = [
@@ -424,17 +439,14 @@ def transaction_update(
     splits_json: str = Form(""),
     return_url: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    txn = db.get(Transaction, txn_id)
+    txn = get_owned_transaction(db, user, txn_id)
     if not txn:
         return HTMLResponse("Transaction not found", status_code=404)
 
-    categories = db.execute(
-        select(Category).order_by(Category.name)
-    ).scalars().all()
-    accounts = db.execute(
-        select(Account).order_by(Account.name)
-    ).scalars().all()
+    categories = sorted(owned_categories(db, user), key=lambda c: c.name)
+    accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
     categories_json = [
         {"id": c.id, "name": c.name, "type": c.category_type.value}
         for c in categories
@@ -505,7 +517,8 @@ def transaction_update(
     if is_transfer and transfer_account_id.strip():
         dest_account_id = int(transfer_account_id)
         if dest_account_id != txn.account_id:
-            _link_transfer(db, txn, dest_account_id)
+            if get_owned_account(db, user, dest_account_id) is not None:
+                _link_transfer(db, txn, dest_account_id)
     elif not is_transfer and txn.transfer_link_id:
         txn.transfer_link_id = None
 
@@ -619,8 +632,9 @@ def transaction_delete(
     txn_id: int,
     return_url: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    txn = db.get(Transaction, txn_id)
+    txn = get_owned_transaction(db, user, txn_id)
     if not txn:
         return HTMLResponse("Transaction not found", status_code=404)
     account_id = txn.account_id
@@ -635,11 +649,11 @@ def transaction_delete(
 # ── Duplicate detection ──────────────────────────────────────────────
 
 @router.get("/duplicates", response_class=HTMLResponse)
-def duplicates_page(request: Request, db: Session = Depends(get_db)):
+def duplicates_page(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     from app.services.duplicate_detector import find_duplicate_groups, find_dismissed_groups, find_near_duplicate_groups
     from app.services.ollama_duplicate import score_groups_with_db
-    groups = find_duplicate_groups(db)
-    near_groups = find_near_duplicate_groups(db)
+    groups = _only_owned_groups(find_duplicate_groups(db), owned_account_ids(db, user))
+    near_groups = _only_owned_groups(find_near_duplicate_groups(db), owned_account_ids(db, user))
     # Merge: near-dupes go after exact-match groups (already sorted by confidence desc)
     all_groups = groups + near_groups
     dismissed = find_dismissed_groups(db)
@@ -661,6 +675,7 @@ def score_group_api(
     txn_date: str,
     amount: str,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """JSON endpoint: re-score a single duplicate group with Ollama."""
     from decimal import Decimal as _Dec
@@ -669,6 +684,7 @@ def score_group_api(
     txns = db.execute(
         select(Transaction).where(
             Transaction.account_id == account_id,
+            Transaction.account_id.in_(owned_account_ids(db, user)),
             _func.date(Transaction.date) == txn_date,
             Transaction.amount == _Dec(amount),
         )
@@ -691,6 +707,7 @@ def dismiss_duplicate(
     txn_date: str = Form(...),
     amount: str = Form(...),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     from decimal import Decimal as _Dec
     from app.models.dismissed_duplicate import DismissedDuplicate
@@ -699,7 +716,7 @@ def dismiss_duplicate(
     key = {"account_id": account_id, "txn_date": txn_date, "amount": _Dec(amount)}
     # Upsert — silently no-op if already dismissed
     existing = db.execute(
-        select(DismissedDuplicate).where(
+        owned_dismissed_duplicate_query(user).where(
             DismissedDuplicate.account_id == account_id,
             DismissedDuplicate.txn_date == txn_date,
             DismissedDuplicate.amount == _Dec(amount),
@@ -715,6 +732,7 @@ def dismiss_duplicate(
 def bulk_dismiss_duplicates(
     txn_ids: str = Form(...),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Dismiss every duplicate group that contains at least one of the given txn IDs."""
     from decimal import Decimal as _Dec
@@ -722,7 +740,7 @@ def bulk_dismiss_duplicates(
     ids = [int(x) for x in txn_ids.split(",") if x.strip().isdigit()]
     if not ids:
         return RedirectResponse(url="/transactions/duplicates", status_code=303)
-    txns = db.execute(select(Transaction).where(Transaction.id.in_(ids))).scalars().all()
+    txns = db.execute(owned_transaction_query(user).where(Transaction.id.in_(ids))).scalars().all()
     seen: set[tuple] = set()
     for txn in txns:
         date_str = txn.date.strftime("%Y-%m-%d") if hasattr(txn.date, "strftime") else str(txn.date)[:10]
@@ -731,7 +749,7 @@ def bulk_dismiss_duplicates(
             continue
         seen.add(key)
         exists = db.execute(
-            select(DismissedDuplicate).where(
+            owned_dismissed_duplicate_query(user).where(
                 DismissedDuplicate.account_id == txn.account_id,
                 DismissedDuplicate.txn_date == date_str,
                 DismissedDuplicate.amount == txn.amount,
@@ -749,11 +767,12 @@ def undismiss_duplicate(
     txn_date: str = Form(...),
     amount: str = Form(...),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     from decimal import Decimal as _Dec
     from app.models.dismissed_duplicate import DismissedDuplicate
     row = db.execute(
-        select(DismissedDuplicate).where(
+        owned_dismissed_duplicate_query(user).where(
             DismissedDuplicate.account_id == account_id,
             DismissedDuplicate.txn_date == txn_date,
             DismissedDuplicate.amount == _Dec(amount),
@@ -768,11 +787,11 @@ def undismiss_duplicate(
 # ── Recovery (deleted transactions) ─────────────────────────────────
 
 @router.get("/recover", response_class=HTMLResponse)
-def recover_page(request: Request, db: Session = Depends(get_db)):
+def recover_page(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     from app.models.deleted_transaction import DeletedTransaction
     from app.models.account import Account as _Acct
     deleted = db.execute(
-        select(DeletedTransaction)
+        owned_deleted_transaction_query(user)
         .order_by(DeletedTransaction.deleted_at.desc())
         .limit(500)
     ).scalars().all()
@@ -791,19 +810,20 @@ def recover_transactions(
     row_ids: str = Form(...),
     return_url: str = Form("/transactions/recover"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     from app.models.deleted_transaction import DeletedTransaction
     from app.models.account import Account as _Acct, LIABILITY_TYPES
     ids = [int(x) for x in row_ids.split(",") if x.strip().isdigit()]
     rows = db.execute(
-        select(DeletedTransaction).where(DeletedTransaction.id.in_(ids))
+        owned_deleted_transaction_query(user).where(DeletedTransaction.id.in_(ids))
     ).scalars().all()
 
     restored = 0
     for row in rows:
         # Don't re-insert if already exists (exact same original_id still alive)
         if row.original_id:
-            exists = db.get(Transaction, row.original_id)
+            exists = get_owned_transaction(db, user, row.original_id)
             if exists:
                 continue
         txn = Transaction(
@@ -846,10 +866,11 @@ def bulk_set_category(
     category_id: int = Form(...),
     return_url: str = Form("/transactions"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     ids = [int(x) for x in txn_ids.split(",") if x.strip().isdigit()]
     txns = db.execute(
-        select(Transaction).where(Transaction.id.in_(ids))
+        owned_transaction_query(user).where(Transaction.id.in_(ids))
     ).scalars().all()
 
     for txn in txns:
@@ -867,9 +888,10 @@ def bulk_delete(
     txn_ids: str = Form(...),
     return_url: str = Form("/transactions"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     ids = [int(x) for x in txn_ids.split(",") if x.strip().isdigit()]
-    txns = db.execute(select(Transaction).where(Transaction.id.in_(ids))).scalars().all()
+    txns = db.execute(owned_transaction_query(user).where(Transaction.id.in_(ids))).scalars().all()
     touched = {t.account_id for t in txns}
     for txn in txns:
         _log_deleted(db, txn)
@@ -886,10 +908,11 @@ def bulk_toggle_transfer(
     is_transfer: bool = Form(True),
     return_url: str = Form("/transactions"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     ids = [int(x) for x in txn_ids.split(",") if x.strip().isdigit()]
     txns = db.execute(
-        select(Transaction).where(Transaction.id.in_(ids))
+        owned_transaction_query(user).where(Transaction.id.in_(ids))
     ).scalars().all()
     for txn in txns:
         txn.is_transfer = is_transfer
@@ -903,13 +926,14 @@ def bulk_toggle_transfer(
 def auto_categorize_score_one(
     txn_id: int = Query(...),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """JSON: ask Ollama to suggest a category for one transaction.
 
     Returns {available, category_id, category_name} or {available: false}.
     """
     from app.services.categorizer import ask_ollama
-    txn = db.get(Transaction, txn_id)
+    txn = get_owned_transaction(db, user, txn_id)
     if not txn:
         return {"available": False}
     cat_list = db.execute(select(Category.name).order_by(Category.name)).scalars().all()
@@ -917,7 +941,7 @@ def auto_categorize_score_one(
     if not llm_match:
         return {"available": False}
     cat = db.execute(
-        select(Category).where(func.lower(Category.name) == llm_match.lower())
+        select(Category).where(Category.user_id == user.id).where(func.lower(Category.name) == llm_match.lower())
     ).scalar_one_or_none()
     if not cat:
         return {"available": False}
@@ -930,11 +954,12 @@ def auto_categorize_preview(
     limit: int = Query(200),
     account_id: str | None = Query(None),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     account_id_val = _safe_int(account_id)
     suggestions = suggest_categories(db, limit=limit, account_id=account_id_val)
-    categories = db.execute(select(Category).order_by(Category.name)).scalars().all()
-    account = db.get(Account, account_id_val) if account_id_val else None
+    categories = sorted(owned_categories(db, user), key=lambda c: c.name)
+    account = get_owned_account(db, user, account_id_val) if account_id_val else None
     return templates.TemplateResponse(request, "transactions/auto_categorize_preview.html", {
         "suggestions": suggestions,
         "categories": categories,
@@ -950,6 +975,7 @@ def auto_categorize_apply(
     assignments: str = Form(...),   # JSON: [[txn_id, category_id], ...]
     account_id: str | None = Form(None),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     try:
         pairs = json.loads(assignments)
@@ -958,7 +984,7 @@ def auto_categorize_apply(
 
     applied = 0
     for txn_id, category_id in pairs:
-        txn = db.get(Transaction, int(txn_id))
+        txn = get_owned_transaction(db, user, int(txn_id))
         if txn and category_id:
             old_cat = txn.category_id
             txn.category_id = int(category_id)
@@ -978,8 +1004,13 @@ def auto_categorize(
     request: Request,
     limit: int = Form(500),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    stats = categorize_batch(db, limit=limit)
+    stats = categorize_batch(db, transaction_ids=[
+        t.id for t in db.execute(
+            owned_transaction_query(user).where(Transaction.category_id.is_(None)).limit(limit)
+        ).scalars().all()
+    ])
     return RedirectResponse(
         url=f"/transactions?auto_cat_total={stats['total']}"
             f"&auto_cat_rules={stats['rules']}"

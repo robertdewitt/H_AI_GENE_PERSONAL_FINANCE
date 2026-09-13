@@ -38,8 +38,19 @@ def db():
     session.close()
 
 
+def _owner(db):
+    """The user every account in these tests belongs to; routes now demand one."""
+    from app.models.user import User
+    from sqlalchemy import select as _sel
+    u = db.execute(_sel(User).where(User.username == "owner")).scalar_one_or_none()
+    if u is None:
+        u = User(username="owner", display_name="Owner", password_hash="argon2:x")
+        db.add(u); db.flush()
+    return u
+
+
 def _mortgage(db):
-    a = Account(name="Mortgage", account_type=AccountType.MORTGAGE,
+    a = Account(user_id=_owner(db).id, name="Mortgage", account_type=AccountType.MORTGAGE,
                 currency="USD", is_asset=False)
     db.add(a)
     db.flush()
@@ -247,7 +258,7 @@ def test_deleting_a_schedule_with_a_proposal_does_not_500(db):
     payment_id = pmt.id
     assert db.get(ScheduledMatchProposal, proposal.id) is not None
 
-    resp = scheduled_delete(payment_id, return_to="", db=db)
+    resp = scheduled_delete(payment_id, return_to="", db=db, user=_owner(db))
 
     assert resp.status_code == 303
     assert db.get(ScheduledPayment, payment_id) is None
@@ -260,7 +271,7 @@ def test_bulk_delete_clears_proposals_too(db):
     pmt, _txn_, proposal = _one_proposal(db)
     payment_id = pmt.id
 
-    resp = scheduled_bulk_delete(payment_ids=[str(payment_id)], db=db)
+    resp = scheduled_bulk_delete(payment_ids=[str(payment_id)], db=db, user=_owner(db))
 
     assert resp.status_code == 303
     assert db.get(ScheduledPayment, payment_id) is None

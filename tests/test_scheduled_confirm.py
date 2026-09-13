@@ -29,8 +29,19 @@ def db():
     session.close()
 
 
+def _owner(db):
+    """The user every account in these tests belongs to; routes now demand one."""
+    from app.models.user import User
+    from sqlalchemy import select as _sel
+    u = db.execute(_sel(User).where(User.username == "owner")).scalar_one_or_none()
+    if u is None:
+        u = User(username="owner", display_name="Owner", password_hash="argon2:x")
+        db.add(u); db.flush()
+    return u
+
+
 def _checking(db):
-    acct = Account(name="Main", account_type=AccountType.CHECKING,
+    acct = Account(user_id=_owner(db).id, name="Main", account_type=AccountType.CHECKING,
                    currency="GBP", is_asset=True)
     db.add(acct)
     db.flush()
@@ -175,7 +186,7 @@ def test_confirm_route_redirects_back_to_the_account_page(db):
         occurrence_date="2026-09-01",
         amount="-1200.00",
         return_to=f"/accounts/{acct.id}?forecast_months=6#forecast",
-        db=db,
+        db=db, user=_owner(db),
     )
 
     assert resp.status_code == 303
@@ -191,7 +202,7 @@ def test_confirm_route_reports_an_already_confirmed_occurrence(db):
     acct = _checking(db)
     pmt = _payment(db, acct)
     kw = dict(occurrence_date="2026-09-01", amount="-1200.00",
-              return_to=f"/accounts/{acct.id}", db=db)
+              return_to=f"/accounts/{acct.id}", db=db, user=_owner(db))
 
     scheduled_confirm(pmt.id, **kw)
     resp = scheduled_confirm(pmt.id, **kw)
@@ -208,7 +219,7 @@ def test_confirm_route_rejects_a_bad_date(db):
 
     resp = scheduled_confirm(
         pmt.id, occurrence_date="not-a-date", amount="-1200.00",
-        return_to=f"/accounts/{acct.id}", db=db,
+        return_to=f"/accounts/{acct.id}", db=db, user=_owner(db),
     )
 
     assert "confirm_error=1" in resp.headers["location"]
@@ -228,7 +239,7 @@ def test_return_to_cannot_leave_the_site(db, hostile):
 
     resp = scheduled_confirm(
         pmt.id, occurrence_date="2026-09-01", amount="-1200.00",
-        return_to=hostile, db=db,
+        return_to=hostile, db=db, user=_owner(db),
     )
 
     assert resp.headers["location"].startswith(f"/accounts/{acct.id}")
@@ -250,7 +261,7 @@ def test_edit_returns_to_the_account_page_and_saves(db):
         amount_type="fixed", currency="GBP", account_id=acct.id,
         category_id="", frequency="monthly", next_due_date="2026-10-05",
         end_date="", day_of_month="", notes="", active="on",
-        return_to=back, db=db,
+        return_to=back, db=db, user=_owner(db),
     )
 
     assert resp.headers["location"] == (
@@ -269,7 +280,7 @@ def test_delete_from_the_account_page_tombstones_and_returns(db):
     pmt = _payment(db, acct)
     back = f"/accounts/{acct.id}#scheduled"
 
-    resp = scheduled_delete(pmt.id, return_to=back, db=db)
+    resp = scheduled_delete(pmt.id, return_to=back, db=db, user=_owner(db))
 
     assert resp.headers["location"] == f"/accounts/{acct.id}?deleted=1#scheduled"
     assert db.get(ScheduledPayment, pmt.id) is None
@@ -283,7 +294,7 @@ def test_toggle_from_the_account_page_returns(db):
     acct = _checking(db)
     pmt = _payment(db, acct)
 
-    resp = scheduled_toggle(pmt.id, return_to=f"/accounts/{acct.id}#scheduled", db=db)
+    resp = scheduled_toggle(pmt.id, return_to=f"/accounts/{acct.id}#scheduled", db=db, user=_owner(db))
 
     assert resp.headers["location"] == f"/accounts/{acct.id}#scheduled"
     assert pmt.active is False
@@ -296,7 +307,7 @@ def test_scheduled_page_still_defaults_when_no_return_to(db):
     acct = _checking(db)
     pmt = _payment(db, acct)
 
-    resp = scheduled_toggle(pmt.id, return_to="", db=db)
+    resp = scheduled_toggle(pmt.id, return_to="", db=db, user=_owner(db))
 
     assert resp.headers["location"] == "/scheduled"
 
@@ -437,7 +448,7 @@ def test_hybrid_liability_balance_moves_the_right_way(db):
     from app.models.enums import BalanceTruthSource
     from app.services.account_service import get_account_balance
 
-    card = Account(name="Card", account_type=AccountType.CREDIT_CARD,
+    card = Account(user_id=_owner(db).id, name="Card", account_type=AccountType.CREDIT_CARD,
                    currency="GBP", is_asset=False,
                    balance_truth_source=BalanceTruthSource.HYBRID.value)
     card.statement_balance = Decimal("1000.00")
@@ -480,7 +491,7 @@ def test_deleting_a_matched_transaction_does_not_hit_the_foreign_key(db):
     db.commit()
     assert pmt.last_matched_txn_id == txn.id
 
-    resp = bulk_delete(txn_ids=str(txn.id), return_url="/transactions", db=db)
+    resp = bulk_delete(txn_ids=str(txn.id), return_url="/transactions", db=db, user=_owner(db))
 
     assert resp.status_code == 303
     assert _txns(db, acct) == []
@@ -498,7 +509,7 @@ def test_single_delete_clears_the_pointer_too(db):
     txn, _ = confirm_occurrence(db, pmt, date(2026, 9, 1))
     db.commit()
 
-    transaction_delete(txn.id, return_url="/transactions", db=db)
+    transaction_delete(txn.id, return_url="/transactions", db=db, user=_owner(db))
 
     assert pmt.last_matched_txn_id is None
     assert _txns(db, acct) == []
@@ -514,7 +525,7 @@ def test_bulk_delete_skips_ids_that_do_not_exist(db):
     db.commit()
 
     resp = bulk_delete(
-        txn_ids=f"{txn.id},999999,notanumber", return_url="/transactions", db=db,
+        txn_ids=f"{txn.id},999999,notanumber", return_url="/transactions", db=db, user=_owner(db),
     )
 
     assert resp.status_code == 303
@@ -533,8 +544,7 @@ def test_list_and_detail_agree_on_a_hybrid_liability(db):
         get_account_balance_rich, get_many_account_balances_rich,
     )
 
-    mortgage = Account(
-        name="Mortgage", account_type=AccountType.MORTGAGE, currency="GBP",
+    mortgage = Account(user_id=_owner(db).id, name="Mortgage", account_type=AccountType.MORTGAGE, currency="GBP",
         is_asset=False, balance_truth_source=BalanceTruthSource.HYBRID.value,
     )
     mortgage.statement_balance = Decimal("188697.72")

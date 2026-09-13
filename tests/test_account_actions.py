@@ -25,8 +25,19 @@ def db():
     session.close()
 
 
+def _owner(db):
+    """The user every account in these tests belongs to; routes now demand one."""
+    from app.models.user import User
+    from sqlalchemy import select as _sel
+    u = db.execute(_sel(User).where(User.username == "owner")).scalar_one_or_none()
+    if u is None:
+        u = User(username="owner", display_name="Owner", password_hash="argon2:x")
+        db.add(u); db.flush()
+    return u
+
+
 def _brokerage(db):
-    a = Account(name="IBKR", account_type=AccountType.ROTH_IRA,
+    a = Account(user_id=_owner(db).id, name="IBKR", account_type=AccountType.ROTH_IRA,
                 currency="USD", is_asset=True)
     db.add(a)
     db.flush()
@@ -37,7 +48,7 @@ def test_refresh_prices_with_no_holdings_is_handled(db):
     from app.routers.accounts import account_refresh_prices
 
     acct = _brokerage(db)
-    resp = account_refresh_prices(acct.id, db=db)
+    resp = account_refresh_prices(acct.id, db=db, user=_owner(db))
     assert resp.status_code == 303
     assert f"/accounts/{acct.id}?priced=0" in resp.headers["location"]
 
@@ -45,11 +56,11 @@ def test_refresh_prices_with_no_holdings_is_handled(db):
 def test_refresh_prices_rejects_non_market_account(db):
     from app.routers.accounts import account_refresh_prices
 
-    loan = Account(name="Car Loan", account_type=AccountType.LOAN,
+    loan = Account(user_id=_owner(db).id, name="Car Loan", account_type=AccountType.LOAN,
                    currency="USD", is_asset=False)
     db.add(loan)
     db.flush()
-    resp = account_refresh_prices(loan.id, db=db)
+    resp = account_refresh_prices(loan.id, db=db, user=_owner(db))
     assert resp.status_code == 404
 
 
@@ -72,7 +83,7 @@ def test_refresh_prices_runs_for_held_symbols(db, monkeypatch):
         lambda symbols, db=None: ({s: 100.0 for s in symbols},
                                   {s: datetime(2026, 1, 2) for s in symbols}, True),
     )
-    resp = account_refresh_prices(acct.id, db=db)
+    resp = account_refresh_prices(acct.id, db=db, user=_owner(db))
     assert resp.status_code == 303
     assert "priced=1" in resp.headers["location"]
     assert "live=1" in resp.headers["location"]
@@ -99,7 +110,7 @@ def test_pension_lots_are_not_price_refreshed(db, monkeypatch):
         return {}, {}, False
 
     monkeypatch.setattr(ps, "get_current_prices", _spy)
-    resp = account_refresh_prices(acct.id, db=db)
+    resp = account_refresh_prices(acct.id, db=db, user=_owner(db))
     assert resp.status_code == 303
     # No market symbols to price, so the feed is never called.
     assert seen == []
@@ -111,11 +122,11 @@ def test_close_and_reopen_endpoints_execute(db):
 
     acct = _brokerage(db)
     resp = account_close(acct.id, closed_at="2026-04-23", reason="done",
-                         zero_balance=False, db=db)
+                         zero_balance=False, db=db, user=_owner(db))
     assert resp.status_code == 303
     assert acct.closed_at == date(2026, 4, 23)
 
-    resp = account_reopen(acct.id, db=db)
+    resp = account_reopen(acct.id, db=db, user=_owner(db))
     assert resp.status_code == 303
     assert acct.closed_at is None
 
@@ -125,7 +136,7 @@ def test_close_rejects_a_malformed_date(db):
 
     acct = _brokerage(db)
     resp = account_close(acct.id, closed_at="23/04/2026", reason="",
-                         zero_balance=False, db=db)
+                         zero_balance=False, db=db, user=_owner(db))
     assert resp.status_code == 303
     assert "close_err=date" in resp.headers["location"]
     assert acct.closed_at is None   # nothing written on a bad date

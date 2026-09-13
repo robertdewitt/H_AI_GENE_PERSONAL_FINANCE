@@ -31,6 +31,17 @@ def db():
     session.close()
 
 
+def _owner(db):
+    """The user every account in these tests belongs to; routes now demand one."""
+    from app.models.user import User
+    from sqlalchemy import select as _sel
+    u = db.execute(_sel(User).where(User.username == "owner")).scalar_one_or_none()
+    if u is None:
+        u = User(username="owner", display_name="Owner", password_hash="argon2:x")
+        db.add(u); db.flush()
+    return u
+
+
 def _request(path):
     return Request({
         "type": "http", "http_version": "1.1", "method": "GET", "scheme": "http",
@@ -41,8 +52,7 @@ def _request(path):
 
 
 def _mortgage(db, truth=BalanceTruthSource.HYBRID.value):
-    acct = Account(
-        name="Villa Mortgage", account_type=AccountType.MORTGAGE,
+    acct = Account(user_id=_owner(db).id, name="Villa Mortgage", account_type=AccountType.MORTGAGE,
         currency="USD", is_asset=False, balance_truth_source=truth,
         interest_rate=0.025, monthly_payment=Decimal("3245.24"),
     )
@@ -57,7 +67,7 @@ def _mortgage(db, truth=BalanceTruthSource.HYBRID.value):
 
 def _payoff(db, acct):
     return account_detail(
-        _request(f"/accounts/{acct.id}"), acct.id, db=db,
+        _request(f"/accounts/{acct.id}"), acct.id, db=db, user=_owner(db),
     ).context["mortgage_payoff"]
 
 
@@ -88,7 +98,7 @@ def test_projection_matches_the_balance_card(db):
     ))
     db.commit()
     ctx = account_detail(
-        _request(f"/accounts/{acct.id}"), acct.id, db=db,
+        _request(f"/accounts/{acct.id}"), acct.id, db=db, user=_owner(db),
     ).context
 
     assert ctx["mortgage_payoff"]["current_balance"] == pytest.approx(

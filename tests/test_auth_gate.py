@@ -63,10 +63,23 @@ def test_a_bad_cookie_is_denied_when_the_database_is_fine(client, monkeypatch):
 
 
 def test_a_valid_session_is_let_through(client, monkeypatch):
-    """Failing closed must not mean failing always."""
-    monkeypatch.setattr(sessions_module, "lookup_session", lambda db, raw: object())
+    """Failing closed must not mean failing always.
 
-    resp = client.get("/accounts", cookies={"session": "valid"})
+    The gate is satisfied by the session lookup; the page itself now also
+    resolves the signed-in user to scope what it shows, so that dependency is
+    stood in for too — the test is about the gate, not about who owns what.
+    """
+    from app.models.user import User
+    from app.services.auth import get_current_user
+
+    monkeypatch.setattr(sessions_module, "lookup_session", lambda db, raw: object())
+    main_module.app.dependency_overrides[get_current_user] = (
+        lambda: User(id=1, username="probe", display_name="Probe")
+    )
+    try:
+        resp = client.get("/accounts", cookies={"session": "valid"})
+    finally:
+        main_module.app.dependency_overrides.pop(get_current_user, None)
 
     assert resp.status_code == 200
 

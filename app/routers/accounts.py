@@ -13,6 +13,9 @@ from sqlalchemy.orm import Session
 log = logging.getLogger(__name__)
 
 from app.database import get_db
+from app.services.scoping import (
+    owned_categories,
+)
 from app.models.user import User
 from app.services.auth import get_current_user
 from app.models.account import AccountType, LIABILITY_TYPES
@@ -41,7 +44,7 @@ router = APIRouter(prefix="/accounts", tags=["accounts"])
 
 
 @router.get("/address-search")
-def address_search(q: str = Query(..., min_length=3)):
+def address_search(q: str = Query(..., min_length=3), user: User = Depends(get_current_user)):
     """Server-side proxy to Nominatim so the browser isn't blocked by CORS/UA rules."""
     import json as _json
     try:
@@ -101,6 +104,7 @@ def accounts_list(
     request: Request,
     preset: str | None = Query(None),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     from sqlalchemy import func as sa_func, select as sa_select
     from app.models.transaction import Transaction
@@ -113,7 +117,7 @@ def accounts_list(
     profile = get_profile(db)
     display_ccy = profile.display_currency or "USD"
 
-    groups = get_accounts_grouped(db, target_currency=display_ccy)
+    groups = get_accounts_grouped(db, user_id=user.id, target_currency=display_ccy)
     _all_accts = [item["account"] for items in groups.values() for item in items]
     due_dates = next_payment_due_map(db, _all_accts)
     total_assets = sum(
@@ -361,9 +365,9 @@ def accounts_list(
 
 
 @router.get("/new", response_class=HTMLResponse)
-def account_new_form(request: Request, db: Session = Depends(get_db)):
+def account_new_form(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     mortgage_accounts = [
-        a for a in list_accounts(db)
+        a for a in list_accounts(db, user_id=user.id)
         if a.account_type == AccountType.MORTGAGE
     ]
     return templates.TemplateResponse(request, "accounts/form.html", {
@@ -530,8 +534,9 @@ def account_detail(
     account_id: int,
     forecast_months: int = 6,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    acct = get_account(db, account_id)
+    acct = get_account(db, account_id, user_id=user.id)
     if not acct:
         return HTMLResponse("Account not found", status_code=404)
 
@@ -868,9 +873,7 @@ def account_detail(
     except Exception:
         account_scheduled = []
 
-    scheduled_categories = db.execute(
-        sa_select(Category).order_by(Category.name)
-    ).scalars().all()
+    scheduled_categories = sorted(owned_categories(db, user), key=lambda c: c.name)
 
     # Earliest projected date per payment. Confirming any later occurrence
     # silently skips the ones before it, so the template warns on those.
@@ -996,13 +999,14 @@ def account_edit_form(
     request: Request,
     account_id: int,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    acct = get_account(db, account_id)
+    acct = get_account(db, account_id, user_id=user.id)
     if not acct:
         return HTMLResponse("Account not found", status_code=404)
 
     mortgage_accounts = [
-        a for a in list_accounts(db)
+        a for a in list_accounts(db, user_id=user.id)
         if a.account_type == AccountType.MORTGAGE and a.id != account_id
     ]
     return templates.TemplateResponse(request, "accounts/form.html", {
@@ -1034,6 +1038,7 @@ def account_update(
     overdraft_as_of: str = Form(""),
     payment_due_date: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     acct_type = AccountType(account_type)
     is_asset = acct_type not in LIABILITY_TYPES
@@ -1178,12 +1183,13 @@ def account_accrue_interest(
     start_date: str = Form(""),
     through_date: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Backfill monthly interest accruals on an interest-bearing account."""
     from datetime import date as _date
     from app.services.interest_accrual import accrue_interest
 
-    acct = get_account(db, account_id)
+    acct = get_account(db, account_id, user_id=user.id)
     if not acct:
         return HTMLResponse("Account not found", status_code=404)
 
@@ -1211,10 +1217,11 @@ def account_close(
     reason: str = Form(""),
     zero_balance: bool = Form(False),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Close an account: keeps every transaction, hides it from the active
     list, and stops its scheduled payments."""
-    acct = get_account(db, account_id)
+    acct = get_account(db, account_id, user_id=user.id)
     if not acct:
         return HTMLResponse("Account not found", status_code=404)
 
@@ -1237,8 +1244,8 @@ def account_close(
 
 
 @router.post("/{account_id}/reopen")
-def account_reopen(account_id: int, db: Session = Depends(get_db)):
-    acct = get_account(db, account_id)
+def account_reopen(account_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    acct = get_account(db, account_id, user_id=user.id)
     if not acct:
         return HTMLResponse("Account not found", status_code=404)
     reopen_account(db, acct)
@@ -1246,9 +1253,9 @@ def account_reopen(account_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{account_id}/refresh-prices")
-def account_refresh_prices(account_id: int, db: Session = Depends(get_db)):
+def account_refresh_prices(account_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Fetch live market prices for the holdings in a brokerage account."""
-    acct = get_account(db, account_id)
+    acct = get_account(db, account_id, user_id=user.id)
     if not acct or acct.account_type not in _MARKET_ACCOUNT_TYPES:
         return HTMLResponse("Not a market account", status_code=404)
 
@@ -1286,9 +1293,9 @@ def account_refresh_prices(account_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{account_id}/refresh-rsu-price")
-def account_refresh_rsu_price(account_id: int, db: Session = Depends(get_db)):
+def account_refresh_rsu_price(account_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Fetch the live market price and re-value an RSU account."""
-    acct = get_account(db, account_id)
+    acct = get_account(db, account_id, user_id=user.id)
     if not acct or acct.account_type != AccountType.RSU:
         return HTMLResponse("Not an RSU account", status_code=404)
     from app.services.rsu_service import value_rsu_account
@@ -1306,7 +1313,7 @@ def account_refresh_rsu_price(account_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{account_id}/delete")
-def account_remove(account_id: int, db: Session = Depends(get_db)):
+def account_remove(account_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     delete_account(db, account_id)
     return RedirectResponse(url="/accounts", status_code=303)
 
@@ -1316,11 +1323,12 @@ def valuation_picker(
     request: Request,
     account_id: int,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Fetch all available estimates and let the user choose one."""
     from app.services.property_valuation import estimate_all_providers
 
-    acct = get_account(db, account_id)
+    acct = get_account(db, account_id, user_id=user.id)
     if not acct or not acct.property_address:
         return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)
 
@@ -1355,11 +1363,12 @@ def apply_valuation(
     source: str = Form("manual"),
     notes: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Save a chosen valuation (from picker or manual entry)."""
     from app.models.asset_valuation import AssetValuation
 
-    acct = get_account(db, account_id)
+    acct = get_account(db, account_id, user_id=user.id)
     if not acct:
         return RedirectResponse(url="/accounts", status_code=303)
 

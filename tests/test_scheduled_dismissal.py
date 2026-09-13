@@ -35,8 +35,19 @@ def db():
     session.close()
 
 
+def _owner(db):
+    """The user every account in these tests belongs to; routes now demand one."""
+    from app.models.user import User
+    from sqlalchemy import select as _sel
+    u = db.execute(_sel(User).where(User.username == "owner")).scalar_one_or_none()
+    if u is None:
+        u = User(username="owner", display_name="Owner", password_hash="argon2:x")
+        db.add(u); db.flush()
+    return u
+
+
 def _account(db):
-    a = Account(name="Amex", account_type=AccountType.CREDIT_CARD,
+    a = Account(user_id=_owner(db).id, name="Amex", account_type=AccountType.CREDIT_CARD,
                 currency="GBP", is_asset=False)
     db.add(a)
     db.flush()
@@ -65,7 +76,7 @@ def test_delete_records_a_tombstone(db):
 
     acct = _account(db)
     p = _payment(db, acct)
-    resp = scheduled_delete(p.id, db=db)
+    resp = scheduled_delete(p.id, db=db, user=_owner(db))
     assert resp.status_code == 303
 
     assert db.get(ScheduledPayment, p.id) is None
@@ -82,7 +93,7 @@ def test_dismissal_matches_despite_spacing_differences(db):
 
 def test_dismissal_is_scoped_to_its_account(db):
     acct = _account(db)
-    other = Account(name="Visa", account_type=AccountType.CREDIT_CARD,
+    other = Account(user_id=_owner(db).id, name="Visa", account_type=AccountType.CREDIT_CARD,
                     currency="GBP", is_asset=False)
     db.add(other)
     db.flush()
@@ -132,7 +143,7 @@ def test_restore_lets_it_be_detected_again(db):
     dismiss(db, acct.id, "NETFLIX")
     row = list_dismissed(db)[0]
 
-    resp = scheduled_restore_dismissed(row.id, db=db)
+    resp = scheduled_restore_dismissed(row.id, db=db, user=_owner(db))
     assert resp.status_code == 303
     assert is_dismissed(db, acct.id, "NETFLIX") is False
 
@@ -148,7 +159,7 @@ def test_bulk_delete_removes_and_tombstones_each(db):
     ids = [_payment(db, acct, f"PAYEE {i}").id for i in range(3)]
     keep = _payment(db, acct, "KEEP ME")
 
-    resp = scheduled_bulk_delete(payment_ids=[str(i) for i in ids], db=db)
+    resp = scheduled_bulk_delete(payment_ids=[str(i) for i in ids], db=db, user=_owner(db))
     assert resp.status_code == 303
     assert "deleted=3" in resp.headers["location"]
 
@@ -166,7 +177,7 @@ def test_bulk_delete_ignores_malformed_and_missing_ids(db):
     acct = _account(db)
     p = _payment(db, acct, "REAL ONE")
     resp = scheduled_bulk_delete(
-        payment_ids=["", "not-a-number", "99999", str(p.id)], db=db,
+        payment_ids=["", "not-a-number", "99999", str(p.id)], db=db, user=_owner(db),
     )
     assert resp.status_code == 303
     assert "deleted=1" in resp.headers["location"]
@@ -176,6 +187,6 @@ def test_bulk_delete_ignores_malformed_and_missing_ids(db):
 def test_bulk_delete_with_nothing_selected(db):
     from app.routers.scheduled_payments import scheduled_bulk_delete
 
-    resp = scheduled_bulk_delete(payment_ids=[], db=db)
+    resp = scheduled_bulk_delete(payment_ids=[], db=db, user=_owner(db))
     assert resp.status_code == 303
     assert "deleted=0" in resp.headers["location"]
