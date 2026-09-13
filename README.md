@@ -79,7 +79,9 @@ OpenAPI: **`/docs`**.
 
 ### Auto-categorization (optional)
 
-Rules → keywords → **Ollama** (local). See project setup for `ollama pull`.
+Learned rules → keyword heuristics → **Ollama** (local), in that order,
+so the model is only asked about descriptions nothing else can place.
+See [Local LLMs](#optional-local-llms-via-ollama).
 
 ### Import date detection
 
@@ -96,7 +98,10 @@ DD/MM vs MM/DD detection with confidence on the import mapping UI.
 - **Attribution** — Net worth change breakdown (income, flows, fees, valuation **market** movement, **FX** translation approximation).
 - **Household / account snapshots** — Stored time series for balances and rollups.
 - **Accounts** — Banking, cards, investments, pensions, real estate, vehicles, loans, mortgages, etc.; multi-currency; FX bootstrap (Yahoo/Frankfurter).
-- **CSV/XLS import** — Column detection, large batching, liability sign handling, **event classification** + **default splits** after import.
+- **CSV/XLS/PDF import** — Column detection (heuristic, then a local LLM for unfamiliar layouts), large batching, liability sign handling, **event classification** + **default splits** after import. PDF statements are read by a local vision model with arithmetic reconciliation against the statement totals.
+- **Three-layer duplicate defence** — source-row fingerprint, exact (date, description, amount) key across files, and near-duplicate wording (truncated or reworded descriptions of the same row, with a reference-number guard so two payments a digit apart stay two).
+- **Scheduled payments** — Recurring detection, weighted matching of imported rows to schedules with a review queue for uncertain matches, confirm-to-ledger from the account page, cash-flow forecast.
+- **Interest accrual** — Accounts that post their own interest are re-synced on every start and after any change to their ledger; the monthly accrual is shown as a running total.
 - **Transfers** — Detection, linking, **auto-suggested reconciliation groups** via API.
 - **Net worth** — FX-aware totals and history.
 - **Paychecks** — Stub import/manual entry.
@@ -171,11 +176,33 @@ auto-generates a `SECRET_KEY` into `./.env` if one isn't present and
 warns you to back it up — losing that file renders every encrypted
 column unreadable.
 
-### Optional: Ollama for categorization
+### Optional: local LLMs via Ollama
+
+Everything model-related runs locally and is optional; every feature
+degrades to its heuristic tier when Ollama is not running.
 
 ```bash
-ollama pull llama3.2
+ollama pull qwen3.6:35b-a3b      # text: categorisation, duplicate scoring, column mapping
+ollama pull gemma4               # vision: PDF statement extraction
+ollama pull embeddinggemma       # embeddings: description similarity
 ```
+
+| Setting | Default | Role |
+|---|---|---|
+| `OLLAMA_URL` | `http://localhost:11434` | Must be loopback; `OLLAMA_ALLOW_REMOTE=true` to override |
+| `OLLAMA_MODEL` | `qwen3.6:35b-a3b` | Text model (called with thinking off) |
+| `OLLAMA_VISION_MODEL` | `gemma4` | PDF statements |
+| `OLLAMA_EMBED_MODEL` | `embeddinggemma` | Near-duplicate and merchant similarity |
+
+The loopback check is deliberate: ledger text is sent to the model, so
+the model must be on this machine unless you say otherwise.
+
+**Compute during imports.** The categoriser asks the model once per
+distinct normalised description (not once per row), in batches of
+twenty per prompt, and writes every answer back as a learned rule so the
+next import of the same merchant never reaches the model. A first import
+of a busy account is still the heaviest thing the app does; subsequent
+imports of the same account are mostly rule hits.
 
 ### PostgreSQL
 
@@ -256,6 +283,11 @@ Other things that survive scale: composite indexes on
 `(account_id, date)` etc., SQLite WAL, batched imports keyed by
 `IMPORT_BATCH_SIZE`, optional PostgreSQL pooling.
 
+Import-time LLM work is bounded by distinct descriptions rather than
+rows: rules are loaded once per batch, identical descriptions are
+grouped, twenty go to the model per prompt, and answers become rules
+(`tests/test_categorizer_efficiency.py` pins this).
+
 ## Multi-user model
 
 * Each user owns their data via a `user_id` column on every top-level
@@ -268,16 +300,43 @@ Other things that survive scale: composite indexes on
   (`owned_accounts`, `owned_transaction_query`,
   `get_owned_account_or_404`). Routers and services use these instead
   of hand-rolling `WHERE user_id = …`.
-* A route-walking isolation test (`tests/test_tenant_isolation.py`)
-  iterates over every registered route and asserts anonymous callers
-  cannot reach `/api/v1/*` and HTML routes cannot bypass the auth
-  redirect — new endpoints fail closed automatically.
+* Every HTML route takes the signed-in user and resolves rows through
+  those helpers: a foreign id reads as absent (404 or the page's own
+  not-found), bulk actions drop ids the user does not own, lists and
+  dropdowns come from owned queries, and form-supplied account ids are
+  verified before use. Detectors that scan the whole ledger (duplicates,
+  transfers, schedule matches) have their results filtered to the user's
+  accounts before display.
+* Rows created without an owner are attributed on startup — only when
+  there is exactly one user, so nothing is ever guessed
+  (`tests/test_orphan_ownership.py`).
+* `tests/test_tenant_isolation.py` walks every registered route three
+  ways: anonymous (must be refused), the JSON API with a second user's
+  token, and every HTML GET as a second user carrying the first user's
+  ids through a real session cookie — the page must refuse or render
+  nothing of theirs. New endpoints fail closed automatically.
 * Uploads live under `uploads/<user_id>/`. Every confirm endpoint
   verifies the supplied filepath sits inside the current user's
   directory before reading it.
+
+## Security notes
+
+* The auth gate fails closed: a session that cannot be verified (for
+  example a locked database) is treated as no session.
+* `return_to` redirects are validated as same-origin paths.
+* The database, backups, uploads and `.env` are created with owner-only
+  permissions; the process umask is tightened at startup.
+* Request bodies are capped by an outermost ASGI middleware before any
+  parsing; login and passkey attempts share one rate limiter.
+* Ollama must be on loopback unless explicitly allowed; SQL echo is off
+  so ledger text does not reach the log.
+* Dependencies are kept at versions with no known advisories
+  (`pip-audit` clean at the time of writing).
 
 ## Tests
 
 ```bash
 pytest tests/
 ```
+
+412 tests, in-memory SQLite, a few seconds end to end.
