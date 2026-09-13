@@ -9,6 +9,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.services.auth import get_current_user
+from app.models.user import User
+from app.services.scoping import (
+    owned_account_ids, owned_transaction_ids,
+)
 from app.templating import templates
 from app.models.account import Account
 from app.models.transaction import Transaction
@@ -24,6 +29,20 @@ from app.services.transfer_detector import (
 )
 
 router = APIRouter(prefix="/transfers", tags=["transfers"])
+
+
+def _owns_pair(db: Session, user: User, from_id: int, to_id: int) -> bool:
+    """Both transactions of a pair must be this user's before it is linked,
+    dismissed or unlinked — a posted id is not evidence of ownership."""
+    return len(owned_transaction_ids(db, user, [from_id, to_id])) == 2
+
+
+def _both_sides_owned(db: Session, user: User, pairs: list) -> list:
+    """Candidates and links carry from/to transaction ids; keep the ones
+    whose both sides are this user's. The detectors scan the whole ledger."""
+    ids = {p.from_transaction_id for p in pairs} | {p.to_transaction_id for p in pairs}
+    owned = set(owned_transaction_ids(db, user, list(ids)))
+    return [p for p in pairs if p.from_transaction_id in owned and p.to_transaction_id in owned]
 
 
 def _acyclic_edges(pair_flow: dict) -> tuple[list[dict], int]:
@@ -105,10 +124,13 @@ def transfers_page(
     scanned: int | None = Query(None),
     linked: int | None = Query(None, alias="linked_count"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    candidates = detect_transfers(db)
-    confirmed = list_transfer_links(db)
-    unmatched = list_unmatched_transfers(db)
+    owned = set(owned_account_ids(db, user))
+    candidates = _both_sides_owned(db, user, detect_transfers(db))
+    confirmed = _both_sides_owned(db, user, list_transfer_links(db))
+    unmatched = [u for u in list_unmatched_transfers(db)
+                 if u["account"] is not None and u["account"].id in owned]
 
     confirmed_details = []
     for link in confirmed:
@@ -137,7 +159,10 @@ def create_link(
     to_transaction_id: int = Form(...),
     confidence: float = Form(1.0),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    if not _owns_pair(db, user, from_transaction_id, to_transaction_id):
+        return HTMLResponse("Not found", status_code=404)
     link_transfer(
         db,
         from_transaction_id,
@@ -149,9 +174,9 @@ def create_link(
 
 
 @router.post("/scan-payments")
-def scan_payments(db: Session = Depends(get_db)):
+def scan_payments(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Scan liability accounts for payment-like transactions and flag them."""
-    count = scan_and_flag_payments(db)
+    count = scan_and_flag_payments(db, user_id=user.id)
     return RedirectResponse(
         url=f"/transfers?scanned={count}", status_code=303,
     )
@@ -161,9 +186,10 @@ def scan_payments(db: Session = Depends(get_db)):
 def bulk_link(
     min_confidence: float = Form(0.7),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Confirm all transfer candidates at or above the given confidence."""
-    candidates = detect_transfers(db)
+    candidates = _both_sides_owned(db, user, detect_transfers(db))
     linked_count = 0
     for c in candidates:
         if c.confidence >= min_confidence:
@@ -186,14 +212,20 @@ def dismiss_pair(
     from_transaction_id: int = Form(...),
     to_transaction_id: int = Form(...),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Decline a transfer candidate — marks both transactions as not transfers."""
+    if not _owns_pair(db, user, from_transaction_id, to_transaction_id):
+        return HTMLResponse("Not found", status_code=404)
     dismiss_transfer_pair(db, from_transaction_id, to_transaction_id)
     return RedirectResponse(url="/transfers", status_code=303)
 
 
 @router.post("/unlink/{link_id}")
-def remove_link(link_id: int, db: Session = Depends(get_db)):
+def remove_link(link_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    link = db.get(TransferLink, link_id)
+    if link is None or not _owns_pair(db, user, link.from_transaction_id, link.to_transaction_id):
+        return HTMLResponse("Not found", status_code=404)
     unlink_transfer(db, link_id)
     return RedirectResponse(url="/transfers", status_code=303)
 
@@ -205,6 +237,7 @@ def transfer_flow(
     date_to: str | None = Query(None),
     preset: str | None = Query(None),   # 1y, ytd, 2y, mtd, 5y, all
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Sankey diagram of confirmed transfer flows between accounts."""
     from datetime import date, timedelta
@@ -262,6 +295,7 @@ def transfer_flow(
         .join(FromAcct, FromTxn.c.account_id == FromAcct.c.id)
         .join(ToAcct, ToTxn.c.account_id == ToAcct.c.id)
         .where(TransferLink.confirmed_by_user == True)
+        .where(FromAcct.c.user_id == user.id, ToAcct.c.user_id == user.id)
     )
 
     df_from = date_from

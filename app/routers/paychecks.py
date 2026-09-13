@@ -11,6 +11,11 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
+from app.services.auth import get_current_user
+from app.models.user import User
+from app.services.scoping import (
+    get_owned_account_or_404, owned_account_ids, owned_accounts,
+)
 from app.templating import templates
 from app.models.account import Account
 from app.services.paycheck_service import (
@@ -24,13 +29,12 @@ router = APIRouter(prefix="/paychecks", tags=["paychecks"])
 
 
 @router.get("", response_class=HTMLResponse)
-def paychecks_list(request: Request, db: Session = Depends(get_db)):
-    stubs = list_paychecks(db)
+def paychecks_list(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    owned = owned_account_ids(db, user)
+    stubs = [st for st in list_paychecks(db) if st.account_id in owned]
     now = naive_utc_now()
-    summary = get_paycheck_summary(db, year=now.year)
-    accounts = db.execute(
-        select(Account).order_by(Account.name)
-    ).scalars().all()
+    summary = get_paycheck_summary(db, year=now.year, account_ids=owned)
+    accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
 
     return templates.TemplateResponse(request, "paychecks/list.html", {
         "stubs": stubs,
@@ -41,10 +45,8 @@ def paychecks_list(request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/upload", response_class=HTMLResponse)
-def paycheck_upload_form(request: Request, db: Session = Depends(get_db)):
-    accounts = db.execute(
-        select(Account).order_by(Account.name)
-    ).scalars().all()
+def paycheck_upload_form(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
     return templates.TemplateResponse(request, "paychecks/upload.html", {
         "accounts": accounts,
     })
@@ -56,23 +58,21 @@ async def paycheck_upload(
     account_id: int = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    user = Depends(__import__("app.services.auth", fromlist=["get_current_user"]).get_current_user),
+    user: User = Depends(get_current_user),
 ):
     from app.services.upload_safety import safe_upload_dest, UnsafeFilenameError
     try:
         dest = safe_upload_dest(settings.upload_dir, file.filename, user_id=user.id)
     except UnsafeFilenameError:
         return templates.TemplateResponse(request, "paychecks/upload.html", {
-            "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+            "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
             "error": "Invalid filename. Try renaming the file and upload again.",
         })
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
     preview = preview_paycheck_file(str(dest))
-    accounts = db.execute(
-        select(Account).order_by(Account.name)
-    ).scalars().all()
+    accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
 
     return templates.TemplateResponse(request, "paychecks/mapping.html", {
         "account_id": account_id,
@@ -100,6 +100,7 @@ def paycheck_confirm_import(
     col_health_insurance: str = Form(""),
     col_employer: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     mapping = {
         "pay_date": col_pay_date,
@@ -119,6 +120,14 @@ def paycheck_confirm_import(
         if v.strip():
             mapping[k] = v
 
+    # The account and the file must both be this user's: the path is
+    # form-supplied and would otherwise read any file the process can.
+    get_owned_account_or_404(db, user, account_id)
+    from app.services.upload_safety import assert_user_owns_path, UnsafeFilenameError
+    try:
+        assert_user_owns_path(settings.upload_dir, user.id, filepath)
+    except UnsafeFilenameError:
+        return HTMLResponse("File not found", status_code=404)
     count = import_paycheck_stubs(db, account_id, filepath, mapping)
     return RedirectResponse(
         url=f"/paychecks?imported={count}",
@@ -127,10 +136,8 @@ def paycheck_confirm_import(
 
 
 @router.get("/manual", response_class=HTMLResponse)
-def paycheck_manual_form(request: Request, db: Session = Depends(get_db)):
-    accounts = db.execute(
-        select(Account).order_by(Account.name)
-    ).scalars().all()
+def paycheck_manual_form(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
     return templates.TemplateResponse(request, "paychecks/manual.html", {
         "accounts": accounts,
     })
@@ -155,9 +162,11 @@ def paycheck_manual_create(
     hsa_contribution: Decimal = Form(Decimal("0.00")),
     other_deductions: Decimal = Form(Decimal("0.00")),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     from app.services.paycheck_service import create_paycheck_manual
 
+    get_owned_account_or_404(db, user, account_id)
     create_paycheck_manual(db, account_id, {
         "pay_date": datetime.strptime(pay_date, "%Y-%m-%d"),
         "employer": employer or None,

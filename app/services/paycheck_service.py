@@ -155,9 +155,13 @@ def list_paychecks(
 def get_paycheck_summary(
     db: Session,
     year: int | None = None,
+    account_ids: list[int] | None = None,
 ) -> dict:
-    """Aggregate paycheck totals, optionally filtered by year."""
+    """Aggregate paycheck totals, optionally filtered by year and to a set
+    of accounts (a user's own)."""
     query = select(PaycheckStub)
+    if account_ids is not None:
+        query = query.where(PaycheckStub.account_id.in_(account_ids))
     if year:
         start = datetime(year, 1, 1)
         end = datetime(year, 12, 31, 23, 59, 59)

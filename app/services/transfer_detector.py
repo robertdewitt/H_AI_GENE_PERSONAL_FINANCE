@@ -240,14 +240,18 @@ def list_transfer_links(db: Session) -> list[TransferLink]:
     ).scalars().all()
 
 
-def scan_and_flag_payments(db: Session) -> int:
+def scan_and_flag_payments(db: Session, user_id: int | None = None) -> int:
     """Scan liability accounts for payment-like transactions and flag them
-    as transfers.  Returns the number of newly flagged transactions."""
-    liability_accounts = db.execute(
-        select(Account).where(
-            Account.account_type.in_([t.value for t in LIABILITY_TYPES])
-        )
-    ).scalars().all()
+    as transfers.  Returns the number of newly flagged transactions.
+
+    With ``user_id`` only that user's accounts are scanned — a page action
+    must not rewrite flags on someone else's ledger."""
+    stmt = select(Account).where(
+        Account.account_type.in_([t.value for t in LIABILITY_TYPES])
+    )
+    if user_id is not None:
+        stmt = stmt.where(Account.user_id == user_id)
+    liability_accounts = db.execute(stmt).scalars().all()
 
     if not liability_accounts:
         return 0
