@@ -579,6 +579,50 @@ def detect_liability_sign_flip(rows: "list[tuple[str, Decimal]]") -> bool:
     return True  # nothing to go on — keep the historical behaviour
 
 
+def _reference_numbers(key: str) -> frozenset[str]:
+    """Digit runs of four or more — the reference part of a description."""
+    import re
+    return frozenset(re.findall(r"\d{4,}", key))
+
+
+def _wording_matches_existing(description: str, existing: list[str]) -> bool:
+    """Is this the same transaction as one already recorded on this day for
+    this amount, worded differently?
+
+    Two rules, in order:
+
+    * A reference number is decisive. "Faster Payment IPBINB4001744" and
+      "...4001743" are two payments of the same amount on the same day —
+      the user confirmed as much — and their wording is otherwise identical.
+      If both sides carry reference numbers and they differ, they are
+      different transactions, whatever the similarity says.
+    * Truncation is the common case. A PDF statement recorded "Payment Thank
+      You Bill Pay Service"; the CSV export truncated it to "Payment Thank
+      You Bill Pa". A similarity ratio scores that pair 0.847 — just under
+      the 0.85 that the duplicates page uses — so one wording being a prefix
+      of the other is accepted outright, and the ratio is the fallback for
+      re-spellings that are not truncations.
+    """
+    from difflib import SequenceMatcher
+
+    from app.services.text_keys import comparison_key
+
+    key = comparison_key(description)
+    if not key:
+        return False
+    refs = _reference_numbers(key)
+    for other in existing:
+        other_refs = _reference_numbers(other)
+        if refs and other_refs and refs != other_refs:
+            continue
+        short, long_ = sorted((key, other), key=len)
+        if len(short) >= 12 and long_.startswith(short):
+            return True
+        if SequenceMatcher(None, key, other).ratio() >= 0.85:
+            return True
+    return False
+
+
 def import_transactions(
     db: Session,
     account_id: int,
@@ -648,6 +692,21 @@ def import_transactions(
         (r.date.strftime("%Y-%m-%d"), r.description.strip().lower(), round(r.amount, 2))
         for r in existing_rows
     }
+    # Third layer: the same transaction arriving with its description worded
+    # differently. A PDF statement recorded a payment as "Payment Thank You
+    # Bill Pay Service"; the CSV export of the same month truncated it to
+    # "Payment Thank You Bill Pa". Different bytes defeat the fingerprint and
+    # different text defeats the exact key, so both let it through — five
+    # overlapping exports of one card leaked a second copy of a £4,738
+    # payment that way. Same account, same day, same amount, and wording
+    # that is nearly the same, is the same transaction.
+    from app.services.text_keys import comparison_key
+
+    existing_wordings: dict[tuple, list[str]] = {}
+    for r in existing_rows:
+        existing_wordings.setdefault(
+            (r.date.strftime("%Y-%m-%d"), round(r.amount, 2)), [],
+        ).append(comparison_key(r.description))
     # Also track keys added during this import to catch in-file duplicates
     new_keys: set[tuple] = set()
 
@@ -751,6 +810,10 @@ def import_transactions(
             round(amount_val, 2),
         )
         if dedup_key in existing_keys:
+            duplicates += 1
+            continue
+        wordings = existing_wordings.get((dedup_key[0], dedup_key[2]))
+        if wordings and _wording_matches_existing(desc_val, wordings):
             duplicates += 1
             continue
         new_keys.add(dedup_key)

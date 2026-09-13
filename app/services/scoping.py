@@ -213,6 +213,27 @@ def owner_of_account(db: Session, account_id: int | None) -> int | None:
     return acct.user_id if acct is not None else None
 
 
+def get_owned_transaction(db: Session, user: User, transaction_id: int) -> Transaction | None:
+    """Non-raising twin of get_owned_transaction_or_404.
+
+    The HTML routers already answer a missing row with their own 404 page or
+    a redirect; this lets them keep that shape while a foreign id simply
+    reads as absent. Existence of another user's row is never revealed.
+    """
+    return db.execute(
+        owned_transaction_query(user).where(Transaction.id == transaction_id).limit(1)
+    ).scalar_one_or_none()
+
+
+def get_owned_scheduled_payment(db: Session, user: User, payment_id: int):
+    """Non-raising twin of get_owned_scheduled_payment_or_404."""
+    from app.models.scheduled_payment import ScheduledPayment
+
+    return db.execute(
+        owned_scheduled_payment_query(user).where(ScheduledPayment.id == payment_id).limit(1)
+    ).scalar_one_or_none()
+
+
 def get_owned_dismissed_scheduled_or_404(db: Session, user: User, dismissal_id: int):
     from app.models.dismissed_scheduled_payment import DismissedScheduledPayment
 
