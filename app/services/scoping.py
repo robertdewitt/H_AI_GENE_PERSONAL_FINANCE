@@ -213,6 +213,14 @@ def owner_of_account(db: Session, account_id: int | None) -> int | None:
     return acct.user_id if acct is not None else None
 
 
+def get_owned_account(db: Session, user: User, account_id: int) -> Account | None:
+    """Non-raising twin of get_owned_account_or_404 for routers that answer a
+    missing account with their own page."""
+    return db.execute(
+        _owned(db, Account, user).where(Account.id == account_id).limit(1)
+    ).scalar_one_or_none()
+
+
 def get_owned_transaction(db: Session, user: User, transaction_id: int) -> Transaction | None:
     """Non-raising twin of get_owned_transaction_or_404.
 

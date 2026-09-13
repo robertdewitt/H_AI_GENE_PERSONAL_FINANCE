@@ -1252,9 +1252,10 @@ def get_many_account_balances_series(
 def get_accounts_grouped(
     db: Session,
     target_currency: str | None = None,
+    user_id: int | None = None,
 ) -> dict[str, list[dict]]:
-    """Return accounts grouped by type_group with balances."""
-    accounts = list_accounts(db)
+    """Return accounts grouped by type_group with balances, for one user."""
+    accounts = list_accounts(db, user_id=user_id)
     balances = get_many_account_balances_rich(db, accounts=accounts, target_currency=target_currency)
     groups: dict[str, list[dict]] = {}
 
