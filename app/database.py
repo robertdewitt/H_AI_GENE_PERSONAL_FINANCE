@@ -9,7 +9,10 @@ _connect_args: dict = {}
 _pool_kwargs: dict = {}
 
 if settings.db_backend == "sqlite":
-    _connect_args = {"check_same_thread": False}
+    # Wait for a busy writer rather than fail after SQLite's five-second
+    # default: one long request must not turn into "database is locked"
+    # for everyone else — the auth gate fails closed on that.
+    _connect_args = {"check_same_thread": False, "timeout": 30}
 else:
     _pool_kwargs = {
         "poolclass": QueuePool,
@@ -35,6 +38,7 @@ if settings.db_backend == "sqlite":
         cursor.execute("PRAGMA cache_size=-64000")  # 64 MB page cache
         cursor.execute("PRAGMA mmap_size=268435456")  # 256 MB mmap
         cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
         cursor.close()
 
 

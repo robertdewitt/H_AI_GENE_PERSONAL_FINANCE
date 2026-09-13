@@ -150,15 +150,26 @@ def get_vectors(db: "Session", texts: list[str]) -> dict[str, list[float]]:
 
     for key, vector in zip(missing, vectors):
         out[key] = vector
-        db.add(DescriptionEmbedding(
-            model=model, text_key=key[:300], dim=len(vector),
-            vector=json.dumps(vector),
-        ))
+    # Written through a session of its own and committed at once. Adding to
+    # the caller's session opened a write transaction that stayed open for
+    # the rest of the request — the duplicates page held it for twenty-five
+    # seconds while it waited on the model — and locked every other request
+    # out of the database.
+    from sqlalchemy.orm import Session as _Session
+
+    writer = _Session(bind=db.get_bind())
     try:
-        db.flush()
+        writer.add_all([
+            DescriptionEmbedding(model=model, text_key=key[:300], dim=len(vector),
+                                 vector=json.dumps(vector))
+            for key, vector in zip(missing, vectors)
+        ])
+        writer.commit()
     except Exception as exc:            # a concurrent writer won the unique key
         log.debug("embedding cache write skipped: %s", exc)
-        db.rollback()
+        writer.rollback()
+    finally:
+        writer.close()
     return out
 
 

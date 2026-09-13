@@ -5,6 +5,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from app.services.clock import naive_utc_now
 from decimal import Decimal, InvalidOperation
+from types import SimpleNamespace
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -99,6 +100,46 @@ def _preset_to_since(preset: str | None) -> datetime:
     return today - timedelta(days=365)   # default: 1y
 
 
+def _in_display_currency(db: Session, rows, display_ccy: str) -> list:
+    """Convert (month, category, total, currency) rows to the display currency
+    and merge the buckets by month and category.
+
+    The charts summed native amounts across accounts in different currencies
+    and put one symbol in front. Each bucket is converted at the month's rate;
+    with no rate it is left as is and flagged, never silently mixed.
+    """
+    from calendar import monthrange
+    from app.services.fx_service import convert_amount
+
+    merged: dict[tuple[str, str], Decimal] = defaultdict(lambda: Decimal("0.00"))
+    unconverted: set[tuple[str, str]] = set()
+    rate_cache: dict[tuple[str, str], Decimal | None] = {}
+    for r in rows:
+        amt = Decimal(str(r.total or 0))
+        ccy = (r.currency or display_ccy).upper()
+        if ccy != display_ccy:
+            try:
+                y, m = (int(x) for x in r.month.split("-"))
+                when = datetime(y, m, monthrange(y, m)[1])
+            except (ValueError, AttributeError):
+                when = naive_utc_now()
+            key = (ccy, r.month)
+            if key not in rate_cache:
+                _one, rate = convert_amount(db, Decimal("1"), ccy, display_ccy, when)
+                rate_cache[key] = Decimal(str(rate)) if rate is not None else None
+            rate = rate_cache[key]
+            if rate is None:
+                unconverted.add((r.month, r.category))
+            else:
+                amt = (amt * rate).quantize(Decimal("0.01"))
+        merged[(r.month, r.category)] += amt
+    return [
+        SimpleNamespace(month=month, category=category, total=total,
+                        unconverted=(month, category) in unconverted)
+        for (month, category), total in sorted(merged.items())
+    ]
+
+
 @router.get("", response_class=HTMLResponse)
 def accounts_list(
     request: Request,
@@ -173,13 +214,16 @@ def accounts_list(
     _not_balance_marker = _and(*(
         sa_func.lower(Transaction.description).notlike(m) for m in _BALANCE_MARKERS
     ))
+    from app.models.account import Account as _Acct
     monthly_rows = db.execute(
         sa_select(
             _ym.label("month"),
             _cat_label.label("category"),
             sa_func.sum(Transaction.amount).label("total"),
+            _Acct.currency.label("currency"),
         )
         .outerjoin(Category, Transaction.category_id == Category.id)
+        .join(_Acct, _Acct.id == Transaction.account_id)
         .where(
             Transaction.amount < 0,
             # Never show transfers (any TRANSFER-type category, e.g.
@@ -196,20 +240,21 @@ def accounts_list(
             ),
             Transaction.date >= since,
         )
-        .group_by("month", _cat_label)
+        .group_by("month", _cat_label, _Acct.currency)
         .order_by("month", _cat_label)
     ).all()
+    monthly_rows = _in_display_currency(db, monthly_rows, display_ccy)
 
     # Income: positive non-transfer transactions on *asset* accounts only.
     # Excluding liability accounts (credit cards, loans) keeps a refund
     # or balance-transfer credit out of the income totals — those aren't
     # money the household actually earned.
-    from app.models.account import Account as _Acct
     income_rows = db.execute(
         sa_select(
             _ym.label("month"),
             _cat_label.label("category"),
             sa_func.sum(Transaction.amount).label("total"),
+            _Acct.currency.label("currency"),
         )
         .outerjoin(Category, Transaction.category_id == Category.id)
         .join(_Acct, _Acct.id == Transaction.account_id)
@@ -220,9 +265,10 @@ def accounts_list(
             _not_transfer_cat,
             Transaction.date >= since,
         )
-        .group_by("month", _cat_label)
+        .group_by("month", _cat_label, _Acct.currency)
         .order_by("month", _cat_label)
     ).all()
+    income_rows = _in_display_currency(db, income_rows, display_ccy)
 
     months_ordered = sorted(
         {r.month for r in monthly_rows} | {r.month for r in income_rows}

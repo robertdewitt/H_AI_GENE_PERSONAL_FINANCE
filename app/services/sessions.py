@@ -20,6 +20,7 @@ from app.models.session import Session as AuthSession
 from app.services.clock import naive_utc_now
 
 IDLE_DAYS = 7
+TOUCH_EVERY = timedelta(minutes=5)   # how often last_seen_at is written
 ABSOLUTE_DAYS = 30
 
 
@@ -67,8 +68,17 @@ def lookup_session(db: Session, raw_token: str) -> AuthSession | None:
         db.delete(row)
         db.commit()
         return None
-    row.last_seen_at = now
-    db.commit()
+    # The session is verified by the read above. Recording activity is a
+    # write, and every request used to make one: while another request held
+    # the database's write lock, this raised, the gate failed closed and the
+    # user was sent to /login, where the new session could not be written
+    # either. Write at most every few minutes, and never let the write decide.
+    if now - row.last_seen_at >= TOUCH_EVERY:
+        row.last_seen_at = now
+        try:
+            db.commit()
+        except Exception:               # a busy database costs the touch, not the session
+            db.rollback()
     return row
 
 
