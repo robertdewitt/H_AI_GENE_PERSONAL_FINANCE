@@ -394,6 +394,76 @@ def _balance_from_manual(
     )
 
 
+# ── Statement anchors and the rows dated on the statement day ──────────
+#
+# A card statement closes by *post* date; the ledger stores the *transaction*
+# date. A charge made on the statement date and posted the next day is not
+# on that statement, yet "date > statement_date" leaves it out of the balance
+# for good — a $509 hotel charge on the day the June statement closed made
+# the Chase card read $509 low against every later anchor. When the source
+# row carries a post date it decides; otherwise the row keeps the old
+# treatment (on the statement, so excluded).
+
+_POST_DATE_KEYS = ("Post Date", "Posted Date", "Posting Date", "Settlement Date",
+                   "post_date", "posted_date", "posting_date")
+_DATE_FORMATS = ("%m/%d/%Y", "%d/%m/%Y", "%Y-%m-%d", "%m/%d/%y", "%d/%m/%y")
+
+
+def _posted_after(raw_data, txn_date: datetime) -> bool:
+    """True if the source row says it posted after ``txn_date``.
+
+    Day/month order is not known per source, so both readings are tried and
+    the one that lands within a fortnight after the transaction wins; a
+    reading before the transaction cannot be a post date.
+    """
+    import json
+
+    raw = raw_data
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return False
+    if not isinstance(raw, dict):
+        return False
+    text = next((str(raw[k]).strip() for k in _POST_DATE_KEYS if raw.get(k)), None)
+    if not text:
+        return False
+    best = None
+    for fmt in _DATE_FORMATS:
+        try:
+            cand = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        lag = (cand.date() - txn_date.date()).days
+        if 0 <= lag <= 14 and (best is None or lag < best):
+            best = lag
+    return best is not None and best > 0
+
+
+def _anchor_day_rows(
+    db: Session, anchors: dict[int, datetime],
+) -> dict[int, list[tuple[int, Decimal]]]:
+    """For each account -> its rows dated on the statement day that posted
+    after it, as (transaction id, amount). One statement for all accounts."""
+    from sqlalchemy import and_, or_
+
+    if not anchors:
+        return {}
+    conds = [
+        and_(Transaction.account_id == aid, func.date(Transaction.date) == d.date())
+        for aid, d in anchors.items()
+    ]
+    out: dict[int, list[tuple[int, Decimal]]] = {}
+    for row in db.execute(
+        select(Transaction.id, Transaction.account_id, Transaction.amount, Transaction.raw_data)
+        .where(or_(*conds))
+    ).all():
+        if _posted_after(row.raw_data, anchors[row.account_id]):
+            out.setdefault(row.account_id, []).append((row.id, Decimal(str(row.amount or 0))))
+    return out
+
+
 def _balance_hybrid(
     db: Session, account: Account, account_id: int,
     as_of_date: datetime | None, now: datetime,
@@ -421,6 +491,9 @@ def _balance_hybrid(
             delta_query = delta_query.where(Transaction.date <= as_of_date)
         delta = db.execute(delta_query).scalar() or Decimal("0.00")
         delta = Decimal(str(delta))
+        if as_of_date is None or stmt_date <= as_of_date:
+            for _tid, amt in _anchor_day_rows(db, {account_id: stmt_date}).get(account_id, ()):
+                delta += amt
 
         # The two inputs use opposite conventions on a liability:
         # statement_balance is a positive magnitude of debt, while its
@@ -627,6 +700,12 @@ def get_many_account_balances_rich(
                     hybrid_deltas.get(row.account_id, Decimal("0.00"))
                     + Decimal(str(row.amount))
                 )
+        for aid, rows in _anchor_day_rows(
+            db, {aid: d for aid, (_, d) in hybrid_anchored.items()}
+        ).items():
+            hybrid_deltas[aid] = hybrid_deltas.get(aid, Decimal("0.00")) + sum(
+                (amt for _tid, amt in rows), Decimal("0.00")
+            )
 
     # Batch: latest valuation per account (max date, then max id to break ties)
     latest_val: dict[int, tuple[datetime, Decimal, str]] = {}
@@ -1044,6 +1123,16 @@ def get_many_account_balances_series(
             result = (v, d)
         return result
 
+    # Rows on a statement day that posted after it (one query for all).
+    anchor_day_ids: dict[int, frozenset[int]] = {
+        aid: frozenset(tid for tid, _amt in rows)
+        for aid, rows in _anchor_day_rows(db, {
+            a.id: a.statement_balance_as_of for a in accounts
+            if (a.balance_truth_source or "") == BalanceTruthSource.HYBRID.value
+            and a.statement_balance is not None and a.statement_balance_as_of is not None
+        }).items()
+    }
+
     # ── Compose per-date results ──
     out: dict[datetime, dict[int, AccountBalanceResult]] = {}
 
@@ -1078,17 +1167,22 @@ def get_many_account_balances_series(
                 ):
                     stmt_bal = Decimal(str(acct.statement_balance))
                     stmt_date = acct.statement_balance_as_of
-                    # Delta = txns in (stmt_date, snapshot_date]
+                    # Delta = txns in (stmt_date, snapshot_date], plus rows dated
+                    # on the statement day that the source says posted later.
+                    after_anchor = anchor_day_ids.get(acct.id, frozenset())
                     delta = Decimal("0.00")
                     for d, amt, _b, _tid in txns_by_account.get(acct.id, ()):
-                        if d <= stmt_date:
-                            continue
                         if d > snapshot_date:
                             break
+                        if d <= stmt_date and _tid not in after_anchor:
+                            continue
                         delta += amt
                     stale = (snapshot_date - stmt_date).days > 45
+                    # Liability statements are amounts owed; their rows are
+                    # cash-flow signed. Same rule as the single and batched
+                    # paths, or the history disagrees with the balance card.
                     result = AccountBalanceResult(
-                        value=stmt_bal + delta,
+                        value=stmt_bal - delta if not acct.is_asset else stmt_bal + delta,
                         balance_as_of=snapshot_date,
                         balance_source_used="statement_anchored",
                         balance_confidence=0.9 if not stale else 0.6,
