@@ -7,6 +7,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.services.auth import get_current_user
+from app.models.user import User
+from app.services.scoping import (
+    owned_account_ids,
+)
 from app.models.category import Category
 from app.models.transaction import Transaction
 from app.services.net_worth_service import compute_net_worth, compute_net_worth_series
@@ -43,21 +48,24 @@ def net_worth_page(
     preset: str | None = Query(None),
     months: int | None = Query(None, ge=1, le=120),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     # Preset takes priority; if neither set, default to 1y
     if preset is None and months is None:
         preset = "1y"
     resolved_months = months if months is not None else _preset_to_months(preset)
 
-    current = compute_net_worth(db)
-    series = compute_net_worth_series(db, months=resolved_months)
+    current = compute_net_worth(db, user_id=user.id)
+    series = compute_net_worth_series(db, months=resolved_months, user_id=user.id)
 
     groups: dict[str, Decimal] = {}
     for item in current.breakdown:
         groups.setdefault(item.type_group, Decimal("0.00"))
         groups[item.type_group] += item.balance
 
-    # Spending by category across ALL accounts (all transactions, including transfers)
+    owned = owned_account_ids(db, user)
+
+    # Spending by category across all of this user's accounts (including transfers)
     cat_rows = db.execute(
         select(
             Category.id,
@@ -66,6 +74,7 @@ def net_worth_page(
             func.sum(Transaction.amount).label("total"),
         )
         .join(Category, Transaction.category_id == Category.id)
+        .where(Transaction.account_id.in_(owned))
         .group_by(Category.id, Category.name)
         .order_by(func.sum(Transaction.amount))
     ).all()
@@ -79,7 +88,7 @@ def net_worth_page(
             func.count(Transaction.id),
             func.sum(Transaction.amount),
         )
-        .where(Transaction.category_id.is_(None))
+        .where(Transaction.category_id.is_(None), Transaction.account_id.in_(owned))
     ).one()
     if uncategorized[0]:
         category_summary.append({
@@ -105,10 +114,11 @@ def monte_carlo_api(
     horizon: int = Query(60, ge=12, le=120),
     simulations: int = Query(1000, ge=100, le=5000),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """JSON endpoint — Monte Carlo projection broken down by asset group."""
     from app.services.monte_carlo import run_monte_carlo
-    result = run_monte_carlo(db, horizon_months=horizon, simulations=simulations)
+    result = run_monte_carlo(db, horizon_months=horizon, simulations=simulations, user_id=user.id)
     return {
         "current_nw": result.current_nw,
         "flagged": result.flagged,
@@ -142,9 +152,10 @@ def monte_carlo_api(
 def net_worth_api(
     months: int = Query(12, ge=1, le=120),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    current = compute_net_worth(db)
-    series = compute_net_worth_series(db, months=months)
+    current = compute_net_worth(db, user_id=user.id)
+    series = compute_net_worth_series(db, months=months, user_id=user.id)
     return {
         "current": current.model_dump(),
         "series": series.model_dump(),

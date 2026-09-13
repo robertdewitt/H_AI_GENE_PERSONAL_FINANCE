@@ -13,7 +13,10 @@ log = logging.getLogger(__name__)
 
 from app.config import settings
 from app.database import get_db
-from app.services.scoping import owner_of_account
+from app.models.user import User
+from app.services.scoping import (
+    owned_accounts, owner_of_account,
+)
 from app.templating import templates
 from app.models.account import Account
 from app.services.categorizer import categorize_batch
@@ -42,6 +45,7 @@ router = APIRouter(prefix="/import", tags=["import"])
 async def detect_account_endpoint(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Save the uploaded file temporarily, detect which account it belongs to,
     return JSON {account_id, confidence, reason} — called client-side before
@@ -67,7 +71,7 @@ async def detect_account_endpoint(
         tmp_path = tmp.name
 
     try:
-        accounts = db.execute(select(Account).order_by(Account.name)).scalars().all()
+        accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
         account_id, confidence, reason = detect_account(tmp_path, safe_name, accounts)
     finally:
         os.unlink(tmp_path)
@@ -80,10 +84,8 @@ async def detect_account_endpoint(
 
 
 @router.get("", response_class=HTMLResponse)
-def import_form(request: Request, db: Session = Depends(get_db)):
-    accounts = db.execute(
-        select(Account).order_by(Account.name)
-    ).scalars().all()
+def import_form(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
     return templates.TemplateResponse(request, "imports/upload.html", {
         "accounts": accounts,
     })
@@ -102,13 +104,13 @@ async def upload_file(
         dest = safe_upload_dest(settings.upload_dir, file.filename, user_id=user.id)
     except UnsafeFilenameError:
         return templates.TemplateResponse(request, "imports/upload.html", {
-            "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+            "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
             "error": "Invalid filename. Try renaming the file and upload again.",
         })
     ext = dest.suffix.lower()
     if ext not in (".csv", ".xls", ".xlsx", ".pdf"):
         return templates.TemplateResponse(request, "imports/upload.html", {
-            "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+            "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
             "error": f"Unsupported file type '{ext}'. Please upload a CSV, XLS, XLSX, or PDF.",
         })
 
@@ -118,7 +120,7 @@ async def upload_file(
     except UploadTooLarge:
         limit_mb = settings.max_upload_bytes // (1024 * 1024)
         return templates.TemplateResponse(request, "imports/upload.html", {
-            "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+            "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
             "error": (
                 f"That file is larger than the {limit_mb} MB upload limit. "
                 "A statement export should be well under that."
@@ -131,7 +133,7 @@ async def upload_file(
             sections = detect_revolut_sections(str(dest))
         except Exception as exc:
             return templates.TemplateResponse(request, "imports/upload.html", {
-                "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+                "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
                 "error": f"Failed to read Revolut PDF: {exc}",
             })
         account = db.get(Account, account_id)
@@ -148,7 +150,7 @@ async def upload_file(
             parsed_rsu = parse_merrill_rsu_csv(str(dest))
         except Exception as exc:
             return templates.TemplateResponse(request, "imports/upload.html", {
-                "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+                "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
                 "error": f"Failed to parse RSU award summary: {exc}",
             })
         account = db.get(Account, account_id)
@@ -192,9 +194,7 @@ async def upload_file(
                     "manually on the account page."
                 )
             return templates.TemplateResponse(request, "imports/upload.html", {
-                "accounts": db.execute(
-                    select(Account).order_by(Account.name)
-                ).scalars().all(),
+                "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
                 "error": (
                     "This PDF contains no text — it looks like a screenshot or "
                     f"a scan. {detail}"
@@ -207,7 +207,7 @@ async def upload_file(
             parsed_pension = parse_epa_pension_pdf(str(dest))
         except Exception as exc:
             return templates.TemplateResponse(request, "imports/upload.html", {
-                "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+                "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
                 "error": f"Failed to parse ePA pension statement: {exc}",
             })
         account = db.get(Account, account_id)
@@ -224,7 +224,7 @@ async def upload_file(
             parsed = parse_ibkr_csv(str(dest))
         except Exception as exc:
             return templates.TemplateResponse(request, "imports/upload.html", {
-                "accounts": db.execute(select(Account).order_by(Account.name)).scalars().all(),
+                "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
                 "error": f"Failed to parse IBKR statement: {exc}",
             })
         account = db.get(Account, account_id)
@@ -236,9 +236,7 @@ async def upload_file(
         })
 
     preview = preview_file(str(dest))
-    accounts = db.execute(
-        select(Account).order_by(Account.name)
-    ).scalars().all()
+    accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
     account = db.get(Account, account_id)
 
     return templates.TemplateResponse(request, "imports/mapping.html", {
@@ -885,7 +883,7 @@ def ibkr_confirm(
         parsed = parse_ibkr_csv(filepath)
         stats = apply_ibkr_statement(db, account_id, parsed)
     except Exception as exc:
-        accounts = db.execute(select(Account).order_by(Account.name)).scalars().all()
+        accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
         return templates.TemplateResponse(request, "imports/upload.html", {
             "accounts": accounts,
             "error": f"IBKR import failed: {exc}",
@@ -922,7 +920,7 @@ def rsu_confirm(
         parsed = parse_merrill_rsu_csv(filepath)
         stats = import_rsu_grants(db, account, parsed)
     except Exception as exc:
-        accounts = db.execute(select(Account).order_by(Account.name)).scalars().all()
+        accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
         return templates.TemplateResponse(request, "imports/upload.html", {
             "accounts": accounts,
             "error": f"RSU import failed: {exc}",
@@ -957,7 +955,7 @@ def epa_confirm(
         parsed = parse_epa_pension_pdf(filepath)
         stats = import_pension_positions(db, account, parsed)
     except Exception as exc:
-        accounts = db.execute(select(Account).order_by(Account.name)).scalars().all()
+        accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
         return templates.TemplateResponse(request, "imports/upload.html", {
             "accounts": accounts,
             "error": f"ePA pension import failed: {exc}",
@@ -998,7 +996,7 @@ def revolut_confirm(
     try:
         txns = parse_revolut_pdf(filepath, include_sections=include)
     except Exception as exc:
-        accounts = db.execute(select(Account).order_by(Account.name)).scalars().all()
+        accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
         return templates.TemplateResponse(request, "imports/upload.html", {
             "accounts": accounts,
             "error": f"Revolut PDF import failed: {exc}",

@@ -9,6 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db, init_db
+from app.models.user import User
+from app.services.auth import get_current_user
+from app.services.scoping import owned_transaction_query
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.routers import (
@@ -231,15 +234,19 @@ app.add_middleware(
 
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request, db: Session = Depends(get_db)):
-    nw = compute_net_worth(db)
-    account_count = db.execute(select(func.count(Account.id))).scalar() or 0
+def dashboard(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    nw = compute_net_worth(db, user_id=user.id)
+    account_count = db.execute(select(func.count(Account.id)).where(Account.user_id == user.id)).scalar() or 0
 
     recent = db.execute(
-        select(Transaction).order_by(Transaction.date.desc()).limit(10)
+        owned_transaction_query(user).order_by(Transaction.date.desc()).limit(10)
     ).scalars().all()
 
-    series = compute_net_worth_series(db, months=12)
+    series = compute_net_worth_series(db, months=12, user_id=user.id)
     series_labels = [s.date.strftime("%b %Y") for s in series.snapshots]
     series_net_worth = [round(s.net_worth, 2) for s in series.snapshots]
     series_assets = [round(s.total_assets, 2) for s in series.snapshots]

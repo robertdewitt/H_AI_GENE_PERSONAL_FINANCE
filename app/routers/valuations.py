@@ -6,6 +6,11 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.services.auth import get_current_user
+from app.models.user import User
+from app.services.scoping import (
+    get_owned_account_or_404,
+)
 from app.templating import templates
 from app.models.asset_valuation import AssetValuation
 from app.services.asset_valuation_service import (
@@ -20,8 +25,8 @@ router = APIRouter(prefix="/valuations", tags=["valuations"])
 
 
 @router.get("", response_class=HTMLResponse)
-def valuations_page(request: Request, db: Session = Depends(get_db)):
-    accounts = list_valuatable_accounts(db)
+def valuations_page(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    accounts = [a for a in list_valuatable_accounts(db) if a.user_id == user.id]
     account_data = []
     for acct in accounts:
         history = get_valuation_history(db, acct.id, limit=5)
@@ -42,9 +47,10 @@ def valuation_detail(
     request: Request,
     account_id: int,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     from app.services.account_service import get_account
-    account = get_account(db, account_id)
+    account = get_account(db, account_id, user_id=user.id)
     if not account:
         return HTMLResponse("Account not found", status_code=404)
 
@@ -65,7 +71,9 @@ def valuation_add(
     source: str = Form("manual"),
     notes: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    get_owned_account_or_404(db, user, account_id)
     add_valuation(
         db,
         account_id=account_id,
@@ -84,9 +92,10 @@ def valuation_edit_form(
     account_id: int,
     valuation_id: int,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     from app.services.account_service import get_account
-    account = get_account(db, account_id)
+    account = get_account(db, account_id, user_id=user.id)
     val = db.get(AssetValuation, valuation_id)
     if not account or not val or val.account_id != account_id:
         return HTMLResponse("Not found", status_code=404)
@@ -106,7 +115,12 @@ def valuation_edit_save(
     source: str = Form("manual"),
     notes: str = Form(""),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    get_owned_account_or_404(db, user, account_id)
+    val = db.get(AssetValuation, valuation_id)
+    if val is None or val.account_id != account_id:
+        return HTMLResponse("Not found", status_code=404)
     update_valuation(
         db,
         valuation_id=valuation_id,
@@ -124,6 +138,11 @@ def valuation_delete(
     account_id: int,
     valuation_id: int,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    get_owned_account_or_404(db, user, account_id)
+    val = db.get(AssetValuation, valuation_id)
+    if val is None or val.account_id != account_id:
+        return HTMLResponse("Not found", status_code=404)
     delete_valuation(db, valuation_id)
     return RedirectResponse(url=f"/valuations/{account_id}", status_code=303)

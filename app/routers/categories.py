@@ -14,10 +14,23 @@ from app.models.transaction import Transaction
 router = APIRouter(prefix="/categories", tags=["categories"])
 
 
+def _owned_category(db: Session, user: User, cat_id: int) -> Category | None:
+    """A foreign category reads as absent, so the existing 404 page serves."""
+    return db.execute(
+        select(Category).where(Category.id == cat_id, Category.user_id == user.id)
+    ).scalar_one_or_none()
+
+
+def _owned_rule(db: Session, user: User, rule_id: int) -> CategoryRule | None:
+    return db.execute(
+        select(CategoryRule).where(CategoryRule.id == rule_id, CategoryRule.user_id == user.id)
+    ).scalar_one_or_none()
+
+
 @router.get("", response_class=HTMLResponse)
-def categories_list(request: Request, db: Session = Depends(get_db)):
+def categories_list(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     categories = db.execute(
-        select(Category).order_by(Category.category_type, Category.name)
+        select(Category).where(Category.user_id == user.id).order_by(Category.category_type, Category.name)
     ).scalars().all()
 
     cat_stats = {}
@@ -30,7 +43,7 @@ def categories_list(request: Request, db: Session = Depends(get_db)):
         cat_stats[cat.id] = count
 
     rules = db.execute(
-        select(CategoryRule).order_by(CategoryRule.hit_count.desc()).limit(50)
+        select(CategoryRule).where(CategoryRule.user_id == user.id).order_by(CategoryRule.hit_count.desc()).limit(50)
     ).scalars().all()
 
     return templates.TemplateResponse(request, "categories/list.html", {
@@ -51,12 +64,12 @@ def category_add(
     user: User = Depends(get_current_user),
 ):
     existing = db.execute(
-        select(Category).where(func.lower(Category.name) == name.strip().lower())
+        select(Category).where(Category.user_id == user.id, func.lower(Category.name) == name.strip().lower())
     ).scalar_one_or_none()
 
     if existing:
         categories = db.execute(
-            select(Category).order_by(Category.category_type, Category.name)
+            select(Category).where(Category.user_id == user.id).order_by(Category.category_type, Category.name)
         ).scalars().all()
         cat_stats = {}
         for c in categories:
@@ -67,7 +80,7 @@ def category_add(
             ).scalar() or 0
             cat_stats[c.id] = cnt
         rules = db.execute(
-            select(CategoryRule).order_by(CategoryRule.hit_count.desc()).limit(50)
+            select(CategoryRule).where(CategoryRule.user_id == user.id).order_by(CategoryRule.hit_count.desc()).limit(50)
         ).scalars().all()
         return templates.TemplateResponse(request, "categories/list.html", {
             "categories": categories,
@@ -95,8 +108,9 @@ def category_edit(
     name: str = Form(...),
     category_type: str = Form(...),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    cat = db.get(Category, cat_id)
+    cat = _owned_category(db, user, cat_id)
     if not cat:
         return HTMLResponse("Category not found", status_code=404)
     cat.name = name.strip()
@@ -110,8 +124,9 @@ def category_set_essential(
     cat_id: int,
     is_essential: str = Form(...),  # "auto" | "essential" | "discretionary"
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    cat = db.get(Category, cat_id)
+    cat = _owned_category(db, user, cat_id)
     if not cat:
         return HTMLResponse("Category not found", status_code=404)
     cat.is_essential = {
@@ -126,8 +141,9 @@ def category_set_essential(
 def category_delete(
     cat_id: int,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    cat = db.get(Category, cat_id)
+    cat = _owned_category(db, user, cat_id)
     if not cat:
         return HTMLResponse("Category not found", status_code=404)
 
@@ -147,8 +163,8 @@ def category_delete(
 
 
 @router.post("/rules/{rule_id}/delete")
-def rule_delete(rule_id: int, db: Session = Depends(get_db)):
-    rule = db.get(CategoryRule, rule_id)
+def rule_delete(rule_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    rule = _owned_rule(db, user, rule_id)
     if rule:
         db.delete(rule)
         db.commit()

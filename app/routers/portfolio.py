@@ -10,6 +10,8 @@ from sqlalchemy import func, or_ as _or, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.services.auth import get_current_user
+from app.models.user import User
 from app.models.account import Account, AccountType
 from app.models.instrument import Instrument, PositionLot
 from app.models.stock_dividend import StockDividend
@@ -40,10 +42,10 @@ _CURRENCY_SYMBOLS: dict[str, str] = {
 
 
 @router.get("", response_class=HTMLResponse)
-def portfolio_dashboard(request: Request, db: Session = Depends(get_db)):
+def portfolio_dashboard(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     # ── Fetch all investment accounts ─────────────────────────────────────
     investment_accounts = db.execute(
-        select(Account).where(Account.account_type.in_(_INVESTMENT_TYPES))
+        select(Account).where(Account.user_id == user.id, Account.account_type.in_(_INVESTMENT_TYPES))
         .order_by(Account.name)
     ).scalars().all()
 
@@ -305,6 +307,6 @@ def portfolio_dashboard(request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/refresh-prices", response_class=RedirectResponse)
-def refresh_prices():
+def refresh_prices(user: User = Depends(get_current_user)):
     """Redirect back to portfolio — the page reload refetches live prices."""
     return RedirectResponse(url="/portfolio", status_code=303)
