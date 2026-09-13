@@ -618,6 +618,12 @@ def _wording_matches_existing(description: str, existing: list[str]) -> bool:
         short, long_ = sorted((key, other), key=len)
         if len(short) >= 12 and long_.startswith(short):
             return True
+        # An older export format glues a row type onto the merchant —
+        # "WithdrawalACHMISSION FCU" for "Mission FCU". Same day, same
+        # amount, and the shorter wording inside the longer, is the same
+        # row. Short words are excluded: "uber" is inside a lot.
+        if len(short.replace(" ", "")) >= 8 and short.replace(" ", "") in long_.replace(" ", ""):
+            return True
         if SequenceMatcher(None, key, other).ratio() >= 0.85:
             return True
     return False
@@ -722,6 +728,24 @@ def import_transactions(
     placeholders_used: set[int] = set()
     reconciled = 0
     carried = 0
+    # What the user removed stays removed. The duplicate layers above only
+    # know rows still on the ledger, so a re-run of an export — to pick up
+    # running balances, say — re-inserted rows the user had deleted as
+    # duplicates three times over. A deleted row is remembered by the same
+    # exact and near-wording keys.
+    from app.models.deleted_transaction import DeletedTransaction
+    from app.services.text_keys import comparison_key
+
+    deleted_keys: set[tuple] = set()
+    deleted_wordings: dict[tuple, list[str]] = {}
+    for r in db.execute(
+        select(DeletedTransaction.date, DeletedTransaction.description, DeletedTransaction.amount)
+        .where(DeletedTransaction.account_id == account_id)
+    ).all():
+        k = (r.date.strftime("%Y-%m-%d"), (r.description or "").strip().lower(), round(r.amount, 2))
+        deleted_keys.add(k)
+        deleted_wordings.setdefault((k[0], k[2]), []).append(comparison_key(r.description or ""))
+    previously_deleted = 0
 
     def _carry_balance(txn_id: int, balance_val, raw: str, source_hash: str) -> None:
         nonlocal carried
@@ -885,6 +909,15 @@ def import_transactions(
             if twins:
                 _carry_balance(twins.pop(0), balance_val, raw, source_hash)
             continue
+        if dedup_key in deleted_keys:
+            duplicates += 1
+            previously_deleted += 1
+            continue
+        gone = deleted_wordings.get((dedup_key[0], dedup_key[2]))
+        if gone and _wording_matches_existing(desc_val, gone):
+            duplicates += 1
+            previously_deleted += 1
+            continue
         placeholder_id = _placeholder_for(date_val, amount_val)
         if placeholder_id is not None:
             placeholders_used.add(placeholder_id)
@@ -987,12 +1020,13 @@ def import_transactions(
 
     log.info(
         "Import complete: %d imported, %d skipped, %d duplicates, "
-        "%d expectations reconciled, %d balances carried, batch_id=%d",
-        imported, skipped, duplicates, reconciled, carried, batch.id,
+        "%d expectations reconciled, %d balances carried, %d previously deleted, batch_id=%d",
+        imported, skipped, duplicates, reconciled, carried, previously_deleted, batch.id,
     )
     batch._duplicates_skipped = duplicates
     batch._placeholders_reconciled = reconciled
     batch._balances_carried = carried
+    batch._previously_deleted = previously_deleted
     return batch
 
 
