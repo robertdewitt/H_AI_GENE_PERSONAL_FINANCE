@@ -37,7 +37,7 @@ from app.services.auth import _api_user  # noqa: F401 — imports for side effec
 
 
 @pytest.fixture
-def two_user_app(tmp_path: Path):
+def two_user_app(tmp_path: Path, monkeypatch):
     """Spin up an in-memory app with two users, each owning one account."""
     db_path = tmp_path / "tenant.db"
     engine = create_engine(f"sqlite:///{db_path}")
@@ -64,12 +64,13 @@ def two_user_app(tmp_path: Path):
     session.add_all([alice_acct, bob_acct])
     session.flush()
 
-    session.add(Transaction(
+    alice_txn = Transaction(
         account_id=alice_acct.id,
         date=__import__("datetime").datetime(2026, 6, 1),
         description="A-only secret", amount=Decimal("12345.00"),
         original_currency="USD",
-    ))
+    )
+    session.add(alice_txn)
 
     session.add(UserProfile(user_id=alice.id, display_currency="USD"))
     session.add(UserProfile(user_id=bob.id, display_currency="USD"))
@@ -88,7 +89,15 @@ def two_user_app(tmp_path: Path):
         token_hash=hashlib.sha256(bob_raw.encode()).hexdigest(),
         label="bob",
     ))
+    # ── browser sessions: the HTML routes are reached through the auth
+    # gate, which verifies the cookie against app.database.engine directly,
+    # so that engine is pointed at this database for the test's duration.
+    from app import database as database_module
+    from app.services.sessions import create_session
+    alice_cookie = create_session(session, alice.id)
+    bob_cookie = create_session(session, bob.id)
     session.commit()
+    monkeypatch.setattr(database_module, "engine", engine)
 
     # ── wire FastAPI to use *this* session ──
     def _override_get_db():
@@ -111,7 +120,9 @@ def two_user_app(tmp_path: Path):
     try:
         yield client, {
             "alice_token": alice_raw, "bob_token": bob_raw,
+            "alice_cookie": alice_cookie, "bob_cookie": bob_cookie,
             "alice_account_id": alice_acct.id,
+            "alice_txn_id": alice_txn.id,
             "bob_account_id": bob_acct.id,
             "session": session,
         }
@@ -144,6 +155,10 @@ def test_api_endpoints_require_auth(two_user_app):
 
 def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _cookie(raw: str) -> dict:
+    return {"session": raw}
 
 
 def test_user_b_cannot_see_user_a_accounts(two_user_app):
@@ -247,3 +262,72 @@ def test_no_html_route_responds_200_to_anonymous(two_user_app):
             "303 (redirect to /login) or 4xx"
         )
     assert seen > 0, "No HTML GET routes were probed"
+
+
+# ── Cross-user route walk (HTML) ────────────────────────────────────────
+
+ALICE_MARKERS = ("A-Checking", "A-only secret")
+_PUBLIC = ("/setup", "/login", "/logout", "/static", "/favicon.ico", "/api/",
+           "/docs", "/redoc", "/openapi.json")
+
+
+def _fill_path(path: str, ctx: dict) -> str:
+    """Substitute every path parameter with one of Alice's ids.
+
+    Transaction-shaped names get her transaction; everything else gets her
+    account id — for a foreign table that is just some integer, and the
+    assertion (no Alice content, no 500) holds whatever it resolves to.
+    """
+    import re
+    def pick(m):
+        name = m.group(1)
+        if "txn" in name or "transaction" in name:
+            return str(ctx["alice_txn_id"])
+        return str(ctx["alice_account_id"])
+    return re.sub(r"\{(\w+)(?::[^}]*)?\}", pick, path)
+
+
+def test_bob_cannot_read_alice_through_any_html_get(two_user_app):
+    """Walk every HTML GET with Bob's credentials and Alice's ids in the path.
+
+    Each page must either refuse (404 / 303 / 4xx) or render without a
+    trace of Alice's account name or transaction. A 500 is a failure too:
+    an unscoped lookup that returns None to a template is how a page
+    crashes instead of hiding.
+    """
+    client, ctx = two_user_app
+    seen, leaks = 0, []
+    for route in app.routes:
+        path = getattr(route, "path", "")
+        methods = getattr(route, "methods", set()) or set()
+        if "GET" not in methods or not path or path == "/":
+            continue
+        if any(path == p or path.startswith(p) for p in _PUBLIC):
+            continue
+        url = _fill_path(path, ctx)
+        resp = client.get(url, cookies=_cookie(ctx["bob_cookie"]), follow_redirects=False)
+        seen += 1
+        assert resp.status_code != 303 or not resp.headers.get("location", "").startswith("/login"), (
+            f"{url}: Bob's session was not honoured — the walk would pass for the wrong reason"
+        )
+        assert resp.status_code != 500, f"{url} crashed for Bob (500)"
+        if resp.status_code == 200:
+            body = resp.text
+            found = [m for m in ALICE_MARKERS if m in body]
+            if found:
+                leaks.append(f"{url} -> {found}")
+    assert not leaks, "Alice's data reached Bob:\n  " + "\n  ".join(leaks)
+    assert seen > 20, f"only {seen} HTML GET routes probed"
+
+
+def test_alice_still_sees_her_own_ledger(two_user_app):
+    """The walk above would pass trivially if pages hid everything from
+    everyone; the owner must still see the row."""
+    client, ctx = two_user_app
+    resp = client.get("/transactions", cookies=_cookie(ctx["alice_cookie"]))
+    assert resp.status_code == 200
+    assert "A-only secret" in resp.text
+
+    resp = client.get("/transactions", cookies=_cookie(ctx["bob_cookie"]))
+    assert resp.status_code == 200
+    assert "A-only secret" not in resp.text

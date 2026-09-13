@@ -529,6 +529,7 @@ def suggest_categories(
     db: Session,
     limit: int = 200,
     account_id: int | None = None,
+    user_id: int | None = None,
 ) -> list[CategorySuggestion]:
     """Dry-run categorization — returns ALL uncategorized transactions.
 
@@ -539,11 +540,19 @@ def suggest_categories(
     q = select(Transaction).where(Transaction.category_id.is_(None))
     if account_id is not None:
         q = q.where(Transaction.account_id == account_id)
+    if user_id is not None:
+        from app.models.account import Account
+        q = q.where(Transaction.account_id.in_(
+            select(Account.id).where(Account.user_id == user_id)
+        ))
     txns = db.execute(
         q.order_by(Transaction.date.desc()).limit(limit)
     ).scalars().all()
 
-    all_cats = db.execute(select(Category)).scalars().all()
+    cat_q = select(Category)
+    if user_id is not None:
+        cat_q = cat_q.where(Category.user_id == user_id)
+    all_cats = db.execute(cat_q).scalars().all()
     cat_by_id: dict[int, Category] = {c.id: c for c in all_cats}
     cat_list = [c.name for c in all_cats]
 

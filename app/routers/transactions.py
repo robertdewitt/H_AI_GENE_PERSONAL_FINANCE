@@ -957,7 +957,7 @@ def auto_categorize_preview(
     user: User = Depends(get_current_user),
 ):
     account_id_val = _safe_int(account_id)
-    suggestions = suggest_categories(db, limit=limit, account_id=account_id_val)
+    suggestions = suggest_categories(db, limit=limit, account_id=account_id_val, user_id=user.id)
     categories = sorted(owned_categories(db, user), key=lambda c: c.name)
     account = get_owned_account(db, user, account_id_val) if account_id_val else None
     return templates.TemplateResponse(request, "transactions/auto_categorize_preview.html", {

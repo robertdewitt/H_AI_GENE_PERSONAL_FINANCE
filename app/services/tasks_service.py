@@ -50,6 +50,7 @@ def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
     if user_id is not None:
         _q = _q.where(Account.user_id == user_id)
     accounts = db.execute(_q).scalars().all()
+    acct_ids = [a.id for a in accounts]     # every count below stays inside these
     stale_accounts: list[Account] = []
     for acct in accounts:
         if acct.account_type not in transactional_types:
@@ -86,8 +87,11 @@ def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
 
     # ── 2. Unconfirmed transfers ─────────────────────────────────────────────
     unconfirmed = db.execute(
-        select(func.count(TransferLink.id)).where(
-            TransferLink.confirmed_by_user == False  # noqa: E712
+        select(func.count(TransferLink.id))
+        .join(Transaction, TransferLink.from_transaction_id == Transaction.id)
+        .where(
+            TransferLink.confirmed_by_user == False,  # noqa: E712
+            Transaction.account_id.in_(acct_ids),
         )
     ).scalar() or 0
 
@@ -106,6 +110,7 @@ def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
         select(func.count(Transaction.id)).where(
             Transaction.category_id.is_(None),
             Transaction.is_transfer == False,  # noqa: E712
+            Transaction.account_id.in_(acct_ids),
         )
     ).scalar() or 0
 
@@ -117,6 +122,7 @@ def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
             .where(
                 Transaction.category_id.is_(None),
                 Transaction.is_transfer == False,  # noqa: E712
+                Transaction.account_id.in_(acct_ids),
             )
             .group_by(Account.id)
             .order_by(func.count(Transaction.id).desc())
