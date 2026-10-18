@@ -651,14 +651,15 @@ def transaction_delete(
 @router.get("/duplicates", response_class=HTMLResponse)
 def duplicates_page(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     from app.services.duplicate_detector import find_duplicate_groups, find_dismissed_groups, find_near_duplicate_groups
-    from app.services.ollama_duplicate import score_groups_with_db
+    from app.services.ollama_duplicate import apply_rule_suggestions
     groups = _only_owned_groups(find_duplicate_groups(db), owned_account_ids(db, user))
     near_groups = _only_owned_groups(find_near_duplicate_groups(db), owned_account_ids(db, user))
     # Merge: near-dupes go after exact-match groups (already sorted by confidence desc)
     all_groups = groups + near_groups
     dismissed = find_dismissed_groups(db)
-    # Ollama scoring — mutates groups in-place; silently skips if LLM unavailable
-    score_groups_with_db(all_groups, db)
+    # No inline LLM calls — ambiguous groups are scored by the page via
+    # /duplicates/score-group after it renders.
+    apply_rule_suggestions(all_groups)
     return templates.TemplateResponse(request, "transactions/duplicates.html", {
         "groups": all_groups,
         "dismissed": dismissed,

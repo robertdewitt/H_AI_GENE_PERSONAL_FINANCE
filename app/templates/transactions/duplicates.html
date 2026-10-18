@@ -124,7 +124,7 @@
                         AI {{ (group.ollama_score * 100)|int }}% dup
                     </span>
                 {% endif %}
-            {% else %}
+            {% elif not cross_batch %}
                 <span class="ollama-badge ollama-pending"
                       style="background:#e5e7eb;color:#9ca3af;padding:0.2rem 0.5rem;border-radius:999px;font-size:0.78rem">
                     AI …

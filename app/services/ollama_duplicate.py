@@ -178,6 +178,23 @@ def score_group(
         raise OllamaContentError(str(exc)) from exc
 
 
+def apply_rule_suggestions(groups: list) -> None:  # list[DuplicateGroup]
+    """Set suggestions that need no LLM call, leaving the rest unscored.
+
+    Used at page render: scoring every group inline made one blocking Ollama
+    call per group (~80s for ~130 groups). Cross-batch groups are suggested
+    regardless of the LLM's verdict and identical descriptions are trivially
+    duplicates, so only same-batch groups with differing descriptions keep
+    ollama_score=None — the page scores those asynchronously afterwards.
+    """
+    for group in groups:
+        if group.cross_batch:
+            group.ollama_suggested = True
+        elif len({t.description or "" for t in group.transactions}) == 1:
+            group.ollama_score = 1.0
+            group.ollama_suggested = True
+
+
 def score_groups_with_db(
     groups: list,  # list[DuplicateGroup]
     db: "Session",
