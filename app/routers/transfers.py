@@ -207,6 +207,58 @@ def bulk_link(
     )
 
 
+def _parse_pairs(raw: str) -> set[tuple[int, int]]:
+    """Parse the bulk form's "from:to,from:to" list, skipping malformed items."""
+    pairs = set()
+    for item in raw.split(","):
+        from_id, _, to_id = item.strip().partition(":")
+        if from_id.isdigit() and to_id.isdigit():
+            pairs.add((int(from_id), int(to_id)))
+    return pairs
+
+
+@router.post("/bulk-confirm")
+def bulk_confirm(
+    pairs: str = Form(""),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Confirm the checked candidate pairs.
+
+    Only pairs the detector still proposes are linked, with the detector's
+    confidence — the posted ids select candidates, they don't define them.
+    """
+    selected = _parse_pairs(pairs)
+    linked_count = 0
+    for c in _both_sides_owned(db, user, detect_transfers(db)):
+        if (c.from_transaction_id, c.to_transaction_id) not in selected:
+            continue
+        if link_transfer(
+            db,
+            c.from_transaction_id,
+            c.to_transaction_id,
+            confirmed=True,
+            confidence=c.confidence,
+        ):
+            linked_count += 1
+    return RedirectResponse(
+        url=f"/transfers?linked_count={linked_count}", status_code=303,
+    )
+
+
+@router.post("/bulk-dismiss")
+def bulk_dismiss(
+    pairs: str = Form(""),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Decline the checked candidate pairs — same as "Not a Transfer" on each."""
+    for from_id, to_id in _parse_pairs(pairs):
+        if _owns_pair(db, user, from_id, to_id):
+            dismiss_transfer_pair(db, from_id, to_id)
+    return RedirectResponse(url="/transfers", status_code=303)
+
+
 @router.post("/dismiss")
 def dismiss_pair(
     from_transaction_id: int = Form(...),
