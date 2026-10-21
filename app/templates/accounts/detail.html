@@ -709,11 +709,11 @@
 
 {# ── Scheduled payments ───────────────────────────────────────────────────
    Amend / pause / delete this account's projections in place. The Cash Flow
-   Forecast below is rebuilt from exactly these rows on every save, and each
-   projected occurrence there can be confirmed into the ledger. #}
+   Forecast below is rebuilt from exactly these rows (plus transfers set up
+   on other accounts) on every save. It is a projection only: real
+   occurrences arrive with the next import. #}
 {% set SCHED_SYMBOLS = {"GBP": "£", "EUR": "€", "USD": "$", "CAD": "CA$", "AUD": "A$"} %}
 {% set sched_return = "/accounts/" ~ account.id ~ "?forecast_months=" ~ forecast_months ~ "#scheduled" %}
-{% set forecast_return = "/accounts/" ~ account.id ~ "?forecast_months=" ~ forecast_months ~ "#forecast" %}
 {% set sched_today = now.date() %}
 
 <h2 id="scheduled">Scheduled Payments</h2>
@@ -769,6 +769,7 @@
             <th style="text-align:right">Amount</th>
             <th>Category</th>
             <th>Frequency</th>
+            <th style="white-space:nowrap">Transfer to / from</th>
             <th style="white-space:nowrap">Next due</th>
             <th></th>
         </tr>
@@ -812,6 +813,16 @@
             </select>
         </td>
         <td>
+            <select name="counter_account_id" form="schedf{{ p.id }}"
+                    title="The other account, e.g. the mortgage this pays. Its forecast shows the payment too."
+                    style="margin:0;padding:0.2rem 0.4rem;font-size:0.85rem;width:100%;max-width:11rem">
+                <option value="">&mdash;</option>
+                {% for a in transfer_accounts %}
+                <option value="{{ a.id }}" {% if p.counter_account_id == a.id %}selected{% endif %}>{{ a.name }}</option>
+                {% endfor %}
+            </select>
+        </td>
+        <td>
             <input type="date" name="next_due_date" form="schedf{{ p.id }}"
                    value="{{ p.next_due_date.isoformat() }}" required
                    style="margin:0;padding:0.2rem 0.4rem;font-size:0.85rem;width:100%;max-width:9.5rem{% if overdue %};border-color:#dc2626{% endif %}">
@@ -837,11 +848,26 @@
     </tbody>
 </table>
 </div>
-{% else %}
+{% elif not incoming_scheduled %}
 <p style="color:var(--pico-muted-color);font-size:0.9rem">
     No scheduled payments on this account yet. Add one below, or
     <a href="/scheduled/detect">detect them from transaction history</a>.
 </p>
+{% endif %}
+
+{% if incoming_scheduled %}
+<p style="font-size:0.9rem;margin:0 0 0.4rem"><strong>Transfers set up on other accounts</strong>
+    <small style="color:var(--pico-muted-color)">&mdash; included in the forecast below</small></p>
+<ul style="font-size:0.9rem;margin-bottom:1rem">
+    {% for p in incoming_scheduled %}
+    <li{% if not p.active %} style="opacity:0.55"{% endif %}>
+        {{ p.description }} &mdash; {{ p.frequency }} from
+        <a href="/accounts/{{ p.account_id }}#scheduled">{{ p.account.name }}</a>,
+        next {{ p.next_due_date.strftime("%d %b %Y") }}{% if not p.active %} (paused){% endif %}
+        &middot; <a href="/scheduled/{{ p.id }}/edit">Edit</a>
+    </li>
+    {% endfor %}
+</ul>
 {% endif %}
 
 <details style="margin-bottom:1.5rem">
@@ -880,6 +906,17 @@
                 <input type="date" name="next_due_date" required value="{{ sched_today.isoformat() }}">
             </label>
         </div>
+        {% if transfer_accounts %}
+        <label>Transfer to / from <small style="color:var(--pico-muted-color)">(optional)</small>
+            <select name="counter_account_id">
+                <option value="">&mdash; not a transfer &mdash;</option>
+                {% for a in transfer_accounts %}
+                <option value="{{ a.id }}">{{ a.name }}</option>
+                {% endfor %}
+            </select>
+            <small style="color:var(--pico-muted-color)">Pick the other account for a transfer, e.g. the mortgage this pays &mdash; its forecast will show the payment too.</small>
+        </label>
+        {% endif %}
         <button type="submit" style="padding:0.4rem 1rem;font-size:0.9rem;width:auto">Add scheduled payment</button>
     </form>
 </details>
@@ -909,25 +946,31 @@
             <th>Payment</th>
             <th style="text-align:right;white-space:nowrap">Amount</th>
             <th style="text-align:right;white-space:nowrap">Balance after</th>
-            <th style="width:1%"></th>
         </tr>
     </thead>
     <tbody>
         <tr>
-            <td style="color:var(--pico-muted-color);font-size:0.85rem">{{ now.strftime("%d %b %Y") }}</td>
-            <td style="color:var(--pico-muted-color);font-size:0.85rem"><em>Opening balance</em></td>
+            <td style="color:var(--pico-muted-color);font-size:0.85rem;white-space:nowrap">{{ af.as_of.strftime("%d %b %Y") }}</td>
+            <td style="color:var(--pico-muted-color);font-size:0.85rem"><em>Balance as of your latest data</em></td>
             <td></td>
-            <td style="text-align:right;font-weight:600">{{ sym }}{{ "{:,.2f}".format(af.opening_balance|float) }}</td>
-            <td></td>
+            <td style="text-align:right;font-weight:600">{% if af.opening_balance < 0 or not account.is_asset %}&minus;{% endif %}{{ sym }}{{ "{:,.2f}".format(af.opening_balance|float|abs) }}</td>
         </tr>
         {% set ns = namespace(running=af.opening_balance) %}
         {% for evt in af.events %}
         {% set ns.running = ns.running + evt.amount %}
         {% set neg = ns.running < 0 %}
-        <tr{% if neg %} style="background:#fef2f2"{% endif %}>
+        <tr{% if neg %} style="background:#fef2f2"{% elif evt.pending %} style="opacity:0.7"{% endif %}>
             <td style="font-size:0.85rem;white-space:nowrap">{{ evt.date.strftime("%d %b %Y") }}</td>
             <td style="font-size:0.9rem">{{ evt.description }}
                 <small style="color:var(--pico-muted-color);text-transform:capitalize">&nbsp;{{ evt.frequency }}</small>
+                {% if evt.counter_account_name %}
+                <small style="color:var(--pico-muted-color);display:block">
+                    {% if evt.mirrored %}from{% else %}to{% endif %} {{ evt.counter_account_name }}
+                </small>
+                {% endif %}
+                {% if evt.pending %}
+                <small style="color:#b45309;display:block" title="Due since your latest data for this account. Import a newer statement to replace this estimate with what actually happened.">expected &mdash; not imported yet</small>
+                {% endif %}
             </td>
             <td style="text-align:right;white-space:nowrap;font-weight:600">
                 {# On a liability (mortgage, loan, card) a scheduled payment
@@ -949,21 +992,6 @@
             {# Balance owed stays signed like the headline balance above. #}
             <td style="text-align:right;white-space:nowrap;font-weight:600{% if neg %};color:#dc2626{% endif %}">
                 {% if neg or not account.is_asset %}&minus;{% endif %}{{ sym }}{{ "%.2f"|format(ns.running|float|abs) }}
-            </td>
-            {# Confirming an occurrence posts it to the ledger at the amount
-               shown on this row. Anything but the earliest outstanding one
-               skips the occurrences before it, so those ask first. #}
-            {% set is_next = forecast_first_occurrence.get(evt.scheduled_payment_id) == evt.date %}
-            <td style="text-align:right">
-                <form method="post" action="/scheduled/{{ evt.scheduled_payment_id }}/confirm" style="margin:0"
-                      {% if not is_next %}onsubmit="return confirm('This is not the next occurrence of this payment. Confirming it skips the earlier unconfirmed ones. Continue?')"{% endif %}>
-                    <input type="hidden" name="occurrence_date" value="{{ evt.date.isoformat() }}">
-                    <input type="hidden" name="amount" value="{{ evt.amount }}">
-                    <input type="hidden" name="return_to" value="{{ forecast_return }}">
-                    <button type="submit" class="{% if not is_next %}outline{% endif %}"
-                            title="Record this in the ledger as if it had already happened"
-                            style="padding:0.1rem 0.55rem;font-size:0.78rem;margin:0;width:auto;white-space:nowrap">Confirm</button>
-                </form>
             </td>
         </tr>
         {% endfor %}

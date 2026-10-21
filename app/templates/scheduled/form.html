@@ -42,15 +42,33 @@
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
         <div>
             <label for="account_id">Account *</label>
-            <select id="account_id" name="account_id" required>
+            <select id="account_id" name="account_id" required onchange="syncCounterOptions()">
                 {% for acct in accounts %}
-                <option value="{{ acct.id }}"
+                <option value="{{ acct.id }}" data-currency="{{ acct.currency }}"
                     {% if payment and payment.account_id == acct.id %}selected{% endif %}>
                     {{ acct.name }}
                 </option>
                 {% endfor %}
             </select>
         </div>
+        <div>
+            <label for="counter_account_id">Transfer to / from</label>
+            <select id="counter_account_id" name="counter_account_id">
+                <option value="">— not a transfer —</option>
+                {% for acct in accounts %}
+                <option value="{{ acct.id }}" data-currency="{{ acct.currency }}"
+                    {% if payment and payment.counter_account_id == acct.id %}selected{% endif %}>
+                    {{ acct.name }}
+                </option>
+                {% endfor %}
+            </select>
+            <small style="color:var(--pico-muted-color)">
+                The other account, e.g. the mortgage a checking payment goes to. Both forecasts then show it.
+            </small>
+        </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
         <div>
             <label for="category_id">Category</label>
             <select id="category_id" name="category_id">
@@ -123,4 +141,22 @@
     </div>
 </form>
 
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Only offer counter accounts the server will accept: a different account
+// in the same currency.
+function syncCounterOptions() {
+    const acct = document.getElementById('account_id').selectedOptions[0];
+    const counter = document.getElementById('counter_account_id');
+    for (const opt of counter.options) {
+        if (!opt.value) continue;
+        const ok = opt.value !== acct.value && opt.dataset.currency === acct.dataset.currency;
+        opt.hidden = opt.disabled = !ok;
+        if (!ok && opt.selected) counter.value = '';
+    }
+}
+document.addEventListener('DOMContentLoaded', syncCounterOptions);
+</script>
 {% endblock %}

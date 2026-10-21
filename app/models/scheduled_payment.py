@@ -45,6 +45,12 @@ class ScheduledPayment(Base):
     account_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("accounts.id"), nullable=False, index=True
     )
+    # The other side of a transfer — e.g. the mortgage a checking-account
+    # payment goes to. The forecast mirrors each occurrence into this account
+    # so both balances move. None = money leaving/entering the household.
+    counter_account_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("accounts.id"), nullable=True, index=True
+    )
     category_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("categories.id"), nullable=True
     )
@@ -84,7 +90,8 @@ class ScheduledPayment(Base):
     )
 
     # ── Relationships ─────────────────────────────────────────────────────
-    account = relationship("Account")
+    account = relationship("Account", foreign_keys=[account_id])
+    counter_account = relationship("Account", foreign_keys=[counter_account_id])
     category = relationship("Category")
     last_matched_txn = relationship(
         "Transaction", foreign_keys=[last_matched_txn_id]

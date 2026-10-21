@@ -47,7 +47,7 @@
     <summary style="font-weight:600;cursor:pointer;display:flex;align-items:center;gap:0.75rem">
         {{ af.account_name }}
         <span style="font-size:0.85rem;font-weight:400;color:var(--pico-muted-color)">
-            Opens {{ sym }}{{ "{:,.2f}".format(af.opening_balance|float) }}
+            {{ sym }}{{ "{:,.2f}".format(af.opening_balance|float) }} as of {{ af.as_of.strftime("%d %b %Y") }}
         </span>
         {% if af.overdraft_dates %}
         <span style="font-size:0.78rem;background:#dc2626;color:#fff;border-radius:4px;padding:0.1rem 0.4rem">⚠ shortfall</span>
@@ -67,8 +67,8 @@
         <tbody>
         {# Opening row #}
         <tr>
-            <td style="color:var(--pico-muted-color);font-size:0.85rem">{{ today.strftime("%d %b %Y") }}</td>
-            <td style="color:var(--pico-muted-color);font-size:0.85rem"><em>Opening balance</em></td>
+            <td style="color:var(--pico-muted-color);font-size:0.85rem;white-space:nowrap">{{ af.as_of.strftime("%d %b %Y") }}</td>
+            <td style="color:var(--pico-muted-color);font-size:0.85rem"><em>Balance as of your latest data</em></td>
             <td></td>
             <td style="text-align:right;font-weight:600">{{ sym }}{{ "{:,.2f}".format(af.opening_balance|float) }}</td>
         </tr>
@@ -76,10 +76,18 @@
         {% for evt in af.events %}
         {% set ns.running = ns.running + evt.amount %}
         {% set neg = ns.running < 0 %}
-        <tr{% if neg %} style="background:#fef2f2"{% endif %}>
+        <tr{% if neg %} style="background:#fef2f2"{% elif evt.pending %} style="opacity:0.7"{% endif %}>
             <td style="font-size:0.85rem;white-space:nowrap">{{ evt.date.strftime("%d %b %Y") }}</td>
             <td style="font-size:0.9rem">{{ evt.description }}
                 <small style="color:var(--pico-muted-color);text-transform:capitalize">&nbsp;{{ evt.frequency }}</small>
+                {% if evt.counter_account_name %}
+                <small style="color:var(--pico-muted-color);display:block">
+                    {% if evt.mirrored %}from{% else %}to{% endif %} {{ evt.counter_account_name }}
+                </small>
+                {% endif %}
+                {% if evt.pending %}
+                <small style="color:#b45309;display:block" title="Due since your latest data for this account. Import a newer statement to replace this estimate with what actually happened.">expected &mdash; not imported yet</small>
+                {% endif %}
             </td>
             <td style="text-align:right;white-space:nowrap;font-weight:600">
                 {% if evt.amount < 0 %}

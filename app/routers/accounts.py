@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 from app.database import get_db
 from app.services.scoping import (
-    owned_categories,
+    owned_accounts, owned_categories,
 )
 from app.models.user import User
 from app.services.auth import get_current_user
@@ -921,12 +921,25 @@ def account_detail(
 
     scheduled_categories = sorted(owned_categories(db, user), key=lambda c: c.name)
 
-    # Earliest projected date per payment. Confirming any later occurrence
-    # silently skips the ones before it, so the template warns on those.
-    forecast_first_occurrence: dict[int, object] = {}
-    if account_forecast:
-        for _evt in account_forecast.events:      # already sorted by date
-            forecast_first_occurrence.setdefault(_evt.scheduled_payment_id, _evt.date)
+    # Schedules stored on another account that pay into (or out of) this
+    # one — shown read-only, since the inline form edits the paying side.
+    try:
+        incoming_scheduled = db.execute(
+            sa_select(ScheduledPayment)
+            .where(ScheduledPayment.counter_account_id == account_id)
+            .order_by(
+                ScheduledPayment.active.desc(), ScheduledPayment.next_due_date,
+            )
+        ).scalars().all()
+    except Exception:
+        incoming_scheduled = []
+
+    # Accounts a schedule here can transfer to: the user's own, same currency.
+    transfer_accounts = sorted(
+        (a for a in owned_accounts(db, user)
+         if a.id != account_id and a.currency == acct.currency),
+        key=lambda a: a.name,
+    )
 
     # RSU grants + vesting (for RSU accounts) and pension fund holdings.
     rsu_grants = None
@@ -1011,7 +1024,8 @@ def account_detail(
         "account_scheduled": account_scheduled,
         "scheduled_categories": scheduled_categories,
         "scheduled_frequencies": SCHEDULED_FREQUENCIES,
-        "forecast_first_occurrence": forecast_first_occurrence,
+        "incoming_scheduled": incoming_scheduled,
+        "transfer_accounts": transfer_accounts,
         "rsu_grants": rsu_grants,
         "rsu_summary": rsu_summary,
         "pension_holdings": pension_holdings,

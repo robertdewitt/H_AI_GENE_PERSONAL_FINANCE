@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -63,6 +63,29 @@ def _all_accounts(db: Session, user: User) -> list[Account]:
 
 def _all_categories(db: Session, user: User) -> list[Category]:
     return sorted(owned_categories(db, user), key=lambda c: c.name)
+
+
+def _counter_account(db: Session, user: User, account_id: int, raw: str) -> int | None:
+    """Validate the form's transfer counter account.
+
+    Blank = not a transfer. It must be one of the user's own accounts (404
+    otherwise, like account_id), not the payment's own account, and in the
+    same currency — the forecast mirrors the amount as-is, with no FX leg.
+    """
+    # Called directly (tests), an omitted field arrives as its Form() default.
+    raw = raw.strip() if isinstance(raw, str) else ""
+    if not raw:
+        return None
+    if not raw.isdigit():
+        raise HTTPException(status_code=404, detail="Account not found")
+    counter = get_owned_account_or_404(db, user, int(raw))   # form-supplied
+    account = db.get(Account, account_id)
+    if counter.id == account_id or counter.currency != account.currency:
+        raise HTTPException(
+            status_code=400,
+            detail="A transfer needs a different account in the same currency.",
+        )
+    return counter.id
 
 
 def _owned_proposals(db: Session, user: User) -> list:
@@ -136,17 +159,20 @@ def scheduled_create(
     end_date: str = Form(""),
     day_of_month: str = Form(""),
     notes: str = Form(""),
+    counter_account_id: str = Form(""),
     return_to: str = Form(""),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     get_owned_account_or_404(db, user, account_id)   # form-supplied
+    counter_id = _counter_account(db, user, account_id, counter_account_id)
     payment = ScheduledPayment(
         description=description.strip(),
         amount=Decimal(amount),
         amount_type=amount_type,
         currency=currency,
         account_id=account_id,
+        counter_account_id=counter_id,
         user_id=owner_of_account(db, account_id),
         category_id=int(category_id) if category_id.strip() else None,
         frequency=frequency,
@@ -195,6 +221,8 @@ def scheduled_update(
     day_of_month: str = Form(""),
     notes: str = Form(""),
     active: str = Form("on"),
+    # None = field not on the posting form, keep what's stored; "" = clear.
+    counter_account_id: str | None = Form(None),
     return_to: str = Form(""),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -204,6 +232,11 @@ def scheduled_update(
         return _back(return_to, "/scheduled")
 
     get_owned_account_or_404(db, user, account_id)   # form-supplied
+    if isinstance(counter_account_id, str):
+        payment.counter_account_id = _counter_account(db, user, account_id, counter_account_id)
+    elif payment.counter_account_id is not None:
+        # Kept as-is, but moving the payment can still break the pairing.
+        _counter_account(db, user, account_id, str(payment.counter_account_id))
     payment.description = description.strip()
     payment.amount = Decimal(amount)
     payment.amount_type = amount_type

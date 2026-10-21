@@ -26,6 +26,13 @@ class ForecastEvent:
     currency: str
     scheduled_payment_id: int
     frequency: str
+    # Dated after the balance's as-of date but not after today: expected to
+    # have happened already, just not in the imported data yet.
+    pending: bool = False
+    # The other account of a transfer, and whether this event is the mirror
+    # of a payment stored on that other account.
+    counter_account_name: str | None = None
+    mirrored: bool = False
 
 
 @dataclass
@@ -34,6 +41,9 @@ class AccountForecast:
     account_name: str
     currency: str
     opening_balance: Decimal
+    # Date the opening balance reflects — the statement date or the latest
+    # imported transaction. Only occurrences after it are projected.
+    as_of: date | None = None
     events: list[ForecastEvent] = field(default_factory=list)
     # Running balance checkpoints: list of (date, balance)
     daily_balance: list[tuple[date, Decimal]] = field(default_factory=list)
@@ -126,16 +136,71 @@ def _trailing_avg_amount(
     return Decimal(str(round(mean, 2)))
 
 
-def _get_account_balance(db: "Session", account_id: int) -> Decimal:
-    """Best available current balance for the account.
+def _counter_amount(amount: Decimal, account, counter) -> Decimal:
+    """The amount a transfer moves on its counter account, in that account's
+    own convention.
 
-    Delegates to account_service so the forecast opening balance accounts for
-    post-statement transactions (hybrid mode), running-balance markers
-    (balance_after), and FX — rather than blindly returning a stale
-    statement_balance.
+    Asset amounts are cash-flow signed (negative = money out). Liability
+    balances are an amount owed and a negative amount pays it down. A
+    transfer moves net worth from one side to the other, so: take the net
+    worth change on the paying side, negate it, and express it in the
+    counter account's convention. Checking -2,653 → mortgage gives -2,653
+    (debt down); checking -500 → savings gives +500.
     """
-    from app.services.account_service import get_account_balance
-    return get_account_balance(db, account_id)
+    delta = amount if account.is_asset else -amount
+    return -delta if counter.is_asset else delta
+
+
+_LEDGER_SUM_SOURCES = {"latest_balance_after", "transaction_sum", "statement_anchored"}
+
+
+def _forecast_anchor(db: "Session", account, today: date) -> tuple[Decimal, date]:
+    """(opening balance, as-of date) for an account's forecast.
+
+    The balance is taken in the account's own currency — the events are, and
+    mixing a base-currency opening with native-currency payments skews every
+    row. The as-of date is what the balance actually reflects: a statement
+    date, or for a ledger-derived balance the latest imported transaction,
+    since nothing after that has been seen yet. Future-dated ledger rows
+    (from the old forecast Confirm button) are left out so the opening means
+    "as of" rather than "as of plus whatever was posted ahead".
+    """
+    from datetime import datetime
+    from sqlalchemy import func, select, or_
+    from app.models.transaction import Transaction
+    from app.services.account_service import get_account_balance_rich
+    from app.services.scheduled_confirm import CONFIRM_SOURCE
+
+    rich = get_account_balance_rich(db, account.id, target_currency=account.currency)
+    opening = Decimal(str(rich.value))
+    end_of_today = datetime.combine(today, datetime.max.time())
+
+    if rich.balance_source_used in _LEDGER_SUM_SOURCES:
+        future = db.execute(
+            select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+                Transaction.account_id == account.id,
+                Transaction.date > end_of_today,
+            )
+        ).scalar() or 0
+        future = Decimal(str(future))
+        # statement_anchored subtracts ledger rows on a liability.
+        opening -= -future if (rich.balance_source_used == "statement_anchored"
+                               and not account.is_asset) else future
+
+    as_of = rich.balance_as_of.date() if rich.balance_as_of else today
+    if as_of >= today:
+        # Computed from the ledger "now" — it is only as fresh as the last
+        # real (imported or hand-entered) row.
+        last_real = db.execute(
+            select(func.max(Transaction.date)).where(
+                Transaction.account_id == account.id,
+                Transaction.date <= end_of_today,
+                or_(Transaction.raw_data.is_(None),
+                    ~Transaction.raw_data.contains(CONFIRM_SOURCE)),
+            )
+        ).scalar()
+        as_of = last_real.date() if last_real else today
+    return opening, min(as_of, today)
 
 
 def build_forecast(
@@ -145,22 +210,28 @@ def build_forecast(
 ) -> ForecastResult:
     """Project active scheduled payments forward for `months` months.
 
-    When ``account_ids`` is given, only those accounts' payments are
-    projected — used by the per-account forecast on the account detail page.
+    When ``account_ids`` is given, only those accounts are forecast — used by
+    the per-account forecast on the account detail page. A payment with a
+    counter account appears in both accounts' forecasts.
+
+    Each account starts from its balance as of the latest data it has, and
+    only occurrences after that date are projected: earlier ones are already
+    in the balance (or were missed), so replaying them would count them twice.
     """
-    from sqlalchemy import select
+    from sqlalchemy import or_, select
     from app.models.account import Account
     from app.models.scheduled_payment import ScheduledPayment
 
     today      = date.today()
-    # Advance end_date by months
     from app.services.recurring_detector import _add_months
     end_date = _add_months(today, months)
 
-    # Load active scheduled payments
     _q = select(ScheduledPayment).where(ScheduledPayment.active.is_(True))
     if account_ids is not None:
-        _q = _q.where(ScheduledPayment.account_id.in_(account_ids))
+        _q = _q.where(or_(
+            ScheduledPayment.account_id.in_(account_ids),
+            ScheduledPayment.counter_account_id.in_(account_ids),
+        ))
     payments = db.execute(
         _q.order_by(ScheduledPayment.next_due_date)
     ).scalars().all()
@@ -168,21 +239,41 @@ def build_forecast(
     if not payments:
         return ForecastResult(accounts=[], all_events=[], start_date=today, end_date=end_date)
 
-    # Load accounts for name/currency lookup
-    acct_ids = {p.account_id for p in payments}
+    acct_ids = {p.account_id for p in payments} | {
+        p.counter_account_id for p in payments if p.counter_account_id
+    }
     accounts_map = {
         a.id: a for a in db.execute(
             select(Account).where(Account.id.in_(acct_ids))
         ).scalars().all()
     }
+    wanted = acct_ids if account_ids is None else (acct_ids & set(account_ids))
+    anchors = {
+        aid: _forecast_anchor(db, accounts_map[aid], today)
+        for aid in wanted if aid in accounts_map
+    }
 
-    # Build per-account event lists
-    acct_events: dict[int, list[ForecastEvent]] = {aid: [] for aid in acct_ids}
+    acct_events: dict[int, list[ForecastEvent]] = {aid: [] for aid in anchors}
 
     for pmt in payments:
         acct = accounts_map.get(pmt.account_id)
-        acct_name = acct.name if acct else f"Account {pmt.account_id}"
-        currency  = pmt.currency or (acct.currency if acct else "USD")
+        if acct is None:
+            continue
+        counter = accounts_map.get(pmt.counter_account_id) if pmt.counter_account_id else None
+        currency = pmt.currency or acct.currency
+        # A cross-currency transfer would need an FX leg; saving one is
+        # refused, so a stray legacy row simply doesn't mirror.
+        if counter is not None and counter.currency != acct.currency:
+            counter = None
+
+        # Which sides of this payment are being forecast here.
+        sides = []
+        if pmt.account_id in anchors:
+            sides.append((acct, counter, False))
+        if counter is not None and counter.id in anchors:
+            sides.append((counter, acct, True))
+        if not sides:
+            continue
 
         # For variable-amount streams (salary, credit-card bills) the stored
         # amount is just an anchor — project using a 6-month trailing mean of
@@ -194,46 +285,49 @@ def build_forecast(
         else:
             forecast_amount = pmt.amount
 
-        # Walk from next_due_date forward, emitting one event per period
-        d = pmt.next_due_date
-        while d <= end_date:
-            if pmt.end_date and d > pmt.end_date:
-                break
-            acct_events[pmt.account_id].append(ForecastEvent(
-                date=d,
-                account_id=pmt.account_id,
-                account_name=acct_name,
-                description=pmt.description,
-                amount=forecast_amount,
-                currency=currency,
-                scheduled_payment_id=pmt.id,
-                frequency=pmt.frequency,
-            ))
-            if pmt.frequency == "once":
-                break
-            d = _advance_date(d, pmt.frequency, pmt.day_of_month)
+        for side, other, mirrored in sides:
+            amount = _counter_amount(forecast_amount, acct, side) if mirrored else forecast_amount
+            as_of = anchors[side.id][1]
+            d = pmt.next_due_date
+            while d <= end_date:
+                if pmt.end_date and d > pmt.end_date:
+                    break
+                if d > as_of:
+                    acct_events[side.id].append(ForecastEvent(
+                        date=d,
+                        account_id=side.id,
+                        account_name=side.name,
+                        description=pmt.description,
+                        amount=amount,
+                        currency=currency,
+                        scheduled_payment_id=pmt.id,
+                        frequency=pmt.frequency,
+                        pending=d <= today,
+                        counter_account_name=other.name if other else None,
+                        mirrored=mirrored,
+                    ))
+                if pmt.frequency == "once":
+                    break
+                d = _advance_date(d, pmt.frequency, pmt.day_of_month)
 
-    # Build AccountForecast with running balance
     account_forecasts: list[AccountForecast] = []
 
     for acct_id, events in acct_events.items():
-        acct = accounts_map.get(acct_id)
-        currency  = acct.currency if acct else "USD"
-        opening   = _get_account_balance(db, acct_id)
+        acct = accounts_map[acct_id]
+        opening, as_of = anchors[acct_id]
         events.sort(key=lambda e: e.date)
 
         af = AccountForecast(
             account_id=acct_id,
-            account_name=acct.name if acct else f"Account {acct_id}",
-            currency=currency,
+            account_name=acct.name,
+            currency=acct.currency,
             opening_balance=opening,
+            as_of=as_of,
             events=events,
         )
 
-        # Compute daily running balance checkpoints (one per event date)
         running = opening
-        # Emit opening balance on today
-        af.daily_balance.append((today, running))
+        af.daily_balance.append((as_of, running))
 
         seen_dates: dict[date, Decimal] = {}
         for evt in events:
@@ -248,7 +342,6 @@ def build_forecast(
 
         account_forecasts.append(af)
 
-    # Flatten all events for the combined timeline
     all_events: list[ForecastEvent] = []
     for evts in acct_events.values():
         all_events.extend(evts)
