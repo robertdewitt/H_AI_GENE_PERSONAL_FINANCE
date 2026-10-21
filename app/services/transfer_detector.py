@@ -1,15 +1,18 @@
 import re
+from collections import Counter
+from dataclasses import dataclass, field
 from datetime import timedelta
 from decimal import Decimal
 
 from sqlalchemy import and_, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.config import settings
 from app.models.account import Account, LIABILITY_TYPES
 from app.models.transaction import Transaction
 from app.models.transfer_link import TransferLink
 from app.schemas.transfer import TransferCandidate
+from app.services.recurring_detector import _normalize
 
 
 TRANSFER_KEYWORDS = [
@@ -25,35 +28,78 @@ PAYMENT_KEYWORDS = [
     "ach", "transfer",
 ]
 
-_TOKEN_STOP = {"the", "and", "for", "from", "that", "this", "with", "are", "was"}
+@dataclass
+class _LearnedPatterns:
+    """What past confirmations and dismissals say about future candidates.
+
+    Everything is keyed by account id, so one user's history never moves
+    another user's scores. A "signature" is the description with digits and
+    punctuation stripped, so reference numbers and dates don't stop a
+    monthly standing order from matching last month's.
+    """
+    routes: Counter = field(default_factory=Counter)        # (from_acct, to_acct) → confirmed count
+    pairs: set = field(default_factory=set)                 # (from_acct, from_sig, to_acct, to_sig)
+    sides: set = field(default_factory=set)                 # (acct, sig) seen in a confirmed link
+    rejected: set = field(default_factory=set)              # (acct, sig) dismissed, never confirmed
 
 
-def _extract_tokens(description: str) -> set[str]:
-    """Lowercase significant words from a description (len≥4, not stop words)."""
-    words = re.sub(r"[^a-z0-9\s]", " ", description.lower()).split()
-    return {w for w in words if len(w) >= 4 and w not in _TOKEN_STOP}
+def _signature(description: str | None) -> str:
+    return _normalize(description or "")
 
 
-def _get_learned_tokens(db: Session) -> set[str]:
-    """Return significant tokens from all user-confirmed transfer descriptions."""
-    confirmed = db.execute(
-        select(TransferLink).where(TransferLink.confirmed_by_user.is_(True))
-    ).scalars().all()
+def _learn_from_history(db: Session) -> _LearnedPatterns:
+    learned = _LearnedPatterns()
+    out_t, in_t = aliased(Transaction), aliased(Transaction)
+    rows = db.execute(
+        select(out_t.account_id, out_t.description, in_t.account_id, in_t.description)
+        .select_from(TransferLink)
+        .join(out_t, out_t.id == TransferLink.from_transaction_id)
+        .join(in_t, in_t.id == TransferLink.to_transaction_id)
+        .where(TransferLink.confirmed_by_user.is_(True))
+    ).all()
+    for from_acct, from_desc, to_acct, to_desc in rows:
+        from_sig, to_sig = _signature(from_desc), _signature(to_desc)
+        learned.routes[(from_acct, to_acct)] += 1
+        learned.pairs.add((from_acct, from_sig, to_acct, to_sig))
+        learned.sides.update({(from_acct, from_sig), (to_acct, to_sig)})
 
-    tokens: set[str] = set()
-    for link in confirmed:
-        for txn_id in (link.from_transaction_id, link.to_transaction_id):
-            txn = db.get(Transaction, txn_id)
-            if txn:
-                tokens.update(_extract_tokens(txn.description))
-    return tokens
+    dismissed = db.execute(
+        select(Transaction.account_id, Transaction.description)
+        .where(Transaction.transfer_dismissed.is_(True))
+    ).all()
+    learned.rejected = {(a, _signature(d)) for a, d in dismissed} - learned.sides
+    return learned
 
 
-def _description_score(
-    desc_from: str,
-    desc_to: str,
-    learned_tokens: set[str] | None = None,
-) -> float:
+def _learned_adjustment(
+    out_txn: Transaction, in_txn: Transaction, learned: _LearnedPatterns,
+) -> tuple[float, str | None]:
+    """Confidence nudge from history, plus a plain-English reason for it."""
+    out_side = (out_txn.account_id, _signature(out_txn.description))
+    in_side = (in_txn.account_id, _signature(in_txn.description))
+
+    if out_side in learned.rejected or in_side in learned.rejected:
+        return -0.25, "Looks like a pair you marked Not a Transfer"
+
+    delta, note = 0.0, None
+    if (*out_side, *in_side) in learned.pairs:
+        delta, note = 0.25, "Matches a transfer you confirmed before"
+    elif out_side in learned.sides and in_side in learned.sides:
+        delta = 0.15
+    elif out_side in learned.sides or in_side in learned.sides:
+        delta = 0.05
+
+    route_count = learned.routes.get((out_txn.account_id, in_txn.account_id), 0)
+    if route_count:
+        delta += 0.10 * min(route_count, 3) / 3
+        note = note or (
+            f"You've confirmed {route_count} transfer{'s' if route_count != 1 else ''} "
+            "between these accounts"
+        )
+    return delta, note
+
+
+def _description_score(desc_from: str, desc_to: str) -> float:
     """Score how likely two descriptions represent a transfer."""
     lower_from = desc_from.lower()
     lower_to = desc_to.lower()
@@ -64,13 +110,6 @@ def _description_score(
             score += 0.15
         if kw in lower_to:
             score += 0.15
-
-    # Boost if descriptions match patterns from previously confirmed transfers
-    if learned_tokens:
-        from_tokens = _extract_tokens(desc_from)
-        to_tokens = _extract_tokens(desc_to)
-        if from_tokens & learned_tokens or to_tokens & learned_tokens:
-            score += 0.20
 
     if score > 0.5:
         score = 0.5
@@ -90,7 +129,7 @@ def detect_transfers(
     window = date_window or settings.transfer_date_window_days
     tolerance = amount_tolerance or settings.transfer_amount_tolerance
 
-    learned_tokens = _get_learned_tokens(db)
+    learned = _learn_from_history(db)
 
     outflows = db.execute(
         select(Transaction).where(
@@ -135,9 +174,8 @@ def detect_transfers(
             amount_diff = abs(in_txn.amount - out_abs)
             amount_score = 1.0 if amount_diff <= Decimal("0.01") else max(0, 1.0 - float(amount_diff))
 
-            desc_score = _description_score(
-                out_txn.description, in_txn.description, learned_tokens,
-            )
+            desc_score = _description_score(out_txn.description, in_txn.description)
+            learned_delta, learned_note = _learned_adjustment(out_txn, in_txn, learned)
 
             # Boost score if either side is already flagged as a transfer
             transfer_bonus = 0.0
@@ -146,13 +184,14 @@ def detect_transfers(
             if in_txn.is_transfer:
                 transfer_bonus += 0.15
 
-            confidence = min(
+            confidence = max(0.0, min(
                 1.0,
                 date_score * 0.30
                 + amount_score * 0.40
                 + desc_score * 0.15
-                + transfer_bonus,
-            )
+                + transfer_bonus
+                + learned_delta,
+            ))
 
             out_acct = db.get(Account, out_txn.account_id)
             in_acct = db.get(Account, in_txn.account_id)
@@ -169,6 +208,7 @@ def detect_transfers(
                 to_description=in_txn.description,
                 from_currency=(out_acct.currency if out_acct else "USD") or "USD",
                 to_currency=(in_acct.currency if in_acct else "USD") or "USD",
+                learned_note=learned_note,
             ))
 
     candidates.sort(key=lambda c: c.confidence, reverse=True)

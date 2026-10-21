@@ -16,6 +16,7 @@ class TransferCandidate(BaseModel):
     to_description: str
     from_currency: str = "USD"
     to_currency: str = "USD"
+    learned_note: str | None = None   # why history raised or lowered confidence
 
 
 class TransferLinkCreate(BaseModel):

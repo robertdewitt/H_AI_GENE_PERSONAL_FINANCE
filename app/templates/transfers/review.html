@@ -108,6 +108,9 @@
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.4rem">
             <span class="badge badge-confidence" style="font-size:0.9rem">{{ "{:.0%}".format(candidate.confidence) }}</span>
+            {% if candidate.learned_note %}
+            <small style="color:var(--pico-muted-color);text-align:right;max-width:14rem">{{ candidate.learned_note }}</small>
+            {% endif %}
             <div style="display:flex;gap:0.4rem">
                 <form method="post" action="/transfers/link" style="margin:0">
                     <input type="hidden" name="from_transaction_id" value="{{ candidate.from_transaction_id }}">
