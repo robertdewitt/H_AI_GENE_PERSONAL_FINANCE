@@ -926,7 +926,24 @@
     </form>
 </details>
 
-{% if account_forecast and account_forecast.events %}
+{% macro evt_amount(evt) -%}
+                {# On a liability (mortgage, loan, card) a scheduled payment
+                   lowers what you owe, so show it as a positive move — the same
+                   way this account's own transactions are recorded. On an asset
+                   account the plain cash-flow sign is what you want. #}
+                {% if not account.is_asset %}
+                    {% if evt.amount < 0 %}
+                        <span class="positive">+{{ account.currency_symbol }}{{ "%.2f"|format(evt.amount|float|abs) }}</span>
+                    {% else %}
+                        <span class="negative">&minus;{{ account.currency_symbol }}{{ "%.2f"|format(evt.amount|float) }}</span>
+                    {% endif %}
+                {% elif evt.amount < 0 %}
+                    <span class="negative">&minus;{{ account.currency_symbol }}{{ "%.2f"|format(evt.amount|float|abs) }}</span>
+                {% else %}
+                    <span class="positive">+{{ account.currency_symbol }}{{ "%.2f"|format(evt.amount|float) }}</span>
+                {% endif %}
+{%- endmacro %}
+{% if account_forecast and (account_forecast.events or account_forecast.unreconciled) %}
 {% set af = account_forecast %}
 {% set sym = account.currency_symbol %}
 <h2>Cash Flow Forecast</h2>
@@ -954,6 +971,22 @@
         </tr>
     </thead>
     <tbody>
+        {# Expected on or before the latest data but never matched to an
+           imported transaction. Listed so they can be chased up; they don't
+           move the balance, which already reflects what really happened. #}
+        {% for evt in af.unreconciled %}
+        <tr style="background:color-mix(in srgb,#f59e0b 8%,transparent)">
+            <td style="font-size:0.85rem;white-space:nowrap">{{ evt.date.strftime("%d %b %Y") }}</td>
+            <td style="font-size:0.9rem">{{ evt.description }}
+                <small style="color:var(--pico-muted-color);text-transform:capitalize">&nbsp;{{ evt.frequency }}</small>
+                <small style="color:#b45309;display:block" title="Due by your latest data for this account, but no matching transaction was imported. If it was paid at a different amount or date, it will match on the next import; if it was skipped, edit or pause the schedule.">
+                    unreconciled &mdash; no matching transaction in your data
+                </small>
+            </td>
+            <td style="text-align:right;white-space:nowrap;font-weight:600;opacity:0.6">{{ evt_amount(evt) }}</td>
+            <td style="text-align:right;color:var(--pico-muted-color);font-size:0.8rem">not counted</td>
+        </tr>
+        {% endfor %}
         <tr>
             <td style="color:var(--pico-muted-color);font-size:0.85rem;white-space:nowrap">{{ af.as_of.strftime("%d %b %Y") }}</td>
             <td style="color:var(--pico-muted-color);font-size:0.85rem"><em>Balance as of your latest data</em></td>
@@ -979,23 +1012,7 @@
                 <small style="color:#b45309;display:block" title="Due since your latest data for this account. Import a newer statement to replace this estimate with what actually happened.">expected &mdash; not imported yet</small>
                 {% endif %}
             </td>
-            <td style="text-align:right;white-space:nowrap;font-weight:600">
-                {# On a liability (mortgage, loan, card) a scheduled payment
-                   lowers what you owe, so show it as a positive move — the same
-                   way this account's own transactions are recorded. On an asset
-                   account the plain cash-flow sign is what you want. #}
-                {% if not account.is_asset %}
-                    {% if evt.amount < 0 %}
-                        <span class="positive">+{{ sym }}{{ "%.2f"|format(evt.amount|float|abs) }}</span>
-                    {% else %}
-                        <span class="negative">&minus;{{ sym }}{{ "%.2f"|format(evt.amount|float) }}</span>
-                    {% endif %}
-                {% elif evt.amount < 0 %}
-                    <span class="negative">&minus;{{ sym }}{{ "%.2f"|format(evt.amount|float|abs) }}</span>
-                {% else %}
-                    <span class="positive">+{{ sym }}{{ "%.2f"|format(evt.amount|float) }}</span>
-                {% endif %}
-            </td>
+            <td style="text-align:right;white-space:nowrap;font-weight:600">{{ evt_amount(evt) }}</td>
             {# Signed like the headline balance above: owed is negative. #}
             <td style="text-align:right;white-space:nowrap;font-weight:600">
                 {{ bal.signed(ns.running, account.is_asset, sym, "{:,.2f}") }}

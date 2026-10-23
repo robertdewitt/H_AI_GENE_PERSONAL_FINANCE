@@ -16,6 +16,10 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 
+# A schedule that fell far behind would otherwise list every missed period.
+MAX_UNRECONCILED = 6
+
+
 @dataclass
 class ForecastEvent:
     date: date
@@ -29,6 +33,11 @@ class ForecastEvent:
     # Dated after the balance's as-of date but not after today: expected to
     # have happened already, just not in the imported data yet.
     pending: bool = False
+    # Dated on or before the as-of date, yet no imported transaction has
+    # settled it (the matcher advances next_due_date past settled ones).
+    # Shown so it can be chased up; the opening balance already reflects
+    # what really happened, so it never moves the projected balance.
+    unreconciled: bool = False
     # The other account of a transfer, and whether this event is the mirror
     # of a payment stored on that other account.
     counter_account_name: str | None = None
@@ -45,6 +54,8 @@ class AccountForecast:
     # imported transaction. Only occurrences after it are projected.
     as_of: date | None = None
     events: list[ForecastEvent] = field(default_factory=list)
+    # Occurrences up to as_of with no matching import — listed, not counted.
+    unreconciled: list[ForecastEvent] = field(default_factory=list)
     # Running balance checkpoints: list of (date, balance)
     daily_balance: list[tuple[date, Decimal]] = field(default_factory=list)
     overdraft_dates: list[date] = field(default_factory=list)
@@ -254,6 +265,7 @@ def build_forecast(
     }
 
     acct_events: dict[int, list[ForecastEvent]] = {aid: [] for aid in anchors}
+    unreconciled: dict[int, list[ForecastEvent]] = {aid: [] for aid in anchors}
 
     for pmt in payments:
         acct = accounts_map.get(pmt.account_id)
@@ -289,11 +301,16 @@ def build_forecast(
             amount = _counter_amount(forecast_amount, acct, side) if mirrored else forecast_amount
             as_of = anchors[side.id][1]
             d = pmt.next_due_date
+            missed = 0
             while d <= end_date:
                 if pmt.end_date and d > pmt.end_date:
                     break
-                if d > as_of:
-                    acct_events[side.id].append(ForecastEvent(
+                past = d <= as_of
+                # Matching only ever settles the side the payment is stored
+                # on, so a mirror can't tell whether its past ones landed.
+                if not past or (not mirrored and missed < MAX_UNRECONCILED):
+                    missed += past
+                    (unreconciled if past else acct_events)[side.id].append(ForecastEvent(
                         date=d,
                         account_id=side.id,
                         account_name=side.name,
@@ -302,7 +319,8 @@ def build_forecast(
                         currency=currency,
                         scheduled_payment_id=pmt.id,
                         frequency=pmt.frequency,
-                        pending=d <= today,
+                        pending=not past and d <= today,
+                        unreconciled=past,
                         counter_account_name=other.name if other else None,
                         mirrored=mirrored,
                     ))
@@ -324,6 +342,7 @@ def build_forecast(
             opening_balance=opening,
             as_of=as_of,
             events=events,
+            unreconciled=sorted(unreconciled[acct_id], key=lambda e: e.date),
         )
 
         running = opening

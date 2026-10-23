@@ -210,3 +210,52 @@ def test_only_asset_accounts_can_run_short(db):
 
     assert _events(db, card).overdraft_dates == []
     assert _events(db, checking).overdraft_dates == [TODAY + timedelta(days=5)]
+
+
+# ── Unreconciled occurrences ─────────────────────────────────────────────
+
+
+def test_unmatched_past_occurrences_are_listed_but_not_counted(db):
+    checking = _acct(db, "Checking")
+    _txn(db, checking, days_ago=3, amount="1000.00")             # data runs to 3 days ago
+    _sched(db, checking, "3640.00", TODAY - timedelta(days=40))  # rent, never matched
+
+    af = _events(db, checking)
+    assert [e.unreconciled for e in af.unreconciled] == [True, True]
+    assert all(e.date <= af.as_of for e in af.unreconciled)
+    assert all(e.date > af.as_of for e in af.events)
+    # The projected balance carries on from the real one, ignoring the misses.
+    assert af.daily_balance[0][1] == Decimal("1000.00")
+    assert af.daily_balance[1][1] == Decimal("1000.00") + Decimal("3640.00")
+
+
+def test_editing_a_schedule_changes_every_unsettled_occurrence(db):
+    checking = _acct(db, "Checking")
+    _txn(db, checking, days_ago=3, amount="0")
+    rent = _sched(db, checking, "3765.00", TODAY - timedelta(days=40))
+    rent.amount = Decimal("3640.00")
+    db.flush()
+
+    af = _events(db, checking)
+    assert {e.amount for e in af.unreconciled + af.events} == {Decimal("3640.00")}
+
+
+def test_unreconciled_list_is_capped(db):
+    checking = _acct(db, "Checking")
+    _txn(db, checking, days_ago=1, amount="0")
+    _sched(db, checking, "-10.00", TODAY - timedelta(days=400))
+
+    from app.services.forecast_service import MAX_UNRECONCILED
+    assert len(_events(db, checking).unreconciled) == MAX_UNRECONCILED
+
+
+def test_mirrored_side_lists_no_unreconciled(db):
+    """Matching only settles the stored side, so the mirror can't know."""
+    checking = _acct(db, "Checking")
+    savings = _acct(db, "Savings")
+    for a in (checking, savings):
+        _txn(db, a, days_ago=3, amount="100.00")
+    _sched(db, checking, "-50.00", TODAY - timedelta(days=40), counter=savings)
+
+    assert len(_events(db, checking).unreconciled) == 2
+    assert _events(db, savings).unreconciled == []
