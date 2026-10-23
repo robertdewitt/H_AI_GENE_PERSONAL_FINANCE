@@ -2,6 +2,7 @@
 {% block title %}Accounts &mdash; Financial Hygiene{% endblock %}
 
 {% block content %}
+{% import "_balance.html" as bal %}
 <hgroup>
     <h1>Accounts</h1>
     <p>All your financial accounts in one place</p>
@@ -16,7 +17,7 @@
     </div>
     <div class="summary-card">
         <div class="label">Total Liabilities ({{ display_currency }})</div>
-        <div class="value negative">{{ sym }}{{ "{:,.2f}".format(total_liabilities) }}</div>
+        <div class="value">{{ bal.signed(total_liabilities, false, sym) }}</div>
     </div>
     <div class="summary-card">
         <div class="label">Net Worth ({{ display_currency }})</div>
@@ -180,8 +181,9 @@
                    style="font-size:0.75rem;color:var(--pico-color-orange-500, #f59e0b);text-decoration:none;margin-left:0.4rem">⚠ set balance</a>
                 {% endif %}
             </div>
-            <div class="account-balance {% if item.balance >= 0 and item.account.is_asset %}positive{% elif not item.account.is_asset %}negative{% endif %}">
-                {{ sym }}{{ "{:,.2f}".format(item.balance) }}
+            {% set in_credit = not item.account.is_asset and item.balance < 0 %}
+            <div class="account-balance"{% if in_credit %} title="In credit — nothing to pay"{% endif %}>
+                {{ bal.signed(item.balance, item.account.is_asset, sym) }}{% if in_credit %} <small class="positive">credit</small>{% endif %}
                 {% if item.account.currency != display_currency %}<small style="color:var(--pico-muted-color)">({{ item.account.currency }})</small>{% endif %}
             </div>
         </div>
@@ -217,8 +219,8 @@
                 Closed{% if item.account.closed_at %} {{ item.account.closed_at.strftime('%b %Y') }}{% endif %}
             </span>
         </div>
-        <div class="account-balance {% if item.balance >= 0 and item.account.is_asset %}positive{% elif not item.account.is_asset %}negative{% endif %}">
-            {{ sym }}{{ "{:,.2f}".format(item.balance) }}
+        <div class="account-balance">
+            {{ bal.signed(item.balance, item.account.is_asset, sym) }}
             {% if item.account.currency != display_currency %}<small style="color:var(--pico-muted-color)">({{ item.account.currency }})</small>{% endif %}
         </div>
     </div>

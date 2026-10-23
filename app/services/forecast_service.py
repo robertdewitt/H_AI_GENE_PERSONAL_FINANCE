@@ -337,7 +337,9 @@ def build_forecast(
         for d in sorted(seen_dates):
             bal = seen_dates[d]
             af.daily_balance.append((d, bal))
-            if bal < Decimal("0.00"):
+            # A liability's balance is the amount owed, so below zero means
+            # in credit — only an asset account can run short.
+            if acct.is_asset and bal < Decimal("0.00"):
                 af.overdraft_dates.append(d)
 
         account_forecasts.append(af)

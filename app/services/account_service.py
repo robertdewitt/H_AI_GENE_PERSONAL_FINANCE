@@ -1534,14 +1534,19 @@ def split_closed_accounts(
     return open_groups, closed
 
 
-def next_payment_due(db: Session, account: Account):
+def next_payment_due(db: Session, account: Account, balance=None):
     """Effective next payment due date for a payable (liability) account.
 
     Uses the account's own ``payment_due_date`` when set (from a statement or
     entered by hand), otherwise falls back to the soonest active scheduled
     payment on that account. Returns a ``date`` or ``None``.
+
+    ``balance`` is the amount owed (liabilities are positive when owed). When
+    given and nothing is owed — paid off, or in credit — nothing is due.
     """
     if account is None or account.account_type not in LIABILITY_TYPES:
+        return None
+    if balance is not None and balance <= 0:
         return None
     if account.payment_due_date is not None:
         return account.payment_due_date
@@ -1554,8 +1559,14 @@ def next_payment_due(db: Session, account: Account):
     ).scalar()
 
 
-def next_payment_due_map(db: Session, accounts: list[Account]) -> dict[int, object]:
-    """`next_payment_due` for many accounts in one pass (for list views)."""
+def next_payment_due_map(
+    db: Session, accounts: list[Account], balances: dict[int, object] | None = None,
+) -> dict[int, object]:
+    """`next_payment_due` for many accounts in one pass (for list views).
+
+    ``balances`` maps account id → amount owed; accounts owing nothing are
+    left out, as in ``next_payment_due``.
+    """
     from app.models.scheduled_payment import ScheduledPayment
 
     liability_ids = [
@@ -1579,6 +1590,8 @@ def next_payment_due_map(db: Session, accounts: list[Account]) -> dict[int, obje
     out: dict[int, object] = {}
     for a in accounts:
         if a.account_type not in LIABILITY_TYPES:
+            continue
+        if balances is not None and a.id in balances and balances[a.id] <= 0:
             continue
         out[a.id] = a.payment_due_date or sched.get(a.id)
     return out

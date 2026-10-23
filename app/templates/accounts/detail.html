@@ -2,6 +2,7 @@
 {% block title %}{{ account.name }} &mdash; Financial Hygiene{% endblock %}
 
 {% block content %}
+{% import "_balance.html" as bal %}
 {% if request.query_params.get("imported") %}
 <article style="margin-bottom:1rem;padding:0.75rem 1rem;border-left:4px solid var(--pico-ins-color)">
     <strong>Import complete:</strong>
@@ -66,9 +67,13 @@
 <div class="summary-grid">
     <div class="summary-card">
         <div class="label">Current Balance ({{ account.currency }})</div>
-        <div class="value {% if not account.is_asset %}negative{% elif balance >= 0 %}positive{% else %}negative{% endif %}">
-            {% if not account.is_asset or balance < 0 %}&minus;{% endif %}{{ account.currency_symbol }}{{ "{:,.2f}".format(balance|abs) }}
-        </div>
+        {# A liability below zero owes nothing — the issuer owes you — so it
+           reads as money in hand rather than debt. #}
+        {% set in_credit = not account.is_asset and balance < 0 %}
+        <div class="value">{{ bal.signed(balance, account.is_asset, account.currency_symbol) }}</div>
+        {% if in_credit %}
+        <div style="font-size:0.8rem;color:var(--pico-muted-color);margin-top:0.25rem">In credit &mdash; nothing to pay</div>
+        {% endif %}
         {% if future_txn_count %}
         {# Confirmed scheduled payments are dated ahead, so the headline figure
            is not "money in the account today" — spell out both. #}
@@ -76,7 +81,7 @@
             Includes {{ future_txn_count }} future-dated
             {{ "entry" if future_txn_count == 1 else "entries" }}
             ({% if future_txn_total < 0 %}&minus;{% else %}+{% endif %}{{ account.currency_symbol }}{{ "{:,.2f}".format(future_txn_total|abs) }}).<br>
-            <a href="/transactions?account_id={{ account.id }}">{% if not account.is_asset or balance_today < 0 %}&minus;{% endif %}{{ account.currency_symbol }}{{ "{:,.2f}".format(balance_today|abs) }}</a>
+            <a href="/transactions?account_id={{ account.id }}">{{ bal.signed(balance_today, account.is_asset, account.currency_symbol) }}</a>
             as of today.
         </div>
         {% endif %}
@@ -953,12 +958,14 @@
             <td style="color:var(--pico-muted-color);font-size:0.85rem;white-space:nowrap">{{ af.as_of.strftime("%d %b %Y") }}</td>
             <td style="color:var(--pico-muted-color);font-size:0.85rem"><em>Balance as of your latest data</em></td>
             <td></td>
-            <td style="text-align:right;font-weight:600">{% if af.opening_balance < 0 or not account.is_asset %}&minus;{% endif %}{{ sym }}{{ "{:,.2f}".format(af.opening_balance|float|abs) }}</td>
+            <td style="text-align:right;font-weight:600">{{ bal.signed(af.opening_balance, account.is_asset, sym) }}</td>
         </tr>
         {% set ns = namespace(running=af.opening_balance) %}
         {% for evt in af.events %}
         {% set ns.running = ns.running + evt.amount %}
-        {% set neg = ns.running < 0 %}
+        {# Shortfall = an asset account dipping below zero. A liability below
+           zero is in credit, which is good news, not a warning. #}
+        {% set neg = account.is_asset and ns.running < 0 %}
         <tr{% if neg %} style="background:#fef2f2"{% elif evt.pending %} style="opacity:0.7"{% endif %}>
             <td style="font-size:0.85rem;white-space:nowrap">{{ evt.date.strftime("%d %b %Y") }}</td>
             <td style="font-size:0.9rem">{{ evt.description }}
@@ -989,9 +996,9 @@
                     <span class="positive">+{{ sym }}{{ "%.2f"|format(evt.amount|float) }}</span>
                 {% endif %}
             </td>
-            {# Balance owed stays signed like the headline balance above. #}
-            <td style="text-align:right;white-space:nowrap;font-weight:600{% if neg %};color:#dc2626{% endif %}">
-                {% if neg or not account.is_asset %}&minus;{% endif %}{{ sym }}{{ "%.2f"|format(ns.running|float|abs) }}
+            {# Signed like the headline balance above: owed is negative. #}
+            <td style="text-align:right;white-space:nowrap;font-weight:600">
+                {{ bal.signed(ns.running, account.is_asset, sym, "{:,.2f}") }}
             </td>
         </tr>
         {% endfor %}

@@ -160,7 +160,9 @@ def accounts_list(
 
     groups = get_accounts_grouped(db, user_id=user.id, target_currency=display_ccy)
     _all_accts = [item["account"] for items in groups.values() for item in items]
-    due_dates = next_payment_due_map(db, _all_accts)
+    due_dates = next_payment_due_map(db, _all_accts, balances={
+        item["account"].id: item["balance"] for items in groups.values() for item in items
+    })
     total_assets = sum(
         item["balance"]
         for items in groups.values()
@@ -1049,7 +1051,7 @@ def account_detail(
         "payment_breakdown": payment_breakdown,
         "interest_ytd": interest_ytd,
         "plan_it_plans": plan_it_plans,
-        "payment_due": next_payment_due(db, acct),
+        "payment_due": next_payment_due(db, acct, balance=balance),
         "now": naive_utc_now(),
     })
 

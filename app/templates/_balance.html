@@ -1,0 +1,11 @@
+{# Shared balance display. One rule everywhere: money you owe reads as
+   negative (red), money you hold or are owed reads as positive (green).
+
+   Liabilities are stored as the amount owed (positive = you owe), so they
+   flip before display: a card at 1,541.45 owed shows −1,541.45, and one at
+   −1,541.45 (overpaid, in credit) shows +1,541.45. #}
+
+{% macro signed(value, is_asset, sym, fmt="{:,.2f}") -%}
+{%- set v = value if is_asset else -value -%}
+<span class="{% if v < 0 %}negative{% else %}positive{% endif %}">{% if v < 0 %}&minus;{% elif not is_asset and v > 0 %}+{% endif %}{{ sym }}{{ fmt.format(v|float|abs) }}</span>
+{%- endmacro %}

@@ -199,3 +199,14 @@ def test_edit_without_counter_field_keeps_it(alice_two_accounts):
     }, cookies=_cookie(ctx["alice_cookie"]), follow_redirects=False)
     p = _stored(ctx)[0]
     assert (p.description, p.counter_account_id) == ("Renamed", savings_id)
+
+
+def test_only_asset_accounts_can_run_short(db):
+    """Below zero on a liability means in credit, not a shortfall."""
+    card = _acct(db, "Card", is_asset=False, kind=AccountType.CREDIT_CARD)
+    checking = _acct(db, "Checking")
+    for acct in (card, checking):
+        _sched(db, acct, "-500.00", TODAY + timedelta(days=5), frequency="once")
+
+    assert _events(db, card).overdraft_dates == []
+    assert _events(db, checking).overdraft_dates == [TODAY + timedelta(days=5)]

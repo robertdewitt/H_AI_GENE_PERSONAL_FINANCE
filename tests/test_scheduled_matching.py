@@ -188,3 +188,21 @@ def test_matching_clears_the_overdue_badge(db):
     db.commit()
 
     assert next_payment_due(db, acct) == date(2026, 10, 3)
+
+
+def test_nothing_due_when_nothing_owed(db):
+    """A liability paid off or in credit (owed ≤ 0) shows no payment due,
+    on the account page and in the accounts list alike."""
+    from decimal import Decimal
+    from app.services.account_service import next_payment_due, next_payment_due_map
+
+    acct = _mortgage(db)
+    _sched(db, acct, "RegularPayment", "-3245.24", date(2026, 7, 3))
+    db.commit()
+
+    assert next_payment_due(db, acct, balance=Decimal("100.00")) == date(2026, 7, 3)
+    assert next_payment_due(db, acct, balance=Decimal("0")) is None
+    assert next_payment_due(db, acct, balance=Decimal("-1541.45")) is None
+
+    assert next_payment_due_map(db, [acct], balances={acct.id: Decimal("-1541.45")}) == {}
+    assert next_payment_due_map(db, [acct], balances={acct.id: Decimal("50")}) == {acct.id: date(2026, 7, 3)}
