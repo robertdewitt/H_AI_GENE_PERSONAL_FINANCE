@@ -1037,6 +1037,20 @@ def revolut_confirm(
             "error": f"Revolut PDF import failed: {exc}",
         })
 
+    # Same scheduled-payment matching every other import runs — without it a
+    # Revolut statement never settled its direct debits and subscriptions.
+    try:
+        from app.services.scheduled_matcher import backfill_matches, match_batch
+        match_batch(db, batch.id)
+        backfill_matches(db, account_id=account_id)
+        db.commit()
+    except Exception as exc:
+        log.warning(
+            "scheduled_matcher failed for Revolut batch %s: %s",
+            batch.id, exc, exc_info=True,
+        )
+        db.rollback()
+
     imported = batch.row_count
     dupes = getattr(batch, "_duplicates_skipped", 0)
     return RedirectResponse(

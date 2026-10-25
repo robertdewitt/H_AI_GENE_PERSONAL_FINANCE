@@ -224,6 +224,21 @@ def _advance_next_due(payment, matched_date: date) -> None:
         payment.active = False
 
 
+def heal_next_due(payment) -> bool:
+    """Repair a schedule whose next due date is on or before its last match.
+
+    That state can't arise from matching (a match always moves next_due past
+    it), but an edit or data repair can leave it, and then nothing matches
+    again: every later payment is either inside the settled period or too far
+    from next_due to count. Advancing one period past the last match puts the
+    schedule back where matching would have. Returns True if it changed."""
+    last = payment.last_matched_date
+    if not payment.active or last is None or payment.next_due_date > last:
+        return False
+    _advance_next_due(payment, last)
+    return True
+
+
 def match_batch(db: "Session", import_batch_id: int) -> dict:
     """Match transactions from a specific import batch against scheduled payments.
 
@@ -250,6 +265,7 @@ def match_batch(db: "Session", import_batch_id: int) -> dict:
 
     by_account: dict[int, list] = {}
     for p in payments:
+        heal_next_due(p)
         by_account.setdefault(p.account_id, []).append(p)
 
     from app.models.account import Account
@@ -370,6 +386,7 @@ def backfill_matches(
 
         by_account: dict[int, list] = {}
         for pmt in payments:
+            heal_next_due(pmt)
             by_account.setdefault(pmt.account_id, []).append(pmt)
 
         accounts = {

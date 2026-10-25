@@ -206,3 +206,23 @@ def test_nothing_due_when_nothing_owed(db):
 
     assert next_payment_due_map(db, [acct], balances={acct.id: Decimal("-1541.45")}) == {}
     assert next_payment_due_map(db, [acct], balances={acct.id: Decimal("50")}) == {acct.id: date(2026, 7, 3)}
+
+
+def test_schedule_with_next_due_before_last_match_heals_and_matches(db):
+    """next_due on or before last_matched (left by an edit or repair) used to
+    block every later match: Sky stuck at 23 Jul with a 23 Aug last match."""
+    from app.services.scheduled_matcher import heal_next_due
+
+    acct = _checking(db)
+    sky = _sched(db, acct, "Sky", "-23.00", date(2026, 7, 23))
+    sky.last_matched_date = date(2026, 8, 23)
+    for month in (9, 10):
+        _txn(db, acct, date(2026, month, 23), "-23.00", "Sky")
+    db.commit()
+
+    backfill_matches(db, account_id=acct.id, since=date(2026, 1, 1))
+    db.commit()
+    assert (sky.last_matched_date, sky.next_due_date) == (date(2026, 10, 23), date(2026, 11, 23))
+
+    # A consistent schedule is left alone.
+    assert heal_next_due(sky) is False
