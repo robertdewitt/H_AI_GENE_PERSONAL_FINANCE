@@ -81,6 +81,10 @@ def get_current_user(
             user = _api_user(db, raw)
 
     if user is not None:
+        # Templates read these for request-wide chrome (the accounts menu)
+        # without each route passing them in.
+        request.state.user = user
+        request.state.db = db
         return user
 
     is_api = request.url.path.startswith("/api/")

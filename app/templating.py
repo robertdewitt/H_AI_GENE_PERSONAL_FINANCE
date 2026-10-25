@@ -64,3 +64,42 @@ templates.env.globals["currency_symbol"] = _currency_symbol
 # so the user knows it's set, without leaking the whole thing on screen.
 from app.services.secret_box import mask as _mask_secret
 templates.env.filters["mask_secret"] = _mask_secret
+
+
+def _nav_accounts(request) -> dict[str, list]:
+    """The signed-in user's open accounts for the nav menu, grouped and
+    ordered as on the Accounts page: {group: [(id, name), ...]}.
+
+    Reads the user and session get_current_user left on request.state, so
+    it is empty on pages with no signed-in user (login, setup)."""
+    state = getattr(request, "state", None)
+    user, db = getattr(state, "user", None), getattr(state, "db", None)
+    if user is None or db is None:
+        return {}
+    from app.services.scoping import owned_accounts
+
+    groups: dict[str, list] = {}
+    accounts = sorted(owned_accounts(db, user), key=lambda a: (a.account_type.value, a.name.lower()))
+    for a in accounts:
+        if a.closed_at is None:
+            groups.setdefault(a.type_group, []).append((a.id, a.name))
+    return groups
+
+
+templates.env.globals["nav_accounts"] = _nav_accounts
+
+
+_static_dir = Path(__file__).parent / "static"
+
+
+def _static_url(path: str) -> str:
+    """``/static/<path>?v=<mtime>`` — the query changes whenever the file
+    does, so browsers never keep using a stale stylesheet after an edit."""
+    try:
+        version = int((_static_dir / path).stat().st_mtime)
+    except OSError:
+        return f"/static/{path}"
+    return f"/static/{path}?v={version}"
+
+
+templates.env.globals["static_url"] = _static_url

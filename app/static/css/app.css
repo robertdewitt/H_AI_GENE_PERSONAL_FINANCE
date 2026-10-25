@@ -249,3 +249,59 @@ table {
     vertical-align: middle;
     color: var(--pico-primary);
 }
+/* Accounts submenu inside the Money dropdown: expands in place on click
+   (works on touch), lists every open account under its group heading. */
+.app-nav .nav-sub > details {
+    margin: 0;
+}
+.app-nav .nav-sub > details > summary {
+    display: flex;
+    direction: ltr;            /* the dropdown list is rtl for alignment */
+    justify-content: flex-end;
+    align-items: center;
+    padding: calc(var(--pico-form-element-spacing-vertical) * 0.5) var(--pico-form-element-spacing-horizontal);
+    list-style: none;
+}
+.app-nav .nav-sub > details > summary::-webkit-details-marker { display: none; }
+.app-nav .nav-sub > details > summary::after {
+    content: "▸";
+    margin-left: 0.4rem;
+    transition: transform 0.15s;
+}
+.app-nav .nav-sub > details[open] > summary::after {
+    transform: rotate(90deg);
+}
+.app-nav .nav-sub > details > ul {
+    display: block;
+    position: static;
+    margin: 0;
+    padding: 0 0 0.25rem 0.75rem;
+    max-height: 60vh;
+    overflow-y: auto;
+    border-left: 2px solid var(--pico-muted-border-color);
+    box-shadow: none;
+    text-align: left;
+    /* The dropdown opens leftwards from the right edge; long names must not
+       widen it past the viewport. */
+    width: min(18rem, 75vw);
+}
+.app-nav .nav-sub > details > ul li {
+    display: block;
+    padding: 0;
+    margin: 0;
+    white-space: nowrap;
+}
+.app-nav .nav-sub > details > ul a {
+    display: block;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.9em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.app-nav .nav-sub-group {
+    padding: 0.4rem 0.5rem 0.1rem !important;
+    font-size: 0.72em;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--pico-muted-color);
+}

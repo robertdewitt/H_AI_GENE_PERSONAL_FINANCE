@@ -6,7 +6,7 @@
     <title>{% block title %}Financial Hygiene{% endblock %}</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-    <link rel="stylesheet" href="/static/css/app.css">
+    <link rel="stylesheet" href="{{ static_url('css/app.css') }}">
 </head>
 <body>
     {# Active-path helpers — a section is "active" when the current URL starts
@@ -35,7 +35,25 @@
                 <details class="dropdown{% if section_active(MONEY_PATHS) %} section-active{% endif %}">
                     <summary>Money</summary>
                     <ul dir="rtl">
+                        {% set _nav_groups = nav_accounts(request) if request else {} %}
+                        {% if _nav_groups %}
+                        <li class="nav-sub">
+                            <details{% if path == "/accounts" or path.startswith("/accounts/") %} open{% endif %}>
+                                <summary>Accounts</summary>
+                                <ul dir="ltr">
+                                    <li>{{ nav_link("/accounts", "All accounts") }}</li>
+                                    {% for group, accts in _nav_groups.items() %}
+                                    <li class="nav-sub-group">{{ group }}</li>
+                                    {% for aid, aname in accts %}
+                                    <li title="{{ aname }}">{{ nav_link("/accounts/" ~ aid, aname) }}</li>
+                                    {% endfor %}
+                                    {% endfor %}
+                                </ul>
+                            </details>
+                        </li>
+                        {% else %}
                         <li>{{ nav_link("/accounts",     "Accounts") }}</li>
+                        {% endif %}
                         <li>{{ nav_link("/transactions", "Transactions") }}</li>
                         <li>{{ nav_link("/transfers",    "Transfers") }}</li>
                         <li>{{ nav_link("/scheduled",    "Scheduled") }}</li>
