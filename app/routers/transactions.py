@@ -266,8 +266,10 @@ def transactions_list(
         for txn_id, cat_name in rows:
             split_categories.setdefault(txn_id, []).append(cat_name)
 
+    from app.services.transfer_detector import transfer_partners
     return templates.TemplateResponse(request, "transactions/list.html", {
         "transactions": txns,
+        "transfer_partners": transfer_partners(db, txns, owned_account_ids(db, user)),
         "split_categories": split_categories,
         "accounts": accounts,
         "categories": categories,

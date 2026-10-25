@@ -102,6 +102,13 @@
     color: #1e40af;
 }
 
+/* Flagged as a transfer with no linked counterpart — needs attention. */
+.badge-transfer-unmatched {
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #f59e0b;
+}
+
 .badge-income {
     background: #dcfce7;
     color: #166534;

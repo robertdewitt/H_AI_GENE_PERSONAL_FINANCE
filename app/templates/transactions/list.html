@@ -2,6 +2,7 @@
 {% block title %}Transactions &mdash; Financial Hygiene{% endblock %}
 
 {% block content %}
+{% import "_transfer_badge.html" as tb %}
 <hgroup>
     <h1>Transactions</h1>
     <p>{{ "{:,}".format(total_count) }} transactions found</p>
@@ -153,9 +154,7 @@
                 {{ txn.formatted_amount }}
             </td>
             <td>
-                {% if txn.is_transfer %}
-                <span class="badge badge-transfer">Transfer</span>
-                {% endif %}
+                {{ tb.transfer_badge(txn, transfer_partners) }}
             </td>
             <td><a href="/transactions/{{ txn.id }}/edit?return_url={{ request.scope.path }}{% if request.query_string %}%3F{{ request.query_string.decode() | urlencode }}{% endif %}" style="font-size:0.85rem">Edit</a></td>
         </tr>

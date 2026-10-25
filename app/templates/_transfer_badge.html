@@ -1,0 +1,13 @@
+{# Transfer status for a ledger row: the account it matched with, or a
+   highlight when it's a transfer — flagged as one, or in a transfer-type
+   category — but nothing is linked yet. #}
+{% macro transfer_badge(txn, partners) -%}
+{%- set partner = partners.get(txn.id) if partners else none -%}
+{%- if partner -%}
+<a href="/accounts/{{ partner.id }}" class="badge badge-transfer" style="text-decoration:none"
+   title="Matched transfer {{ 'to' if txn.amount < 0 else 'from' }} {{ partner.name }}">{{ '→' if txn.amount < 0 else '←' }} {{ partner.name }}</a>
+{%- elif txn.is_transfer or (txn.category and txn.category.category_type.value == "transfer") -%}
+<a href="/transfers" class="badge badge-transfer-unmatched" style="text-decoration:none"
+   title="Marked as a transfer, but not linked to the other account's transaction yet. Match it on the Transfers page.">Unmatched transfer</a>
+{%- endif -%}
+{%- endmacro %}

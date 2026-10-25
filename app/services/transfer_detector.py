@@ -353,3 +353,44 @@ def list_unmatched_transfers(db: Session) -> list[dict]:
             "account": acct,
         })
     return results
+
+
+def transfer_partners(
+    db: Session, txns: list[Transaction], owned_ids: set[int] | list[int],
+) -> dict[int, Account]:
+    """For each linked transaction, the account on the other side of its
+    transfer — {txn_id: Account}. Only the caller's own accounts are
+    returned, so a ledger never names someone else's account."""
+    ids = [t.id for t in txns]
+    if not ids:
+        return {}
+    links = db.execute(
+        select(TransferLink).where(or_(
+            TransferLink.from_transaction_id.in_(ids),
+            TransferLink.to_transaction_id.in_(ids),
+        ))
+    ).scalars().all()
+    other_of: dict[int, int] = {}
+    wanted = set(ids)
+    for link in links:
+        if link.from_transaction_id in wanted:
+            other_of[link.from_transaction_id] = link.to_transaction_id
+        if link.to_transaction_id in wanted:
+            other_of[link.to_transaction_id] = link.from_transaction_id
+    if not other_of:
+        return {}
+    acct_of = dict(db.execute(
+        select(Transaction.id, Transaction.account_id)
+        .where(Transaction.id.in_(set(other_of.values())))
+    ).all())
+    owned = set(owned_ids)
+    accounts = {
+        a.id: a for a in db.execute(
+            select(Account).where(Account.id.in_(set(acct_of.values()) & owned))
+        ).scalars().all()
+    }
+    return {
+        txn_id: accounts[acct_of[other]]
+        for txn_id, other in other_of.items()
+        if other in acct_of and acct_of[other] in accounts
+    }

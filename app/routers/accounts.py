@@ -15,8 +15,9 @@ log = logging.getLogger(__name__)
 
 from app.database import get_db
 from app.services.scoping import (
-    owned_accounts, owned_categories,
+    owned_account_ids, owned_accounts, owned_categories,
 )
+from app.services.transfer_detector import transfer_partners
 from app.models.user import User
 from app.services.auth import get_current_user
 from app.models.account import AccountType, LIABILITY_TYPES
@@ -1038,6 +1039,7 @@ def account_detail(
         "balance_source": balance_result.balance_source_used,
         "balance_stale": balance_result.balance_stale,
         "transactions": recent_txns,
+        "transfer_partners": transfer_partners(db, recent_txns, owned_account_ids(db, user)),
         "split_categories": split_categories,
         "total_transactions": total_txn_count,
         "category_summary": category_summary,
