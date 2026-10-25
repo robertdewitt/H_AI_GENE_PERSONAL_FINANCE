@@ -251,6 +251,7 @@ def init_db():
         # ── Scheduled-payment flag level (auto vs reminder) ──────────
         _col("scheduled_payments", "flag_level", "VARCHAR(20)")
         _col("scheduled_payments", "counter_account_id", "INTEGER")
+        _col("accounts", "payment_account_id", "INTEGER")
 
         # ── v2 split / document columns ──────────────────────
         _col("transaction_splits", "document_line_id", "INTEGER")

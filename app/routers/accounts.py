@@ -1071,12 +1071,30 @@ def account_edit_form(
         a for a in list_accounts(db, user_id=user.id)
         if a.account_type == AccountType.MORTGAGE and a.id != account_id
     ]
+    from app.services.card_payment import payment_account
+    inferred_payer = (
+        payment_account(db, acct)
+        if acct.account_type == AccountType.CREDIT_CARD and not acct.payment_account_id
+        else None
+    )
     return templates.TemplateResponse(request, "accounts/form.html", {
         "account": acct,
         "account_types": list(AccountType),
         "liability_types": [t.value for t in LIABILITY_TYPES],
         "mortgage_accounts": mortgage_accounts,
+        "payer_accounts": _payer_candidates(db, user, acct),
+        "inferred_payer": inferred_payer,
     })
+
+
+def _payer_candidates(db: Session, user: User, card) -> list:
+    """Open current/savings accounts of this user in the card's currency —
+    what can actually pay it."""
+    return [
+        a for a in list_accounts(db, user_id=user.id)
+        if a.account_type in (AccountType.CHECKING, AccountType.SAVINGS)
+        and a.closed_at is None and a.currency == card.currency
+    ]
 
 
 @router.post("/{account_id}/edit")
@@ -1099,6 +1117,7 @@ def account_update(
     overdraft_limit: str = Form(""),
     overdraft_as_of: str = Form(""),
     payment_due_date: str = Form(""),
+    payment_account_id: str = Form(""),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -1234,6 +1253,16 @@ def account_update(
             db.rollback()
     elif acct.payment_due_date is not None and not payment_due_date.strip():
         acct.payment_due_date = None
+        db.commit()
+
+    if acct_type == AccountType.CREDIT_CARD:
+        # Only a listed candidate can pay the card; anything else (another
+        # user's account, a stale id) falls back to inferring it.
+        allowed = {a.id for a in _payer_candidates(db, user, acct)}
+        chosen = int(payment_account_id) if payment_account_id.strip().isdigit() else None
+        acct.payment_account_id = chosen if chosen in allowed else None
+        from app.services.card_payment import sync_card_payment
+        sync_card_payment(db, acct)
         db.commit()
 
     return RedirectResponse(url=f"/accounts/{account_id}", status_code=303)

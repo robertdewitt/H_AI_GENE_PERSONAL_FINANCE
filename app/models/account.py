@@ -101,6 +101,11 @@ class Account(Base):
     # Next payment due date for payable (liability) accounts — credit cards,
     # loans, mortgages. Auto-populated from statements; user-editable.
     payment_due_date: Mapped[date | None] = mapped_column(Date)
+    # The account that pays this card's statement each month (e.g. checking
+    # paying a credit card). None = infer from past confirmed transfers.
+    payment_account_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("accounts.id"), nullable=True
+    )
     # ── Closure ─────────────────────────────────────────────────────────
     # A closed account (paid-off loan, cancelled card) keeps every
     # transaction and still counts toward net worth — closing is purely

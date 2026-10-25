@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
 # A schedule that fell far behind would otherwise list every missed period.
 MAX_UNRECONCILED = 6
+# card_payment.SOURCE, repeated to keep this module free of that import.
+CARD_PAYMENT_SOURCE = "card_payment"
 
 
 @dataclass
@@ -325,6 +327,12 @@ def build_forecast(
                         mirrored=mirrored,
                     ))
                 if pmt.frequency == "once":
+                    break
+                # A card statement payment is only known for the current
+                # statement. Later months stay on the paying account as an
+                # estimate of cash going out, but repeating them on the card
+                # would pay off spending the forecast can't see.
+                if mirrored and pmt.source == CARD_PAYMENT_SOURCE and not past:
                     break
                 d = _advance_date(d, pmt.frequency, pmt.day_of_month)
 

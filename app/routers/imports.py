@@ -807,7 +807,12 @@ def confirm_import(
                     # Surface the due date on the account itself.
                     account.payment_due_date = due_date
 
-                if due_date is not None and (min_pay is not None or new_bal):
+                if account.account_type == AccountType.CREDIT_CARD:
+                    # A card's payment is a transfer from the account that
+                    # pays it, kept in step with the latest statement.
+                    from app.services.card_payment import sync_card_payment
+                    sync_card_payment(db, account)
+                elif due_date is not None and (min_pay is not None or new_bal):
                     sym = getattr(account, "currency_symbol", "") or ""
                     full_owed = abs(float(new_bal)) if new_bal else 0.0
                     min_owed = float(min_pay) if min_pay is not None else 0.0

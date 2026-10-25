@@ -102,6 +102,16 @@
         <input type="date" id="payment_due_date" name="payment_due_date"
                value="{{ account.payment_due_date.strftime('%Y-%m-%d') if account and account.payment_due_date else '' }}">
         <small>When the next payment on this account is due. Auto-filled from statements; leave blank to use the soonest scheduled payment.</small>
+        {% if account and account.account_type.value == "credit_card" %}
+        <label for="payment_account_id" style="margin-top:0.75rem">Paid from</label>
+        <select id="payment_account_id" name="payment_account_id">
+            <option value="">{% if inferred_payer %}Automatic &mdash; {{ inferred_payer.name }} (pays it most often){% else %}Automatic{% endif %}</option>
+            {% for a in payer_accounts or [] %}
+            <option value="{{ a.id }}" {% if account.payment_account_id == a.id %}selected{% endif %}>{{ a.name }}</option>
+            {% endfor %}
+        </select>
+        <small>Each statement's total due is scheduled from this account the day before it's due, and shows in both accounts' forecasts.</small>
+        {% endif %}
     </div>
 
     {# Statement balance — shown for transactional accounts to anchor balance calculations #}
