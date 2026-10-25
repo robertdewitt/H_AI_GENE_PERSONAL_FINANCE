@@ -149,6 +149,16 @@ def _trailing_avg_amount(
     return Decimal(str(round(mean, 2)))
 
 
+def _statement_settled(pmt, card) -> bool:
+    """A card-payment schedule has already recorded a payment against the
+    card's current statement, so the card has nothing left to receive."""
+    stmt_at = card.statement_balance_as_of
+    if pmt.last_matched_date is None or stmt_at is None:
+        return False
+    stmt_date = stmt_at.date() if hasattr(stmt_at, "date") else stmt_at
+    return pmt.last_matched_date > stmt_date
+
+
 def _counter_amount(amount: Decimal, account, counter) -> Decimal:
     """The amount a transfer moves on its counter account, in that account's
     own convention.
@@ -300,6 +310,8 @@ def build_forecast(
             forecast_amount = pmt.amount
 
         for side, other, mirrored in sides:
+            if mirrored and pmt.source == CARD_PAYMENT_SOURCE and _statement_settled(pmt, side):
+                continue
             amount = _counter_amount(forecast_amount, acct, side) if mirrored else forecast_amount
             as_of = anchors[side.id][1]
             d = pmt.next_due_date

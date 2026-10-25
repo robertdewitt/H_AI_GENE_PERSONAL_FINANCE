@@ -299,13 +299,14 @@ def scheduled_delete(
     Without the tombstone the detector or the next statement import simply
     rebuilds it from history, which made deleting appear not to work at all.
     """
+    from app.services.card_payment import dismissal_name
     from app.services.scheduled_dismissal import dismiss
     from app.services.scheduled_matcher import drop_proposals_for_payment
 
     payment = get_owned_scheduled_payment(db, user, payment_id)
     if payment:
         drop_proposals_for_payment(db, payment.id)
-        dismiss(db, payment.account_id, payment.description)
+        dismiss(db, payment.account_id, dismissal_name(db, payment))
         db.delete(payment)
         db.commit()
     return _back(return_to, "/scheduled", deleted="1")
@@ -318,6 +319,7 @@ def scheduled_bulk_delete(
     user: User = Depends(get_current_user),
 ):
     """Delete several scheduled payments at once, tombstoning each."""
+    from app.services.card_payment import dismissal_name
     from app.services.scheduled_dismissal import dismiss
     from app.services.scheduled_matcher import drop_proposals_for_payment
 
@@ -331,7 +333,7 @@ def scheduled_bulk_delete(
         if payment is None:
             continue
         drop_proposals_for_payment(db, payment.id)
-        dismiss(db, payment.account_id, payment.description)
+        dismiss(db, payment.account_id, dismissal_name(db, payment))
         db.delete(payment)
         deleted += 1
     db.commit()

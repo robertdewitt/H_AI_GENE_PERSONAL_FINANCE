@@ -160,3 +160,87 @@ def test_card_side_shows_only_the_current_statements_payment(db):
     n = {af.account_id: sum("Amex payment" in e.description for e in af.events) for af in fc.accounts}
     assert n[card.id] == 1
     assert n[checking.id] >= 2
+
+
+# ── Statements already paid ──────────────────────────────────────────────
+
+
+def test_statement_paid_before_sync_is_not_scheduled_again(db):
+    """BA Amex: £6,071.39 statement, £5,043 paid from the payer before sync."""
+    checking, card = _accounts(db)
+    card.payment_account_id = checking.id
+    _paid(db, checking, card, date(2026, 9, 27), "4299.74")      # earlier statement
+    out = Transaction(account_id=checking.id, date=datetime(2026, 10, 24),
+                      description="Electronic payment Amex", amount=Decimal("-4000.00"),
+                      original_currency="GBP")                     # not linked; same wording
+    db.add(out)
+    db.flush()
+
+    assert sync_card_payment(db, card, today=TODAY) == "paid"
+    s = _existing(db, card)
+    assert s.last_matched_txn_id == out.id
+    assert s.next_due_date == date(2026, 11, 27)                 # next month, as an estimate
+
+    fc = build_forecast(db, months=2, account_ids={checking.id, card.id})
+    card_events = [e for af in fc.accounts if af.account_id == card.id for e in af.events]
+    assert not any("Amex payment" in e.description for e in card_events)
+
+
+def test_small_payment_does_not_settle_the_statement(db):
+    checking, card = _accounts(db)
+    card.payment_account_id = checking.id
+    _paid(db, checking, card, date(2026, 10, 20), "100.00")      # well under half
+
+    assert sync_card_payment(db, card, today=TODAY) == "scheduled"
+    assert _existing(db, card).next_due_date == date(2026, 10, 27)
+
+
+def test_payment_seen_on_the_card_side_counts(db):
+    checking, card = _accounts(db)
+    card.payment_account_id = checking.id
+    _paid(db, checking, card, date(2026, 9, 27), "4299.74")      # teaches the card-side wording
+    db.add(Transaction(account_id=card.id, date=datetime(2026, 10, 22), description="Payment received",
+                       amount=Decimal("4577.25"), original_currency="GBP"))
+    db.flush()
+
+    assert sync_card_payment(db, card, today=TODAY) == "paid"
+
+
+def test_another_cards_payment_is_not_mistaken_for_this_one(db):
+    checking, card = _accounts(db)
+    card.payment_account_id = checking.id
+    _paid(db, checking, card, date(2026, 9, 27), "4299.74")
+    db.add(Transaction(account_id=checking.id, date=datetime(2026, 10, 24),
+                       description="Electronic payment Amercian Express Pl", amount=Decimal("-4577.25"),
+                       original_currency="GBP"))
+    db.flush()
+
+    assert sync_card_payment(db, card, today=TODAY) == "scheduled"
+
+
+def test_deleting_a_card_payment_skips_only_that_statement(two_user_app):
+    """Delete → this statement isn't rebuilt; the next statement still is."""
+    client, ctx = two_user_app
+    s = ctx["session"]
+    user_id = s.get(Account, ctx["alice_account_id"]).user_id
+    payer = s.get(Account, ctx["alice_account_id"])
+    card = Account(user_id=user_id, name="A-Card", account_type=AccountType.CREDIT_CARD, currency="USD",
+                   is_asset=False, payment_account_id=payer.id, statement_balance=Decimal("500"),
+                   statement_balance_as_of=datetime(2026, 10, 15), payment_due_date=date(2026, 10, 28))
+    s.add(card)
+    s.commit()
+    assert sync_card_payment(s, card, today=TODAY) == "scheduled"
+    s.commit()
+    sched_id = _existing(s, card).id
+
+    client.post(f"/scheduled/{sched_id}/delete", cookies=_cookie(ctx["alice_cookie"]), follow_redirects=False)
+    s.expire_all()
+    card = s.get(Account, card.id)
+    assert _existing(s, card) is None
+    assert sync_card_payment(s, card, today=TODAY) == "skipped: deleted for this statement"
+
+    card.statement_balance = Decimal("650")
+    card.statement_balance_as_of = datetime(2026, 11, 15)
+    card.payment_due_date = date(2026, 11, 28)
+    assert sync_card_payment(s, card, today=TODAY) == "scheduled"
+    assert _existing(s, card).next_due_date == date(2026, 11, 27)
