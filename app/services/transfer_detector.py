@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, aliased
 from app.config import settings
 from app.models.account import Account, LIABILITY_TYPES
 from app.models.transaction import Transaction
+from app.models.reconciliation import ReconciliationMember
 from app.models.transfer_link import TransferLink
 from app.schemas.transfer import TransferCandidate
 from app.services.recurring_detector import _normalize
@@ -131,11 +132,14 @@ def detect_transfers(
 
     learned = _learn_from_history(db)
 
+    # Rows already reconciled as part of a multi-part payment are settled.
+    grouped = select(ReconciliationMember.transaction_id)
     outflows = db.execute(
         select(Transaction).where(
             Transaction.amount < 0,
             Transaction.transfer_link_id.is_(None),
             Transaction.transfer_dismissed.is_(False),
+            Transaction.id.not_in(grouped),
         )
     ).scalars().all()
 
@@ -154,6 +158,7 @@ def detect_transfers(
                     Transaction.account_id != out_txn.account_id,
                     Transaction.transfer_link_id.is_(None),
                     Transaction.transfer_dismissed.is_(False),
+                    Transaction.id.not_in(grouped),
                     Transaction.date >= date_lo,
                     Transaction.date <= date_hi,
                     Transaction.amount >= out_abs - tolerance,
@@ -342,6 +347,7 @@ def list_unmatched_transfers(db: Session) -> list[dict]:
         select(Transaction).where(
             Transaction.is_transfer.is_(True),
             Transaction.transfer_link_id.is_(None),
+            Transaction.id.not_in(select(ReconciliationMember.transaction_id)),
         ).order_by(Transaction.date.desc())
     ).scalars().all()
 
@@ -377,6 +383,24 @@ def transfer_partners(
             other_of[link.from_transaction_id] = link.to_transaction_id
         if link.to_transaction_id in wanted:
             other_of[link.to_transaction_id] = link.from_transaction_id
+    # Multi-part payments (one outflow, several loan rows) are reconciliation
+    # groups: the partner is a member on another account.
+    mine = db.execute(
+        select(ReconciliationMember.group_id, ReconciliationMember.transaction_id)
+        .where(ReconciliationMember.transaction_id.in_(ids))
+    ).all()
+    if mine:
+        members = db.execute(
+            select(ReconciliationMember.group_id, Transaction.id, Transaction.account_id)
+            .join(Transaction, Transaction.id == ReconciliationMember.transaction_id)
+            .where(ReconciliationMember.group_id.in_({g for g, _ in mine}))
+        ).all()
+        txn_acct = {tid: aid for _, tid, aid in members}
+        for group_id, txn_id in mine:
+            for g, other, aid in members:
+                if g == group_id and aid != txn_acct[txn_id]:
+                    other_of.setdefault(txn_id, other)
+                    break
     if not other_of:
         return {}
     acct_of = dict(db.execute(

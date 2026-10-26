@@ -349,6 +349,11 @@ def confirm_import(
         # catches up instead of staying overdue.
         backfill_matches(db, account_id=account_id)
         db.commit()
+        # A loan payment posted in parts (regular + extra principal) is
+        # linked to the single outflow that paid it once both sides are in.
+        from app.services.loan_payment_linking import link_all_loan_payments
+        link_all_loan_payments(db, user_id=user.id)
+        db.commit()
     except Exception as exc:
         log.warning(
             "scheduled_matcher.match_batch failed for batch %s: %s",
