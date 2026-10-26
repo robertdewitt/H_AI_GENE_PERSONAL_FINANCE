@@ -17,6 +17,7 @@ from app.database import get_db
 from app.services.scoping import (
     owned_account_ids, owned_accounts, owned_categories,
 )
+from app.services.loan_balance import loan_running_balances
 from app.services.transfer_detector import transfer_partners
 from app.models.user import User
 from app.services.auth import get_current_user
@@ -1040,6 +1041,7 @@ def account_detail(
         "balance_stale": balance_result.balance_stale,
         "transactions": recent_txns,
         "transfer_partners": transfer_partners(db, recent_txns, owned_account_ids(db, user)),
+        "running_balances": loan_running_balances(db, acct),
         "split_categories": split_categories,
         "total_transactions": total_txn_count,
         "category_summary": category_summary,
