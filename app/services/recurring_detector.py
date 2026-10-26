@@ -246,6 +246,11 @@ def detect_recurring_payments(db: "Session", user_id: int | None = None) -> list
         currency   = entries[-1][2] or (accounts[acct_id].currency if acct_id in accounts else "USD")
 
         acct = accounts.get(acct_id)
+        if acct is not None and not acct.is_asset:
+            # A card charge is negative in the ledger but must add to what's
+            # owed in the schedule; see schedule_sign.
+            from app.services.schedule_sign import schedule_amount
+            display_amt = schedule_amount(db, acct, display_amt)
         suggestions.append({
             "account_id":    acct_id,
             "account_name":  acct.name if acct else f"Account {acct_id}",

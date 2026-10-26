@@ -239,6 +239,49 @@ def heal_next_due(payment) -> bool:
     return True
 
 
+def catch_up_next_due(db: "Session", payment, account) -> bool:
+    """Move a schedule that fell behind up to the next payment that is
+    plainly the same one. Returns True if it moved.
+
+    When a statement is never imported (a gap in the data) or a merchant
+    shifts its billing day, the occurrence at next_due has nothing to match,
+    and every later payment is too far from next_due to count — so the
+    schedule stays stuck there for good. Only an unmistakable later payment
+    (same wording without digits, amount within tolerance) moves it, and only
+    as far as the period that payment falls in; the normal pass then matches
+    it."""
+    from sqlalchemy import select
+
+    from app.models.transaction import Transaction
+    from app.services.recurring_detector import _normalize
+
+    if not payment.active or payment.frequency == "once":
+        return False
+    start = payment.next_due_date + timedelta(days=SCORE_DATE_WINDOW)
+    if payment.last_matched_date and payment.last_matched_date > start:
+        start = payment.last_matched_date
+    key = _normalize(payment.description or "")
+    if not key:
+        return False
+    is_liability = account is not None and not account.is_asset
+    later = db.execute(
+        select(Transaction).where(
+            Transaction.account_id == payment.account_id,
+            Transaction.date > datetime.combine(start, datetime.min.time()),
+        ).order_by(Transaction.date)
+    ).scalars()
+    for txn in later:
+        if (_normalize(txn.description or "") == key
+                and _amount_satisfies(float(txn.amount), float(payment.amount), is_liability)):
+            target = txn.date.date() - timedelta(days=SCORE_DATE_WINDOW)
+            moved = False
+            while payment.next_due_date < target:
+                _advance_next_due(payment, payment.next_due_date)
+                moved = True
+            return moved
+    return False
+
+
 def match_batch(db: "Session", import_batch_id: int) -> dict:
     """Match transactions from a specific import batch against scheduled payments.
 
@@ -394,6 +437,9 @@ def backfill_matches(
                 select(Account).where(Account.id.in_(list(by_account)))
             ).scalars().all()
         }
+        if passes == 0:
+            for pmt in payments:
+                catch_up_next_due(db, pmt, accounts.get(pmt.account_id))
 
         txn_query = select(Transaction).where(
             Transaction.account_id.in_(list(by_account)),

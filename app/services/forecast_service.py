@@ -127,10 +127,17 @@ def _trailing_avg_amount(
 
     norm_target = _normalize(payment.description or "")
     pmt_sign = 1 if (payment.amount or 0) >= 0 else -1
+    # Ledger amounts on a liability are converted to the schedule's sign
+    # convention before comparing or averaging.
+    from app.models.account import Account
+    from app.services.schedule_sign import ledger_payment_sign
+    account = db.get(Account, payment.account_id)
+    flip = (account is not None and not account.is_asset)
+    ledger_sign = ledger_payment_sign(db, account) if flip else 1
 
     amounts: list[float] = []
     for t in txns:
-        amt = float(t.amount or 0)
+        amt = float(t.amount or 0) * (-ledger_sign if flip else 1)
         # Same sign as the scheduled payment (avoid mixing refunds + charges)
         if amt == 0 or (1 if amt > 0 else -1) != pmt_sign:
             continue
