@@ -79,6 +79,7 @@ def settings_save(
     recurring_min_amt_consistency: str = Form(""),
     recurring_fixed_amt_consistency: str = Form(""),
     forecast_moving_avg_months: str = Form(""),
+    variable_match_tolerance_pct: str = Form(""),
     db: Session = Depends(get_db),
 ):
     update_profile(
@@ -97,6 +98,7 @@ def settings_save(
         recurring_min_amt_consistency=_opt_float(recurring_min_amt_consistency),
         recurring_fixed_amt_consistency=_opt_float(recurring_fixed_amt_consistency),
         forecast_moving_avg_months=_opt_int(forecast_moving_avg_months),
+        variable_match_tolerance_pct=_opt_int(variable_match_tolerance_pct),
     )
 
     # Ensure current FX rates exist for the chosen display currency.

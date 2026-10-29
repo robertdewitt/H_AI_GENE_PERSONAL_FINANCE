@@ -103,3 +103,42 @@ def _static_url(path: str) -> str:
 
 
 templates.env.globals["static_url"] = _static_url
+
+
+def _ledger_amount(request, payment):
+    """A scheduled payment's amount in its account's ledger sign, for display
+    — a card subscription reads negative like the charge itself."""
+    db = getattr(getattr(request, "state", None), "db", None)
+    if db is None:
+        return payment.amount
+    from app.models.account import Account
+    from app.services.schedule_sign import ledger_amount
+    account = db.get(Account, payment.account_id)
+    if account is None or account.is_asset:
+        return payment.amount
+    return ledger_amount(db, account, payment.amount)
+
+
+templates.env.globals["ledger_amount"] = _ledger_amount
+
+
+def _variable_tolerance_pct(request) -> int:
+    """The user's variable-payment tolerance, for labels (default 30)."""
+    from app.models.user_profile import VARIABLE_MATCH_TOLERANCE_PCT_DEFAULT
+    db = getattr(getattr(request, "state", None), "db", None)
+    if db is None:
+        return VARIABLE_MATCH_TOLERANCE_PCT_DEFAULT
+    from app.services.user_profile_service import get_profile
+    pct = get_profile(db).variable_match_tolerance_pct
+    return pct if pct is not None else VARIABLE_MATCH_TOLERANCE_PCT_DEFAULT
+
+
+def _amount_type_label(amount_type: str | None, tolerance_pct: int) -> str:
+    return {
+        "estimated": f"Variable — placeholder (±{tolerance_pct}%)",
+        "variable": f"Variable — average of recent (±{tolerance_pct}%)",
+    }.get(amount_type or "fixed", "Fixed")
+
+
+templates.env.globals["variable_tolerance_pct"] = _variable_tolerance_pct
+templates.env.globals["amount_type_label"] = _amount_type_label

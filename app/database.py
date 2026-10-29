@@ -240,6 +240,7 @@ def init_db():
         _col("user_profile", "recurring_min_amt_consistency",   "REAL",    "0.3")
         _col("user_profile", "recurring_fixed_amt_consistency", "REAL",    "0.85")
         _col("user_profile", "forecast_moving_avg_months",      "INTEGER", "6")
+        _col("user_profile", "variable_match_tolerance_pct",    "INTEGER", "30")
 
         # ── v2 recon columns ─────────────────────────────────
         _col("reconciliation_groups", "reconciliation_confidence", "REAL")

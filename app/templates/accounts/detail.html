@@ -721,6 +721,7 @@
 {% set SCHED_SYMBOLS = {"GBP": "£", "EUR": "€", "USD": "$", "CAD": "CA$", "AUD": "A$"} %}
 {% set sched_return = "/accounts/" ~ account.id ~ "?forecast_months=" ~ forecast_months ~ "#scheduled" %}
 {% set sched_today = now.date() %}
+{% set sched_tol = variable_tolerance_pct(request) %}
 
 <h2 id="scheduled">Scheduled Payments</h2>
 
@@ -759,7 +760,6 @@
     <input type="hidden" name="return_to" value="{{ sched_return }}">
     <input type="hidden" name="account_id" value="{{ account.id }}">
     <input type="hidden" name="currency" value="{{ p.currency or account.currency }}">
-    <input type="hidden" name="amount_type" value="{{ p.amount_type or 'fixed' }}">
     <input type="hidden" name="day_of_month" value="{{ p.day_of_month if p.day_of_month is not none else '' }}">
     <input type="hidden" name="end_date" value="{{ p.end_date.isoformat() if p.end_date else '' }}">
     <input type="hidden" name="notes" value="{{ p.notes or '' }}">
@@ -791,15 +791,22 @@
                    style="margin:0;padding:0.2rem 0.4rem;font-size:0.85rem;width:100%;min-width:8rem;max-width:13rem">
             <small style="color:var(--pico-muted-color);display:block;margin-top:0.15rem">
                 {{ p.source.replace('_', ' ') }}{% if not p.active %} &bull; paused{% endif %}
-                {% if p.amount_type == 'variable' %} &bull; projected from a trailing average{% endif %}
+                {% if p.amount_type == 'variable' %} &bull; projected from a trailing average, matches within ±{{ sched_tol }}%
+                {% elif p.amount_type == 'estimated' %} &bull; placeholder, matches within ±{{ sched_tol }}%{% endif %}
                 {% if p.last_matched_date %} &bull; last seen {{ p.last_matched_date.strftime("%d %b %Y") }}{% endif %}
             </small>
         </td>
         <td style="text-align:right">
             <span style="font-size:0.8rem;color:var(--pico-muted-color)">{{ psym }}</span>
             <input type="number" step="0.01" name="amount" form="schedf{{ p.id }}"
-                   value="{{ "%.2f"|format(p.amount|float) }}" required
+                   value="{{ "%.2f"|format(ledger_amount(request, p)|float) }}" required
                    style="margin:0;padding:0.2rem 0.4rem;font-size:0.85rem;width:6.5rem;text-align:right;display:inline-block">
+            <select name="amount_type" form="schedf{{ p.id }}" title="Fixed amounts match within 5%; variable ones within ±{{ sched_tol }}%"
+                    style="margin:0.2rem 0 0;padding:0.1rem 0.3rem;font-size:0.75rem;width:6.5rem;display:block;margin-left:auto">
+                <option value="fixed" {% if (p.amount_type or 'fixed') == 'fixed' %}selected{% endif %}>Fixed</option>
+                <option value="estimated" {% if p.amount_type == 'estimated' %}selected{% endif %}>Variable</option>
+                {% if p.amount_type == 'variable' %}<option value="variable" selected>Average</option>{% endif %}
+            </select>
         </td>
         <td>
             <select name="category_id" form="schedf{{ p.id }}"
@@ -882,14 +889,19 @@
         <input type="hidden" name="return_to" value="{{ sched_return }}">
         <input type="hidden" name="account_id" value="{{ account.id }}">
         <input type="hidden" name="currency" value="{{ account.currency }}">
-        <input type="hidden" name="amount_type" value="fixed">
         <div class="grid">
             <label>Description
                 <input type="text" name="description" required placeholder="e.g. Rent">
             </label>
             <label>Amount ({{ account.currency }})
                 <input type="number" step="0.01" name="amount" required
-                       placeholder="negative for money out">
+                       placeholder="{% if account.is_asset %}negative for money out{% else %}as it appears in this account's transactions{% endif %}">
+            </label>
+            <label>Amount type
+                <select name="amount_type">
+                    <option value="fixed">Fixed (matches within 5%)</option>
+                    <option value="estimated">Variable placeholder (matches within ±{{ sched_tol }}%)</option>
+                </select>
             </label>
         </div>
         <div class="grid">

@@ -166,9 +166,10 @@ def scheduled_create(
 ):
     get_owned_account_or_404(db, user, account_id)   # form-supplied
     counter_id = _counter_account(db, user, account_id, counter_account_id)
+    from app.services.schedule_sign import from_typed
     payment = ScheduledPayment(
         description=description.strip(),
-        amount=Decimal(amount),
+        amount=from_typed(db, account_id, amount),
         amount_type=amount_type,
         currency=currency,
         account_id=account_id,
@@ -238,7 +239,8 @@ def scheduled_update(
         # Kept as-is, but moving the payment can still break the pairing.
         _counter_account(db, user, account_id, str(payment.counter_account_id))
     payment.description = description.strip()
-    payment.amount = Decimal(amount)
+    from app.services.schedule_sign import from_typed
+    payment.amount = from_typed(db, account_id, amount)
     payment.amount_type = amount_type
     payment.currency = currency
     payment.account_id = account_id
@@ -517,9 +519,10 @@ def detect_confirm(
             continue
         if int(acct) not in owned_ids:
             continue        # never create a schedule on someone else's account
+        from app.services.schedule_sign import from_typed
         db.add(ScheduledPayment(
             description=desc.strip(),
-            amount=Decimal(amt),
+            amount=from_typed(db, int(acct), amt),
             amount_type=at.strip() or "fixed",
             currency=cur,
             account_id=int(acct),

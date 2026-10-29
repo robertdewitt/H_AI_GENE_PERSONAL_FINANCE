@@ -205,7 +205,13 @@
                        value="{{ profile.forecast_moving_avg_months or 6 }}">
                 <small>For variable-amount scheduled payments, project using the mean of the last N months of matching transactions. Default <strong>6</strong>.</small>
             </div>
-            <div></div>
+            <div>
+                <label for="variable_match_tolerance_pct">Variable payment tolerance (%)</label>
+                <input type="number" id="variable_match_tolerance_pct" name="variable_match_tolerance_pct"
+                       min="0" max="100" step="1"
+                       value="{{ profile.variable_match_tolerance_pct if profile.variable_match_tolerance_pct is not none else 30 }}">
+                <small>A payment within this much of a variable schedule's amount marks it paid (salary, card bills). Fixed schedules stay within 5%. Default <strong>30</strong>.</small>
+            </div>
         </div>
     </details>
 

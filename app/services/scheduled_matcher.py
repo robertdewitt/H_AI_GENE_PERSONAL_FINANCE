@@ -52,7 +52,22 @@ def _desc_similarity(a: str, b: str, db: "Session | None" = None) -> float:
     return max(raw, normalised)
 
 
-def _amount_satisfies(txn_amt: float, pmt_amt: float, is_liability: bool) -> bool:
+def amount_tolerance(db, payment) -> float:
+    """How far a payment may differ from the schedule and still settle it.
+
+    A fixed schedule's amount is the amount (5%). Any other kind carries a
+    placeholder — salary, a card bill — so it uses the user's variable
+    tolerance from preferences (default ±30%)."""
+    if (payment.amount_type or "fixed") == "fixed":
+        return AMOUNT_TOLERANCE
+    from app.models.user_profile import VARIABLE_MATCH_TOLERANCE_PCT_DEFAULT
+    from app.services.user_profile_service import get_profile
+    pct = get_profile(db).variable_match_tolerance_pct
+    return (pct if pct is not None else VARIABLE_MATCH_TOLERANCE_PCT_DEFAULT) / 100
+
+
+def _amount_satisfies(txn_amt: float, pmt_amt: float, is_liability: bool,
+                      tolerance: float = AMOUNT_TOLERANCE) -> bool:
     """Whether a transaction's amount settles the scheduled amount.
 
     Sign is checked as well as magnitude so a refund cannot satisfy a charge.
@@ -63,10 +78,10 @@ def _amount_satisfies(txn_amt: float, pmt_amt: float, is_liability: bool) -> boo
     own schedule.
     """
     if pmt_amt == 0:
-        return abs(txn_amt) <= AMOUNT_TOLERANCE
-    if abs(txn_amt - pmt_amt) / abs(pmt_amt) <= AMOUNT_TOLERANCE:
+        return abs(txn_amt) <= tolerance
+    if abs(txn_amt - pmt_amt) / abs(pmt_amt) <= tolerance:
         return True
-    if is_liability and abs(txn_amt + pmt_amt) / abs(pmt_amt) <= AMOUNT_TOLERANCE:
+    if is_liability and abs(txn_amt + pmt_amt) / abs(pmt_amt) <= tolerance:
         return True
     return False
 
@@ -113,14 +128,21 @@ class MatchScore:
         }
 
 
-def _amount_score(txn_amt: float, pmt_amt: float, is_liability: bool) -> float:
-    """1.0 for an exact hit, tapering to 0 at 15% off."""
+def _amount_score(txn_amt: float, pmt_amt: float, is_liability: bool,
+                  placeholder_tolerance: float | None = None) -> float:
+    """1.0 for an exact hit, tapering to 0 at 15% off.
+
+    For a placeholder (variable) schedule the amount is only a guide: anything
+    within its tolerance is as good as exact, so date, wording and history
+    decide the match."""
     if pmt_amt == 0:
         return 1.0 if abs(txn_amt) < 0.01 else 0.0
     direct = abs(txn_amt - pmt_amt) / abs(pmt_amt)
     # A liability records a payment with the opposite sign to the schedule —
     # see _amount_satisfies — so the flipped reading is equally valid there.
     best = min(direct, abs(txn_amt + pmt_amt) / abs(pmt_amt)) if is_liability else direct
+    if placeholder_tolerance is not None:
+        return 1.0 if best <= placeholder_tolerance else 0.0
     if best <= 0.005:
         return 1.0
     if best >= 0.15:
@@ -167,7 +189,9 @@ def score_match(db, txn, payment, account) -> MatchScore:
     txn_date = txn.date.date() if hasattr(txn.date, "date") else txn.date
     is_liability = account is not None and not account.is_asset
 
-    amount = _amount_score(float(txn.amount), float(payment.amount), is_liability)
+    tolerance = amount_tolerance(db, payment)
+    amount = _amount_score(float(txn.amount), float(payment.amount), is_liability,
+                           None if tolerance == AMOUNT_TOLERANCE else tolerance)
     date_gap = abs((txn_date - payment.next_due_date).days)
     date = _date_score(date_gap)
 
@@ -272,7 +296,8 @@ def catch_up_next_due(db: "Session", payment, account) -> bool:
     ).scalars()
     for txn in later:
         if (_normalize(txn.description or "") == key
-                and _amount_satisfies(float(txn.amount), float(payment.amount), is_liability)):
+                and _amount_satisfies(float(txn.amount), float(payment.amount), is_liability,
+                                      amount_tolerance(db, payment))):
             target = txn.date.date() - timedelta(days=SCORE_DATE_WINDOW)
             moved = False
             while payment.next_due_date < target:
@@ -344,7 +369,8 @@ def match_batch(db: "Session", import_batch_id: int) -> dict:
             # Amount check
             account = accounts.get(pmt.account_id)
             is_liability = account is not None and not account.is_asset
-            if not _amount_satisfies(txn_amt, float(pmt.amount), is_liability):
+            if not _amount_satisfies(txn_amt, float(pmt.amount), is_liability,
+                                     amount_tolerance(db, pmt)):
                 continue
 
             # Description similarity

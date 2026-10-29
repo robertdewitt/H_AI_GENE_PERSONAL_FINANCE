@@ -73,6 +73,7 @@ def update_profile(
     recurring_min_amt_consistency: float | None = None,
     recurring_fixed_amt_consistency: float | None = None,
     forecast_moving_avg_months: int | None = None,
+    variable_match_tolerance_pct: int | None = None,
 ) -> UserProfile:
     profile = get_profile(db)
     profile.display_currency = display_currency.upper().strip() or "USD"
@@ -104,6 +105,8 @@ def update_profile(
         profile.recurring_fixed_amt_consistency = recurring_fixed_amt_consistency
     if forecast_moving_avg_months is not None:
         profile.forecast_moving_avg_months = forecast_moving_avg_months
+    if variable_match_tolerance_pct is not None:
+        profile.variable_match_tolerance_pct = max(0, min(100, variable_match_tolerance_pct))
 
     db.commit()
     db.refresh(profile)

@@ -90,8 +90,8 @@ def _estimated_due_date(db: "Session", card: Account, payer: Account,
 def _statement_payment(db: "Session", card: Account, payer: Account,
                        stmt_date: date, owed: Decimal) -> Transaction | None:
     """The payment already made against this statement, if any: the latest
-    of the payments after the statement date, provided together they cover
-    at least half of it (people often pay a round or partial figure).
+    of the payments after the statement date, provided together they come
+    within the variable-payment tolerance of it (default 30%).
 
     A payment is recognised on either side — the paying account's outgoing
     row or the card's incoming one — when it is linked as a transfer into the
@@ -137,7 +137,13 @@ def _statement_payment(db: "Session", card: Account, payer: Account,
     # The same payment can appear on both sides; count each side separately
     # and take the better-evidenced one rather than adding them.
     best = max((payer_side, card_side), key=lambda ts: sum(abs(t.amount) for t in ts))
-    if not best or sum(abs(t.amount) for t in best) < Decimal(owed) / 2:
+    # Paid when the payments come within the variable-payment tolerance of
+    # the statement (people pay round or partial figures).
+    from app.models.user_profile import VARIABLE_MATCH_TOLERANCE_PCT_DEFAULT
+    from app.services.user_profile_service import get_profile
+    pct = get_profile(db).variable_match_tolerance_pct
+    tolerance = Decimal(pct if pct is not None else VARIABLE_MATCH_TOLERANCE_PCT_DEFAULT) / 100
+    if not best or sum(abs(t.amount) for t in best) < Decimal(owed) * (1 - tolerance):
         return None
     return max(best, key=lambda t: t.date)
 
@@ -227,6 +233,13 @@ def sync_card_payment(db: "Session", card: Account, today: date | None = None) -
         matched = db.get(Transaction, sched.last_matched_txn_id)
         if matched is not None and matched.date.date() > stmt_date:
             paid = matched
+    with db.no_autoflush:
+        # Filled in before any flush: reading an attribute can reload it
+        # (get_profile may have committed) and flush a half-built row.
+        return _apply(db, sched, card, payer, description, owed, notes, pay_on, stmt_date, sym, paid)
+
+
+def _apply(db, sched, card, payer, description, owed, notes, pay_on, stmt_date, sym, paid) -> str:
     if sched is None:
         sched = ScheduledPayment(source=SOURCE, frequency="monthly", confidence=0.95)
         db.add(sched)

@@ -61,8 +61,11 @@ def test_asset_amounts_are_unchanged(db):
     assert schedule_amount(db, checking, Decimal("-23.00")) == Decimal("-23.00")
 
 
-def test_detector_suggests_card_subscription_as_a_charge(db):
+def test_card_subscription_round_trips_in_ledger_sign(db):
+    """Suggested and shown as −9.99 like the charge; stored as +9.99 so the
+    forecast adds it to what's owed."""
     from app.services.recurring_detector import detect_recurring_payments
+    from app.services.schedule_sign import from_typed, ledger_amount
 
     card = _acct(db, AccountType.CREDIT_CARD)
     today = date.today()
@@ -70,7 +73,11 @@ def test_detector_suggests_card_subscription_as_a_charge(db):
         _t(db, card, today - timedelta(days=30 * k), "-9.99", "TESLA WEST DRAYTON")
     _t(db, card, today - timedelta(days=5), "500.00", "PAYMENT RECEIVED")
     tesla = [s for s in detect_recurring_payments(db) if "TESLA" in s["description"]]
-    assert tesla and tesla[0]["amount"] == Decimal("9.99")
+    assert tesla and tesla[0]["amount"] == Decimal("-9.99")
+
+    stored = from_typed(db, card.id, tesla[0]["amount"])
+    assert stored == Decimal("9.99")
+    assert ledger_amount(db, card, stored) == Decimal("-9.99")
 
 
 def test_schedule_catches_up_across_a_gap_in_the_data(db):

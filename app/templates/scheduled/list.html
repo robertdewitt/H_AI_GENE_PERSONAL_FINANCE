@@ -75,10 +75,11 @@
         </td>
         <td style="font-size:0.9rem;white-space:nowrap">{{ p.account.name if p.account else '—' }}</td>
         <td style="text-align:right;white-space:nowrap;font-weight:600">
-            {% if p.amount < 0 %}
-                <span style="color:#dc2626">&minus;{{ sym }}{{ "%.2f"|format(p.amount|float|abs) }}</span>
+            {% set la = ledger_amount(request, p) %}
+            {% if la < 0 %}
+                <span style="color:#dc2626">&minus;{{ sym }}{{ "%.2f"|format(la|float|abs) }}</span>
             {% else %}
-                <span style="color:#16a34a">+{{ sym }}{{ "%.2f"|format(p.amount|float) }}</span>
+                <span style="color:#16a34a">+{{ sym }}{{ "%.2f"|format(la|float) }}</span>
             {% endif %}
             {% if p.amount_type == 'estimated' %}<small style="color:var(--pico-muted-color)">~</small>{% endif %}
         </td>
@@ -139,7 +140,8 @@
         <tr style="opacity:0.6">
             <td>{{ p.description }}</td>
             <td>{{ p.account.name if p.account else '—' }}</td>
-            <td>{% if p.amount < 0 %}&minus;{% else %}+{% endif %}{{ sym }}{{ "%.2f"|format(p.amount|float|abs) }}</td>
+            {% set la = ledger_amount(request, p) %}
+            <td>{% if la < 0 %}&minus;{% else %}+{% endif %}{{ sym }}{{ "%.2f"|format(la|float|abs) }}</td>
             <td>{{ p.frequency }}</td>
             <td>
                 <form method="post" action="/scheduled/{{ p.id }}/toggle" style="display:inline;margin:0">

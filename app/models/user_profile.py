@@ -20,6 +20,7 @@ RECURRING_MIN_CONFIDENCE_DEFAULT      = 0.50
 RECURRING_MIN_AMT_CONSISTENCY_DEFAULT = 0.30
 RECURRING_FIXED_AMT_CONSISTENCY_DEFAULT = 0.85
 FORECAST_MOVING_AVG_MONTHS_DEFAULT    = 6
+VARIABLE_MATCH_TOLERANCE_PCT_DEFAULT  = 30
 
 
 class UserProfile(Base):
@@ -69,4 +70,9 @@ class UserProfile(Base):
     # projection for variable-amount scheduled payments.
     forecast_moving_avg_months: Mapped[int | None] = mapped_column(
         Integer, default=FORECAST_MOVING_AVG_MONTHS_DEFAULT, nullable=True,
+    )
+    # How far a payment may differ from a variable schedule's placeholder
+    # amount and still settle it, in percent (30 = ±30%).
+    variable_match_tolerance_pct: Mapped[int | None] = mapped_column(
+        Integer, default=VARIABLE_MATCH_TOLERANCE_PCT_DEFAULT, nullable=True,
     )

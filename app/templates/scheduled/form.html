@@ -18,19 +18,21 @@
         <div>
             <label for="amount">Amount *</label>
             <input type="number" id="amount" name="amount" step="0.01" required
-                   value="{{ payment.amount if payment else '' }}"
+                   value="{{ ledger_amount(request, payment) if payment else '' }}"
                    placeholder="-45.00 (negative = outflow)">
             <small>Negative = payment out, positive = income in</small>
         </div>
         <div>
+            {% set tol = variable_tolerance_pct(request) %}
             <label for="amount_type">Amount Type</label>
             <select id="amount_type" name="amount_type">
                 {% for at in amount_types %}
                 <option value="{{ at }}" {% if payment and payment.amount_type == at %}selected{% elif not payment and at == 'fixed' %}selected{% endif %}>
-                    {{ at | capitalize }}
+                    {{ amount_type_label(at, tol) }}
                 </option>
                 {% endfor %}
             </select>
+            <small>Variable: the amount is a placeholder — a payment within ±{{ tol }}% of it marks this paid (change the % in Settings).</small>
         </div>
         <div>
             <label for="currency">Currency</label>

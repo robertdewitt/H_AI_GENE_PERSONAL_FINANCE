@@ -59,7 +59,7 @@
             <small style="color:var(--pico-muted-color)">
                 {{ row.account.name if row.account else "—" }} &bull;
                 due {{ p.next_due_date.strftime("%d %b %Y") }} &bull;
-                {% if p.amount < 0 %}&minus;{% endif %}{{ sym }}{{ "%.2f"|format(p.amount|float|abs) }}
+                {% set la = ledger_amount(request, p) %}{% if la < 0 %}&minus;{% endif %}{{ sym }}{{ "%.2f"|format(la|float|abs) }}
             </small>
         </td>
         <td>

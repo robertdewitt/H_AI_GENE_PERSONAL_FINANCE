@@ -48,3 +48,16 @@ def schedule_amount(db: "Session", account: Account, ledger_amount, payment_sign
         return amt
     sign = payment_sign if payment_sign is not None else ledger_payment_sign(db, account)
     return -amt * sign
+
+
+def ledger_amount(db: "Session", account: Account, scheduled) -> Decimal:
+    """A scheduled amount as this account's ledger shows it — what the user
+    sees and types. The conversion is its own inverse, so typed amounts go
+    back through ``schedule_amount``."""
+    return schedule_amount(db, account, scheduled)
+
+
+def from_typed(db: "Session", account_id: int, typed) -> Decimal:
+    """A schedule amount typed in the account's ledger sign → stored sign."""
+    account = db.get(Account, account_id)
+    return schedule_amount(db, account, typed) if account is not None else Decimal(str(typed))
