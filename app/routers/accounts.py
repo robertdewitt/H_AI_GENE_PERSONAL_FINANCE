@@ -171,8 +171,10 @@ def accounts_list(
         for item in items
         if item["account"].is_asset
     )
+    # Liability balances are amounts owed; one in credit (negative) reduces
+    # the total rather than adding to it — the same as net_worth_service.
     total_liabilities = sum(
-        abs(item["balance"])
+        item["balance"]
         for items in groups.values()
         for item in items
         if not item["account"].is_asset

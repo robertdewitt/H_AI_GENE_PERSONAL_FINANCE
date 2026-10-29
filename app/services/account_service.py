@@ -288,6 +288,23 @@ def _latest_balance_marker(db: Session, account_id: int) -> tuple[Decimal, datet
     return Decimal(str(end[2])), last_day
 
 
+def _txn_sum_value(account: Account, raw) -> Decimal:
+    """A sum of ledger rows as the account's balance.
+
+    Rows are cash-flow signed (borrowing or a charge is negative, a
+    repayment positive), while a liability's balance is the amount owed —
+    so a liability's sum flips, the same rule as the statement-anchored
+    paths. A liability with no rows yet owes nothing: its current_value is
+    not a debt history, and falling back to it put a loan on the books
+    before it was taken out."""
+    raw = Decimal(str(raw or 0))
+    if not account.is_asset:
+        return -raw
+    if raw == Decimal("0.00") and account.current_value is not None:
+        return Decimal(str(account.current_value))
+    return raw
+
+
 def _balance_from_txn_sum(
     db: Session, account: Account, account_id: int,
     as_of_date: datetime | None, now: datetime,
@@ -325,11 +342,7 @@ def _balance_from_txn_sum(
     ).where(Transaction.account_id == account_id)
     if as_of_date:
         query = query.where(Transaction.date <= as_of_date)
-    raw = db.execute(query).scalar()
-    balance = raw or Decimal("0.00")
-
-    if balance == Decimal("0.00") and account.current_value is not None:
-        balance = account.current_value
+    balance = _txn_sum_value(account, db.execute(query).scalar())
 
     return AccountBalanceResult(
         value=balance,
@@ -872,9 +885,7 @@ def get_many_account_balances_rich(
                     currency=acct.currency,
                 )
             else:
-                balance = txn_sums.get(acct.id, Decimal("0.00"))
-                if balance == Decimal("0.00") and acct.current_value is not None:
-                    balance = acct.current_value
+                balance = _txn_sum_value(acct, txn_sums.get(acct.id, Decimal("0.00")))
                 result = AccountBalanceResult(
                     value=balance,
                     balance_as_of=now,
@@ -1265,9 +1276,7 @@ def get_many_account_balances_series(
                         currency=acct.currency,
                     )
                 else:
-                    balance = _txn_sum_at(acct.id, snapshot_date)
-                    if balance == Decimal("0.00") and acct.current_value is not None:
-                        balance = Decimal(str(acct.current_value))
+                    balance = _txn_sum_value(acct, _txn_sum_at(acct.id, snapshot_date))
                     result = AccountBalanceResult(
                         value=balance,
                         balance_as_of=snapshot_date,
