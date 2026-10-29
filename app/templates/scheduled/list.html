@@ -60,6 +60,7 @@
         </tr>
     </thead>
     <tbody>
+    {% set tol = variable_tolerance_pct(request) %}
     {% for p in active_payments %}
     {% set sym = SYMBOLS.get(p.currency, p.currency ~ " ") %}
     {% set overdue = p.next_due_date < today %}
@@ -81,7 +82,13 @@
             {% else %}
                 <span style="color:#16a34a">+{{ sym }}{{ "%.2f"|format(la|float) }}</span>
             {% endif %}
-            {% if p.amount_type == 'estimated' %}<small style="color:var(--pico-muted-color)">~</small>{% endif %}
+            <select name="amount_type" form="typef{{ p.id }}" onchange="this.form.submit()"
+                    title="Fixed matches within 5%; Variable within ±{{ tol }}% (Settings)"
+                    style="margin:0.2rem 0 0;padding:0.1rem 0.3rem;font-size:0.75rem;width:auto;display:block;margin-left:auto">
+                <option value="fixed" {% if (p.amount_type or 'fixed') == 'fixed' %}selected{% endif %}>Fixed</option>
+                <option value="estimated" {% if p.amount_type == 'estimated' %}selected{% endif %}>Variable ±{{ tol }}%</option>
+                {% if p.amount_type == 'variable' %}<option value="variable" selected>Average ±{{ tol }}%</option>{% endif %}
+            </select>
         </td>
         <td style="font-size:0.9rem;text-transform:capitalize">{{ p.frequency }}</td>
         <td style="font-size:0.9rem;white-space:nowrap{% if overdue %};color:#dc2626;font-weight:600{% endif %}">
@@ -89,14 +96,15 @@
             {% if overdue %}<span style="font-size:0.75rem"> overdue</span>{% endif %}
         </td>
         <td style="font-size:0.85rem">
-            <form method="post" action="/scheduled/{{ p.id }}/flag-level" style="margin:0">
-                <select name="flag_level" onchange="this.form.submit()"
+            {# Bound to a form declared outside the bulk form: a <form> nested in
+               another is dropped by the browser, so this select used to submit
+               the bulk form instead. #}
+                <select name="flag_level" form="flagf{{ p.id }}" onchange="this.form.submit()"
                         style="margin:0;padding:0.1rem 0.3rem;font-size:0.78rem;width:auto">
                     <option value="default" {% if not p.flag_level %}selected{% endif %}>Auto-classify ({{ levels.get(p.id, 'auto') }})</option>
                     <option value="reminder" {% if p.flag_level == 'reminder' %}selected{% endif %}>Reminder</option>
                     <option value="auto" {% if p.flag_level == 'auto' %}selected{% endif %}>Automatic</option>
                 </select>
-            </form>
             {% if p.id in suppressed %}
             <small style="color:var(--pico-muted-color)" title="Flagged on the destination account instead">↳ via destination</small>
             {% endif %}
@@ -120,6 +128,11 @@
 </table>
 </div>
 </form>
+{# Per-row forms for the selects above, outside the bulk form. #}
+{% for p in active_payments %}
+<form id="flagf{{ p.id }}" method="post" action="/scheduled/{{ p.id }}/flag-level" hidden></form>
+<form id="typef{{ p.id }}" method="post" action="/scheduled/{{ p.id }}/amount-type" hidden></form>
+{% endfor %}
 {% else %}
 <article style="text-align:center;padding:2rem;color:var(--pico-muted-color)">
     No active scheduled payments.

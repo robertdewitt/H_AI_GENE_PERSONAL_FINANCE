@@ -14,6 +14,7 @@ from app.models.scheduled_payment import ScheduledPayment
 from app.models.transaction import Transaction
 from app.services.scheduled_matcher import backfill_matches
 from app.services.user_profile_service import get_profile
+from tests.test_tenant_isolation import two_user_app  # noqa: F401 — fixture
 
 
 @pytest.fixture
@@ -63,3 +64,27 @@ def test_tolerance_comes_from_preferences(db):
     db.commit()
     backfill_matches(db, account_id=acct.id, since=date(2026, 1, 1))
     assert p.last_matched_date is None
+
+
+def test_scheduled_page_switches_amount_type(two_user_app):
+    from tests.test_tenant_isolation import _cookie
+    client, ctx = two_user_app
+    s = ctx["session"]
+    p = ScheduledPayment(account_id=ctx["alice_account_id"], description="Salary", amount=Decimal("100"),
+                         currency="USD", frequency="monthly", next_due_date=date(2026, 11, 1), active=True)
+    s.add(p)
+    s.commit()
+
+    html = client.get("/scheduled", cookies=_cookie(ctx["alice_cookie"])).text
+    assert f'form="typef{p.id}"' in html and f'id="typef{p.id}"' in html
+
+    client.post(f"/scheduled/{p.id}/amount-type", data={"amount_type": "estimated"},
+                cookies=_cookie(ctx["alice_cookie"]), follow_redirects=False)
+    s.expire_all()
+    assert s.get(ScheduledPayment, p.id).amount_type == "estimated"
+
+    # Another user can't change it.
+    client.post(f"/scheduled/{p.id}/amount-type", data={"amount_type": "fixed"},
+                cookies=_cookie(ctx["bob_cookie"]), follow_redirects=False)
+    s.expire_all()
+    assert s.get(ScheduledPayment, p.id).amount_type == "estimated"

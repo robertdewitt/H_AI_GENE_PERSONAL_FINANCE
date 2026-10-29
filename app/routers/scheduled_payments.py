@@ -271,6 +271,21 @@ def scheduled_set_flag_level(
     return RedirectResponse(url="/scheduled", status_code=303)
 
 
+@router.post("/{payment_id}/amount-type")
+def scheduled_set_amount_type(
+    payment_id: int,
+    amount_type: str = Form(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Fixed (matches within 5%) or variable (within the user's tolerance)."""
+    payment = get_owned_scheduled_payment(db, user, payment_id)
+    if payment and amount_type in AMOUNT_TYPES:
+        payment.amount_type = amount_type
+        db.commit()
+    return RedirectResponse(url="/scheduled", status_code=303)
+
+
 # ── Toggle active ─────────────────────────────────────────────────────────────
 
 @router.post("/{payment_id}/toggle")
