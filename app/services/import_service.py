@@ -739,9 +739,16 @@ def import_transactions(
     deleted_keys: set[tuple] = set()
     deleted_wordings: dict[tuple, list[str]] = {}
     for r in db.execute(
-        select(DeletedTransaction.date, DeletedTransaction.description, DeletedTransaction.amount)
+        select(DeletedTransaction.date, DeletedTransaction.description,
+               DeletedTransaction.amount, DeletedTransaction.deleted_at)
         .where(DeletedTransaction.account_id == account_id)
     ).all():
+        # A row deleted before its own date was a projection (a scheduled
+        # payment laid out ahead), never a bank row — removing it says nothing
+        # about the real one that arrives later. Remembering it blocked a
+        # month's mortgage payment from importing.
+        if r.deleted_at is not None and r.date.date() > r.deleted_at.date():
+            continue
         k = (r.date.strftime("%Y-%m-%d"), (r.description or "").strip().lower(), round(r.amount, 2))
         deleted_keys.add(k)
         deleted_wordings.setdefault((k[0], k[2]), []).append(comparison_key(r.description or ""))

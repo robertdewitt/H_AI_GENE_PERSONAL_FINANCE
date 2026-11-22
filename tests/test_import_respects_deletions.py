@@ -98,3 +98,18 @@ def test_the_surviving_twin_receives_the_running_balance(db, tmp_path):
     assert len(rows) == 1 and rows[0].id == t.id
     assert rows[0].balance_after == Decimal("1366.68")
     assert batch._balances_carried == 1
+
+
+def test_a_projection_deleted_before_its_date_does_not_block_the_real_row(db, tmp_path):
+    """A scheduled-payment placeholder for 3 Nov, deleted on 23 Oct, must not
+    stop the bank's own 3 Nov row from importing."""
+    acct = _acct(db)
+    db.add(DeletedTransaction(original_id=999, account_id=acct.id, date=datetime(2026, 11, 3),
+                              description="Mission FCU", amount=Decimal("-3290"), original_currency="USD",
+                              deleted_at=datetime(2026, 10, 23, 19, 58)))
+    db.commit()
+
+    _import(db, acct, _csv(tmp_path, ["11/3/2026,Mission FCU,3290.00,,1539.21"]))
+
+    rows = _rows(db, acct)
+    assert len(rows) == 1 and rows[0].amount == Decimal("-3290")
