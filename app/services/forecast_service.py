@@ -191,9 +191,9 @@ def _forecast_anchor(db: "Session", account, today: date) -> tuple[Decimal, date
     mixing a base-currency opening with native-currency payments skews every
     row. The as-of date is what the balance actually reflects: a statement
     date, or for a ledger-derived balance the latest imported transaction,
-    since nothing after that has been seen yet. Future-dated ledger rows
-    (from the old forecast Confirm button) are left out so the opening means
-    "as of" rather than "as of plus whatever was posted ahead".
+    since nothing after that has been seen yet. The balance already leaves
+    out future-dated ledger rows, so the opening means "as of" rather than
+    "as of plus whatever was posted ahead".
     """
     from datetime import datetime
     from sqlalchemy import func, select, or_
@@ -205,17 +205,8 @@ def _forecast_anchor(db: "Session", account, today: date) -> tuple[Decimal, date
     opening = Decimal(str(rich.value))
     end_of_today = datetime.combine(today, datetime.max.time())
 
-    if rich.balance_source_used in _LEDGER_SUM_SOURCES:
-        future = db.execute(
-            select(func.coalesce(func.sum(Transaction.amount), 0)).where(
-                Transaction.account_id == account.id,
-                Transaction.date > end_of_today,
-            )
-        ).scalar() or 0
-        future = Decimal(str(future))
-        # statement_anchored subtracts ledger rows on a liability.
-        opening -= -future if (rich.balance_source_used == "statement_anchored"
-                               and not account.is_asset) else future
+    # Future-dated ledger rows are already left out: a current balance
+    # stops at today (account_service._end_of_today).
 
     as_of = rich.balance_as_of.date() if rich.balance_as_of else today
     if as_of >= today:

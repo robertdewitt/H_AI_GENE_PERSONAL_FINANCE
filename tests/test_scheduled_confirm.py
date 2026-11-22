@@ -157,7 +157,9 @@ def test_confirming_a_later_occurrence_advances_past_it(db):
     assert pmt.next_due_date == date(2026, 12, 1)
 
 
-def test_confirmed_row_counts_towards_the_balance(db):
+def test_confirmed_row_counts_towards_the_balance_once_its_day_arrives(db):
+    """A confirmed occurrence dated ahead is planned, not posted: today's
+    balance ignores it; a dated-today one counts."""
     from app.services.account_service import get_account_balance
     from app.services.scheduled_confirm import confirm_occurrence
 
@@ -167,9 +169,11 @@ def test_confirmed_row_counts_towards_the_balance(db):
 
     confirm_occurrence(db, pmt, date.today() + timedelta(days=3))
     db.commit()
+    assert get_account_balance(db, acct.id, target_currency="GBP") == before
 
-    after = get_account_balance(db, acct.id, target_currency="GBP")
-    assert after == before - Decimal("250.00")
+    confirm_occurrence(db, pmt, date.today())
+    db.commit()
+    assert get_account_balance(db, acct.id, target_currency="GBP") == before - Decimal("250.00")
 
 
 # ── Route ─────────────────────────────────────────────────────────────────
@@ -370,9 +374,8 @@ def test_rows_carrying_their_own_marker_are_not_double_counted(db):
     assert get_account_balance(db, acct.id, target_currency="GBP") == Decimal("500.00")
 
 
-def test_hybrid_balance_includes_future_dated_rows(db):
-    """A statement-anchored account was clamping its delta at today, so a
-    confirmed future occurrence never showed up."""
+def test_hybrid_balance_stops_at_today(db):
+    """The current balance is as of today: a row dated ahead waits for its day."""
     from datetime import datetime, timedelta
 
     from app.models.enums import BalanceTruthSource
@@ -390,7 +393,7 @@ def test_hybrid_balance_includes_future_dated_rows(db):
     _imported_row(db, acct, date.today() + timedelta(days=5), "-100.00")
     db.commit()
 
-    assert get_account_balance(db, acct.id, target_currency="GBP") == Decimal("870.00")
+    assert get_account_balance(db, acct.id, target_currency="GBP") == Decimal("970.00")
 
 
 def test_hybrid_history_still_stops_at_the_requested_date(db):
@@ -570,3 +573,22 @@ def test_list_and_detail_agree_on_a_hybrid_liability(db):
 
     assert single == Decimal("185407.72")
     assert batched == single
+
+
+def test_future_row_waits_on_the_single_and_batched_balance(db):
+    """A payment entered ahead (Mission checking's 18 Dec transfer) leaves
+    today's balance alone, on the account page and the accounts list alike."""
+    from datetime import timedelta
+
+    from app.services.account_service import (
+        get_account_balance, get_many_account_balances_rich,
+    )
+
+    acct = _checking(db)
+    _imported_row(db, acct, date.today() - timedelta(days=6), "3640.00", balance_after=Decimal("3301.96"))
+    _imported_row(db, acct, date.today() + timedelta(days=26), "-6000.00")
+    db.commit()
+
+    assert get_account_balance(db, acct.id, target_currency="GBP") == Decimal("3301.96")
+    many = get_many_account_balances_rich(db, accounts=[acct], target_currency="GBP")
+    assert many[acct.id].value == Decimal("3301.96")

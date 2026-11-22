@@ -247,6 +247,17 @@ def get_account_balance_rich(
 # that closed at $6,318.
 
 
+def _end_of_today() -> datetime:
+    """Latest moment a current balance counts.
+
+    A current balance is as of today: a row dated later — a scheduled
+    payment entered ahead of time — is planned, not posted, and moves the
+    balance only once its day arrives. Forecasts read those rows directly.
+    """
+    from datetime import date as _date, time as _time
+    return datetime.combine(_date.today(), _time.max)
+
+
 def _closing_row(rows: list[tuple]) -> tuple:
     """``rows`` are (id, amount, balance_after) for one account on one day;
     returns the one whose balance_after is that day's closing balance."""
@@ -273,6 +284,7 @@ def _latest_balance_marker(db: Session, account_id: int) -> tuple[Decimal, datet
         select(func.max(Transaction.date)).where(
             Transaction.account_id == account_id,
             Transaction.balance_after.isnot(None),
+            Transaction.date <= _end_of_today(),
         )
     ).scalar()
     if last_day is None:
@@ -315,15 +327,17 @@ def _balance_from_txn_sum(
         marker = _latest_balance_marker(db, account_id)
         if marker is not None:
             marker_value, marker_date = marker
-            # Anything recorded after that marker — a confirmed scheduled
-            # payment, a future-dated or manually added row — carries no
-            # running balance of its own. Without adding it the account
-            # reports a balance that predates its own ledger.
+            # Anything recorded after that marker up to today — a confirmed
+            # scheduled payment or a manually added row — carries no running
+            # balance of its own. Without adding it the account reports a
+            # balance that predates its own ledger. Rows dated after today
+            # are planned, not posted, and wait for their day.
             since_marker = db.execute(
                 select(func.coalesce(func.sum(Transaction.amount), 0))
                 .where(
                     Transaction.account_id == account_id,
                     Transaction.date > marker_date,
+                    Transaction.date <= _end_of_today(),
                     Transaction.balance_after.is_(None),
                 )
             ).scalar() or Decimal("0.00")
@@ -340,8 +354,7 @@ def _balance_from_txn_sum(
     query = select(
         func.coalesce(func.sum(Transaction.amount), 0)
     ).where(Transaction.account_id == account_id)
-    if as_of_date:
-        query = query.where(Transaction.date <= as_of_date)
+    query = query.where(Transaction.date <= (as_of_date or _end_of_today()))
     balance = _txn_sum_value(account, db.execute(query).scalar())
 
     return AccountBalanceResult(
@@ -534,18 +547,16 @@ def _balance_hybrid(
         stmt_bal = account.statement_balance
         stmt_date = account.statement_balance_as_of
         cutoff = as_of_date or now
-        # No upper bound unless one was asked for: a historical query stops at
-        # its as_of_date, but the current balance includes everything on the
-        # ledger, future-dated rows included.
+        # A historical query stops at its as_of_date; the current balance
+        # stops at today, so rows scheduled ahead wait for their day.
         delta_query = (
             select(func.coalesce(func.sum(Transaction.amount), 0))
             .where(
                 Transaction.account_id == account_id,
                 Transaction.date > stmt_date,
+                Transaction.date <= (as_of_date or _end_of_today()),
             )
         )
-        if as_of_date is not None:
-            delta_query = delta_query.where(Transaction.date <= as_of_date)
         delta = db.execute(delta_query).scalar() or Decimal("0.00")
         delta = Decimal(str(delta))
         if as_of_date is None or stmt_date <= as_of_date:
@@ -611,6 +622,7 @@ def get_many_account_balances_rich(
 
     base_ccy = target_currency or settings.base_currency
     now = naive_utc_now()
+    today_end = _end_of_today()   # rows dated later are planned, not posted
 
     if accounts is None:
         accounts = list_accounts(db)
@@ -676,6 +688,7 @@ def get_many_account_balances_rich(
             .where(
                 Transaction.account_id.in_(txn_sum_ids),
                 Transaction.balance_after.isnot(None),
+                Transaction.date <= today_end,
             )
             .group_by(Transaction.account_id)
             .subquery()
@@ -705,6 +718,7 @@ def get_many_account_balances_rich(
                 .where(
                     Transaction.account_id.in_(list(latest_bal_after)),
                     Transaction.date > oldest_marker,
+                    Transaction.date <= today_end,
                     Transaction.balance_after.is_(None),
                 )
             ).all():
@@ -737,7 +751,10 @@ def get_many_account_balances_rich(
                 Transaction.account_id,
                 func.coalesce(func.sum(Transaction.amount), 0).label("total"),
             )
-            .where(Transaction.account_id.in_(txn_sum_ids_without_bal_after))
+            .where(
+                Transaction.account_id.in_(txn_sum_ids_without_bal_after),
+                Transaction.date <= today_end,
+            )
             .group_by(Transaction.account_id)
         ).all():
             txn_sums[row.account_id] = row.total
@@ -756,6 +773,7 @@ def get_many_account_balances_rich(
             .where(
                 Transaction.account_id.in_(list(hybrid_anchored.keys())),
                 Transaction.date > min_stmt_date,
+                Transaction.date <= today_end,
             )
         ).all():
             _, stmt_date = hybrid_anchored[row.account_id]
