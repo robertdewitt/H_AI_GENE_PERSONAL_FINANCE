@@ -36,6 +36,32 @@
     align-self: center;
 }
 .task-count.warning { color: #d97706; }
+.task-card.has-subtasks { flex-wrap: wrap; }
+.task-card.has-subtasks:hover { box-shadow: none; }
+.task-title a { color: inherit; text-decoration: none; }
+.task-title a:hover { text-decoration: underline; }
+.subtask-list {
+    list-style: none;
+    margin: 0.6rem 0 0;
+    padding: 0;
+    flex-basis: 100%;
+    padding-left: 3rem;
+}
+.subtask-list li {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.3rem 0;
+    margin: 0;
+    border-top: 1px solid var(--pico-muted-border-color);
+    list-style: none;
+}
+.subtask-list input[type=checkbox] { margin: 0; flex-shrink: 0; }
+.subtask-label { flex: 1; font-size: 0.9rem; }
+.subtask-label a { color: inherit; }
+.subtask-detail { font-size: 0.8rem; color: var(--pico-muted-color); white-space: nowrap; }
+.subtask-list li.done .subtask-label,
+.subtask-list li.done .subtask-detail { text-decoration: line-through; opacity: 0.55; }
 .section-label {
     font-size: 0.75rem;
     font-weight: 600;
@@ -79,6 +105,27 @@
     {% if cat_tasks %}
     <p class="section-label">{{ label }}</p>
     {% for task in cat_tasks %}
+    {% if task.subtasks %}
+    <div class="task-card has-subtasks {{ task.severity }}" data-subtask-card>
+        <div class="task-icon">{{ icon }}</div>
+        <div class="task-body">
+            <p class="task-title"><a href="{{ task.url }}">{{ task.title }}</a></p>
+            <p class="task-detail" data-remaining></p>
+        </div>
+        <div class="task-count {{ task.severity }}" data-count>{{ task.count }}</div>
+        <ul class="subtask-list">
+            {% for sub in task.subtasks %}
+            <li>
+                <input type="checkbox" id="sub-{{ loop.index }}-{{ sub.key }}" data-key="{{ sub.key }}">
+                <label class="subtask-label" for="sub-{{ loop.index }}-{{ sub.key }}">
+                    {% if sub.url %}<a href="{{ sub.url }}">{{ sub.label }}</a>{% else %}{{ sub.label }}{% endif %}
+                </label>
+                {% if sub.detail %}<span class="subtask-detail">{{ sub.detail }}</span>{% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% else %}
     <a href="{{ task.url }}" class="task-card {{ task.severity }}">
         <div class="task-icon">{{ icon }}</div>
         <div class="task-body">
@@ -87,9 +134,49 @@
         </div>
         <div class="task-count {{ task.severity }}">{{ task.count }}</div>
     </a>
+    {% endif %}
     {% endfor %}
     {% endif %}
 {% endfor %}
 
+<script>
+(function () {
+    // Ticks are remembered per browser. Each key carries the state the item
+    // was flagged on, so a tick lapses once the item changes.
+    const STORE = "fh.taskTicks";
+    let ticks = {};
+    try { ticks = JSON.parse(localStorage.getItem(STORE) || "{}") || {}; } catch (e) {}
+    const save = () => { try { localStorage.setItem(STORE, JSON.stringify(ticks)); } catch (e) {} };
+
+    document.querySelectorAll("[data-subtask-card]").forEach(card => {
+        const boxes = card.querySelectorAll("input[data-key]");
+        const refresh = () => {
+            let open = 0;
+            boxes.forEach(b => {
+                b.closest("li").classList.toggle("done", b.checked);
+                if (!b.checked) open++;
+            });
+            card.querySelector("[data-count]").textContent = open;
+            card.querySelector("[data-remaining]").textContent =
+                open === boxes.length ? "Tick each one off as you update it"
+                : `${boxes.length - open} of ${boxes.length} ticked off`;
+        };
+        boxes.forEach(b => {
+            b.checked = !!ticks[b.dataset.key];
+            b.addEventListener("change", () => {
+                if (b.checked) ticks[b.dataset.key] = 1; else delete ticks[b.dataset.key];
+                save();
+                refresh();
+            });
+        });
+        refresh();
+    });
+
+    // Drop ticks for items no longer on the page.
+    const live = new Set([...document.querySelectorAll("input[data-key]")].map(b => b.dataset.key));
+    Object.keys(ticks).forEach(k => { if (!live.has(k)) delete ticks[k]; });
+    save();
+})();
+</script>
 {% endif %}
 {% endblock %}

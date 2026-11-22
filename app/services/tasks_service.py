@@ -17,6 +17,20 @@ DUE_SOON_DAYS = 30  # surface scheduled payments due within this window
 
 
 @dataclass
+class SubTask:
+    """One checkable line item under a task (e.g. a single stale account).
+
+    ``key`` identifies the item for its tick box. It includes whatever state
+    the item was flagged on (e.g. the last transaction date), so a tick
+    clears itself once the item is updated and later goes stale again.
+    """
+    key: str
+    label: str
+    detail: str = ""
+    url: str = ""
+
+
+@dataclass
 class Task:
     category: str        # "statements" | "transfers" | "categories" | "duplicates"
     title: str
@@ -24,6 +38,7 @@ class Task:
     count: int
     url: str
     severity: str = "warning"   # "warning" | "info"
+    subtasks: list[SubTask] = field(default_factory=list)
 
 
 def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
@@ -52,6 +67,7 @@ def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
     accounts = db.execute(_q).scalars().all()
     acct_ids = [a.id for a in accounts]     # every count below stays inside these
     stale_accounts: list[Account] = []
+    stale_last: dict[int, datetime | None] = {}
     for acct in accounts:
         if acct.account_type not in transactional_types:
             continue
@@ -71,6 +87,7 @@ def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
             last_txn_date = last_txn_date.replace(tzinfo=None)
         if last_txn_date is None or last_txn_date < cutoff:
             stale_accounts.append(acct)
+            stale_last[acct.id] = last_txn_date
 
     if stale_accounts:
         names = ", ".join(a.name for a in stale_accounts[:3])
@@ -83,6 +100,21 @@ def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
             count=len(stale_accounts),
             url="/accounts",
             severity="warning",
+            subtasks=[
+                SubTask(
+                    key=f"stale:{a.id}:{stale_last[a.id].date().isoformat() if stale_last[a.id] else 'none'}",
+                    label=a.name,
+                    detail=(
+                        f"Last transaction {stale_last[a.id].strftime('%d %b %Y')}"
+                        if stale_last[a.id] else "No transactions yet"
+                    ),
+                    url=f"/accounts/{a.id}",
+                )
+                for a in sorted(
+                    stale_accounts,
+                    key=lambda a: (stale_last[a.id] or datetime.min, a.name),
+                )
+            ],
         ))
 
     # ── 2. Unconfirmed transfers ─────────────────────────────────────────────
@@ -214,6 +246,17 @@ def get_tasks(db: Session, user_id: int | None = None) -> list[Task]:
                 count=len(overdue),
                 url="/scheduled",
                 severity="warning",
+                subtasks=[
+                    SubTask(
+                        key=f"overdue:{p.id}:{p.next_due_date.isoformat()}",
+                        label=p.description,
+                        detail=(f"Due {p.next_due_date.strftime('%d %b %Y')}"
+                                + (f" · {accounts_map[p.account_id].name}"
+                                   if p.account_id in accounts_map else "")),
+                        url=f"/accounts/{p.account_id}",
+                    )
+                    for p in sorted(overdue, key=lambda x: x.next_due_date)
+                ],
             ))
 
         # 5b. Due soon — grouped per (account, level). Reminders surface
