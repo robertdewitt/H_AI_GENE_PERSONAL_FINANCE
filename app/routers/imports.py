@@ -688,7 +688,15 @@ def confirm_import(
                     )
                     account.statement_balance = new_bal
                     account.statement_balance_as_of = stmt_dt
-                    account.balance_truth_source = "latest_statement"
+                    # A card keeps moving between statements, so anchor on the
+                    # statement and roll it forward with each transaction
+                    # (hybrid). Loans stay on the statement figure, since
+                    # interest accrues without a row on the ledger.
+                    account.balance_truth_source = (
+                        "hybrid"
+                        if account.account_type == AccountType.CREDIT_CARD
+                        else "latest_statement"
+                    )
 
                     # Loan PDFs also report the original principal and APR.
                     # Persist them so the account detail page can show the

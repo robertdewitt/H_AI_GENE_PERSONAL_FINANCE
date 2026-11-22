@@ -1124,7 +1124,7 @@
                 {% if txn.balance_after is not none %}
                 {{ account.currency_symbol }}{{ "{:,.2f}".format(txn.balance_after) }}
                 {% elif running_balances and txn.id in running_balances %}
-                {# Reconstructed from statements for loans (no bank balance per row). #}
+                {# Reconstructed from statements for loans and cards (no bank balance per row). #}
                 <span title="Worked out from your statements">{{ bal.signed(running_balances[txn.id], account.is_asset, account.currency_symbol) }}</span>
                 {% else %}&mdash;{% endif %}
             </td>

@@ -1,4 +1,4 @@
-"""Running balance for a loan's ledger, anchored to its statements.
+"""Running balance for a loan's or credit card's ledger, anchored to its statements.
 
 Loan servicers don't send a running balance with each row, so it is
 reconstructed: each statement (LiabilityBalanceSnapshot, plus the account's
@@ -30,6 +30,9 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 LOAN_TYPES = (AccountType.MORTGAGE, AccountType.LOAN)
+# Every row on a card moves what's owed by its full amount, cash-flow signed
+# (a charge is negative, a payment positive), so cards anchor the same way.
+STATEMENT_ANCHORED_TYPES = LOAN_TYPES + (AccountType.CREDIT_CARD,)
 _CARRIED = re.compile(r"(carried|brought) forward|opening balance", re.I)
 
 
@@ -46,15 +49,17 @@ def _anchors(db: "Session", loan: Account) -> list[tuple[date, Decimal]]:
             select(LiabilityBalanceSnapshot).where(LiabilityBalanceSnapshot.account_id == loan.id)
         ).scalars()
     }
+    # A statement's own snapshot is the record of what it said; the account's
+    # statement balance only fills a day no snapshot covers.
     if loan.statement_balance is not None and loan.statement_balance_as_of is not None:
-        by_day[_d(loan.statement_balance_as_of)] = Decimal(loan.statement_balance)
+        by_day.setdefault(_d(loan.statement_balance_as_of), Decimal(loan.statement_balance))
     return sorted(by_day.items())
 
 
 def loan_running_balances(db: "Session", loan: Account) -> dict[int, Decimal]:
     """{transaction id: amount owed after it} for every row on a loan account
     that statements can anchor. Positive = owed, as balances are stored."""
-    if loan.account_type not in LOAN_TYPES:
+    if loan.account_type not in STATEMENT_ANCHORED_TYPES:
         return {}
     anchors = _anchors(db, loan)
     rows = db.execute(
@@ -76,6 +81,8 @@ def loan_running_balances(db: "Session", loan: Account) -> dict[int, Decimal]:
     # debits). Rows of the other sign (interest, fees) add to what's owed.
     signs = [Decimal(r.amount) > 0 for r in rows if r.id not in carried and r.amount]
     payment_sign = Decimal(1) if signs.count(True) >= signs.count(False) else Decimal(-1)
+    if loan.account_type == AccountType.CREDIT_CARD:
+        payment_sign = Decimal(1)   # charges outnumber payments; the sign is fixed
     principal = dict(db.execute(
         select(PaymentDecomposition.transaction_id, func.sum(PaymentDecomposition.amount))
         .join(Transaction, Transaction.id == PaymentDecomposition.transaction_id)

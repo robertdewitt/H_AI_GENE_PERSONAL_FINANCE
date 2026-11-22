@@ -103,3 +103,30 @@ def test_statement_export_with_negative_payments_and_carried_forward_row(db):
     assert bal[cf.id] == Decimal("846393.78")
     assert bal[aug.id] == Decimal("846393.78")
     assert bal[jul.id] == Decimal("846393.78") + Decimal("2656.24")
+
+
+def test_credit_card_rolls_forward_from_statement(db):
+    """Charges add to what's owed, payments reduce it, anchored on the statement."""
+    card = Account(name="Card", account_type=AccountType.CREDIT_CARD, currency="USD", is_asset=False)
+    db.add(card)
+    db.flush()
+    _snap(db, card, date(2026, 9, 24), "500.00")
+    before = _pay(db, card, date(2026, 9, 20), "-100.00")   # charge before the statement
+    charge = _pay(db, card, date(2026, 10, 1), "-40.00")
+    payment = _pay(db, card, date(2026, 10, 5), "300.00")
+    db.flush()
+    bal = loan_running_balances(db, card)
+    assert bal[before.id] == Decimal("500.00")
+    assert bal[charge.id] == Decimal("540.00")
+    assert bal[payment.id] == Decimal("240.00")
+
+
+def test_snapshot_beats_account_statement_balance_on_same_day(db):
+    card = Account(name="Card", account_type=AccountType.CREDIT_CARD, currency="USD", is_asset=False,
+                   statement_balance=Decimal("74.46"), statement_balance_as_of=datetime(2026, 9, 28))
+    db.add(card)
+    db.flush()
+    _snap(db, card, date(2026, 9, 28), "5200.00")
+    pay = _pay(db, card, date(2026, 10, 24), "75.00")
+    db.flush()
+    assert loan_running_balances(db, card)[pay.id] == Decimal("5125.00")
