@@ -2,6 +2,8 @@
 {% block title %}RSU Award Summary Preview &mdash; Financial Hygiene{% endblock %}
 
 {% block content %}
+{% import "imports/_run.html" as runui %}
+{{ runui.banner(run, filepath) }}
 <hgroup>
     <h1>RSU Award Summary Preview</h1>
     <p>Review your restricted stock units before importing. The account will be valued at <strong>unvested units &times; live {{ parsed.symbol }} price</strong>.</p>
@@ -72,10 +74,12 @@
 {% endfor %}
 
 <form method="post" action="/import/rsu-confirm">
+    {{ runui.fields(run) }}
     <input type="hidden" name="account_id" value="{{ account_id }}">
     <input type="hidden" name="filepath" value="{{ filepath }}">
     <div style="display:flex;gap:1rem;margin-top:1rem">
         <button type="submit">Import RSU Grants</button>
+        {{ runui.skip(run) }}
         <a href="/import" role="button" class="outline">Cancel</a>
     </div>
 </form>

@@ -2,6 +2,8 @@
 {% block title %}IBKR Statement Preview &mdash; Financial Hygiene{% endblock %}
 
 {% block content %}
+{% import "imports/_run.html" as runui %}
+{{ runui.banner(run, filepath) }}
 <hgroup>
     <h1>IBKR Statement Preview</h1>
     <p>Review the data extracted from your Interactive Brokers activity statement before importing</p>
@@ -134,10 +136,12 @@
 {% endif %}
 
 <form method="post" action="/import/ibkr-confirm">
+    {{ runui.fields(run) }}
     <input type="hidden" name="account_id" value="{{ account_id }}">
     <input type="hidden" name="filepath" value="{{ filepath }}">
     <div style="display:flex;gap:1rem;margin-top:1rem">
         <button type="submit">Import Statement</button>
+        {{ runui.skip(run) }}
         <a href="/import" role="button" class="outline">Cancel</a>
     </div>
 </form>

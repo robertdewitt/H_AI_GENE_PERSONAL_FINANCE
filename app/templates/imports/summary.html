@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Import Finished &mdash; Financial Hygiene{% endblock %}
+
+{% block content %}
+{% set imported_files = results | selectattr("status", "equalto", "imported") | list %}
+<hgroup>
+    <h1>Import finished</h1>
+    <p>{{ imported_files | length }} of {{ results | length }} file{{ 's' if results | length != 1 else '' }} imported</p>
+</hgroup>
+
+<table>
+    <thead>
+        <tr><th>File</th><th>Account</th><th>Result</th></tr>
+    </thead>
+    <tbody>
+    {% for r in results %}
+        <tr>
+            <td style="word-break:break-all">{{ r.name }}</td>
+            <td>
+                {% if r.account_id %}<a href="/accounts/{{ r.account_id }}">{{ r.account_name }}</a>{% else %}&mdash;{% endif %}
+            </td>
+            <td>
+                {% if r.status == "imported" %}
+                    {% if r.imported != "" and r.imported is not none %}
+                        {{ r.imported }} transaction{{ 's' if r.imported != "1" else '' }} imported
+                        {% if r.duplicates and r.duplicates != "0" %}&bull; {{ r.duplicates }} duplicate{{ 's' if r.duplicates != "1" else '' }} skipped{% endif %}
+                    {% else %}
+                        Imported &mdash; <a href="{{ r.url }}">view</a>
+                    {% endif %}
+                    {% if r.auto %}<small style="display:block;color:var(--pico-muted-color)">Same columns as the file before — imported with that mapping</small>{% endif %}
+                {% elif r.status == "skipped" %}
+                    <span style="color:var(--pico-muted-color)">Skipped</span>
+                {% else %}
+                    <span style="color:var(--pico-del-color)">Not imported</span>
+                {% endif %}
+                {% for n in r.notes or [] %}
+                    <small style="display:block;color:#b45309">{{ n }}</small>
+                {% endfor %}
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<a href="/import" role="button" class="outline">Import more files</a>
+{% endblock %}

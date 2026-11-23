@@ -1,0 +1,30 @@
+{# Pieces shared by every review page while a multi-file import is running.
+   `run` is None for an ordinary single-file import, and then nothing renders. #}
+
+{% macro banner(run, filepath) -%}
+{% if run %}
+<article class="import-run-banner" style="margin-bottom:1rem;padding:0.6rem 1rem;border-left:4px solid var(--pico-primary)">
+    <strong>File {{ run.position }} of {{ run.total }}</strong>
+    &mdash; {{ filepath | basename_upload }}
+    {% if run.total > run.position %}
+    <small style="display:block;color:var(--pico-muted-color)">
+        {{ run.total - run.position }} more after this. Files with the same columns as one you've just mapped are imported automatically.
+    </small>
+    {% endif %}
+</article>
+{% endif %}
+{%- endmacro %}
+
+{% macro fields(run) -%}
+{% if run %}
+    {% for q in run.queue %}<input type="hidden" name="queue" value="{{ q }}">{% endfor %}
+    {% for d in run.done %}<input type="hidden" name="done" value="{{ d }}">{% endfor %}
+    <input type="hidden" name="prev_mapping" value="{{ run.prev_mapping }}">
+{% endif %}
+{%- endmacro %}
+
+{% macro skip(run) -%}
+{% if run %}
+    <button type="submit" formaction="/import/skip" formnovalidate class="secondary outline">Skip this file</button>
+{% endif %}
+{%- endmacro %}

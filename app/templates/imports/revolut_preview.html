@@ -2,6 +2,8 @@
 {% block title %}Revolut Statement Preview &mdash; Financial Hygiene{% endblock %}
 
 {% block content %}
+{% import "imports/_run.html" as runui %}
+{{ runui.banner(run, filepath) }}
 <hgroup>
     <h1>Revolut Statement Preview</h1>
     <p>Choose which sections of this {% if statement_currency %}<strong>{{ statement_currency }}</strong> {% endif %}statement to import into <strong>{{ account_name }}</strong></p>
@@ -18,6 +20,7 @@
 {% else %}
 
 <form method="post" action="/import/revolut-confirm">
+    {{ runui.fields(run) }}
     <input type="hidden" name="account_id" value="{{ account_id }}">
     <input type="hidden" name="filepath" value="{{ filepath }}">
 
@@ -68,6 +71,7 @@
 
     <div style="display:flex;gap:1rem;align-items:center">
         <button type="submit" id="import-btn">Import</button>
+        {{ runui.skip(run) }}
         <a href="/import" role="button" class="outline">Cancel</a>
     </div>
 </form>

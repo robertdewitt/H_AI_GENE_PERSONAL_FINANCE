@@ -24,7 +24,28 @@ log = logging.getLogger(__name__)
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def pdf_to_dataframe(filepath: str) -> pd.DataFrame:
-    """Extract transactions from a PDF bank statement → DataFrame."""
+    """Extract transactions from a PDF bank statement → DataFrame.
+
+    The fixed parsers run first. Their result is then checked against the
+    statement's own summary: the rows must add up to the change between
+    the previous and new balance, and fall inside the billing period. When
+    they don't, the local text model reads the statement instead, and its
+    rows are used only if they reconcile exactly. A Citi statement with a
+    single $99 fee came out as "$27 in 2017" from the line parser — the
+    fee's description ended "NOV 26-OCT 27" and the amount sat on the line
+    below — and nothing noticed.
+    """
+    df = _parse_pdf_fixed(filepath)
+    try:
+        better = _llm_fallback(filepath, df)
+    except Exception:
+        log.warning("PDF LLM fallback failed for %s", filepath, exc_info=True)
+        better = None
+    return better if better is not None else df
+
+
+def _parse_pdf_fixed(filepath: str) -> pd.DataFrame:
+    """The deterministic parsers, in order of specificity."""
     try:
         import pdfplumber
     except ImportError:
@@ -429,6 +450,36 @@ def _parse_signed_amount(raw: str) -> float | None:
         return None
 
 
+_LIMIT_NEXT_LINE_RE = re.compile(
+    # Amex UK: labels on one line, figures on the next —
+    # "Credit Limit£ Available Credit Limit£ / At 19October2026 35,000.00 29,788.43"
+    r"credit\s*limit\s*[£$€]\s*available\s*credit\s*limit\s*[£$€]?\s*\n[^\n]*?([\d,]+\.\d{2})",
+    re.I,
+)
+_LIMIT_RE = re.compile(
+    # "Credit Limit $51,000", "Revolving Credit limit $51,000",
+    # "Total Credit Line $14,000.00", "Credit Access Line $27,500" — but not
+    # the cash-advance line or the credit still available.
+    r"(?<!cash )(?<!available )(?<!over the )(?:total\s+|revolving\s+)?credit\s*(?:access\s*)?(?:limit|line)"
+    r"\s*:?\s*[£$€]\s?([\d,]+(?:\.\d{2})?)",
+    re.I,
+)
+
+
+def _extract_credit_limit(text: str) -> float | None:
+    """A card's credit limit as its statement states it, or None."""
+    for rx in (_LIMIT_NEXT_LINE_RE, _LIMIT_RE):
+        m = rx.search(text)
+        if m:
+            try:
+                v = float(m.group(1).replace(",", ""))
+            except ValueError:
+                continue
+            if v > 0:
+                return v
+    return None
+
+
 def extract_cc_metadata(filepath: str) -> dict | None:
     """Extract credit-card statement summary from a PDF.
 
@@ -438,6 +489,7 @@ def extract_cc_metadata(filepath: str) -> dict | None:
       new_balance        – statement closing balance (float, signed — negative means credit)
       previous_balance   – prior statement closing balance (float, signed)
       statement_date     – statement closing date (date)
+      credit_limit       – the card's credit limit (float)
     Returns None if not a recognisable credit-card statement.
     """
     try:
@@ -644,6 +696,15 @@ def extract_cc_metadata(filepath: str) -> dict | None:
                 break
             except ValueError:
                 pass
+    limit = _extract_credit_limit(full_text)
+    if limit is not None:
+        result["credit_limit"] = limit
+
+    if "statement_date" not in result:
+        # Citi: "Billing Period: 10/16/26-11/16/26" — the period's end.
+        period = _statement_period(full_text)
+        if period:
+            result["statement_date"] = period[1]
     if "statement_date" not in result:
         # Amex UK style "to 15May2026"
         m = re.search(
@@ -1469,6 +1530,65 @@ _DEBIT_SECTION_RE = re.compile(
 _FX_LINE_RE = re.compile(r"^\d[\d,\.]+\s+X\s+[\d\.]+\s*\(", re.IGNORECASE)
 
 
+_PERIOD_RE = re.compile(
+    r"(?:billing\s*period|opening/?closing\s*date|statement\s*period)[:\s]+"
+    r"(\d{1,2}/\d{1,2}/\d{2,4})\s*(?:-|–|to)\s*(\d{1,2}/\d{1,2}/\d{2,4})",
+    re.I,
+)
+
+
+_BARE_RANGE_RE = re.compile(r"(?<![\d/])(\d{1,2}/\d{1,2}/\d{2})\s*-\s*(\d{1,2}/\d{1,2}/\d{2})(?![\d/])")
+
+
+def _statement_period(text: str):
+    """(start, end) dates of the statement's billing period, if it states one
+    as "Billing Period: 10/16/26-11/16/26" or similar."""
+    from datetime import datetime as _dt
+    m = _PERIOD_RE.search(text)
+    if not m and re.search(r"billing\s*period", text, re.I):
+        # Some layouts interleave the label with the next column's text and
+        # leave the range standing on its own elsewhere on the page.
+        m = _BARE_RANGE_RE.search(text)
+    if not m:
+        # Last resort: "New balance as of 11/17/25" closes the period; a
+        # card cycle is about a month, which is all the year inference and
+        # the date check need.
+        a = re.search(r"new\s*balance\s*as\s*of\s*(\d{1,2}/\d{1,2}/\d{2,4})", text, re.I)
+        if not a:
+            return None
+        from datetime import timedelta
+        for fmt in ("%m/%d/%y", "%m/%d/%Y"):
+            try:
+                end = _dt.strptime(a.group(1), fmt).date()
+                return (end - timedelta(days=35), end)
+            except ValueError:
+                continue
+        return None
+    out = []
+    for raw in m.groups():
+        for fmt in ("%m/%d/%y", "%m/%d/%Y"):
+            try:
+                out.append(_dt.strptime(raw, fmt).date())
+                break
+            except ValueError:
+                continue
+    return tuple(out) if len(out) == 2 and out[0] <= out[1] else None
+
+
+def _year_for(month: int, day: int, period) -> int | None:
+    """The year a bare MM/DD falls in, given the billing period it belongs to."""
+    from datetime import date as _date, timedelta
+    start, end = period
+    for year in (end.year, end.year - 1):
+        try:
+            d = _date(year, month, day)
+        except ValueError:
+            continue
+        if start - timedelta(days=10) <= d <= end + timedelta(days=10):
+            return year
+    return None
+
+
 def _infer_year(text: str) -> int:
     """Try to extract a statement year from the PDF text."""
     # Look for 4-digit years between 2000-2099
@@ -1518,6 +1638,7 @@ def _parse_statement_text(text: str) -> pd.DataFrame:
     """Parse bank statement text into a DataFrame of transactions."""
     text = _deduplicate_chars(text)
     year = _infer_year(text)
+    period = _statement_period(text)
     rows: list[dict] = []
 
     # Track section context to handle sign-less amounts (Chase/Amex style)
@@ -1558,7 +1679,17 @@ def _parse_statement_text(text: str) -> pd.DataFrame:
                 rest = line[m.end():].strip()
 
                 if fmt == "MM/DD":
-                    date_str = _parse_date_mm_dd(raw_date, year)
+                    # The billing period says which year a bare MM/DD is in;
+                    # the most common 4-digit number in the text ("Member
+                    # since 2017") is only a guess.
+                    y = year
+                    if period:
+                        try:
+                            mm, dd = (int(x) for x in raw_date.split("/"))
+                            y = _year_for(mm, dd, period) or year
+                        except ValueError:
+                            pass
+                    date_str = _parse_date_mm_dd(raw_date, y)
                 elif fmt is not None:
                     try:
                         from datetime import datetime as _dt
@@ -1619,3 +1750,144 @@ def _parse_statement_text(text: str) -> pd.DataFrame:
         return pd.DataFrame(columns=["Date", "Description", "Amount"])
 
     return pd.DataFrame(rows)
+
+
+# ── Local-model fallback ────────────────────────────────────────────────────
+#
+# Used only when the fixed parsers' rows don't reconcile with the statement
+# summary, and its answer only when it does. Results are cached per file so
+# the preview and the confirm step read the same rows without asking twice.
+
+_LLM_CACHE: dict[tuple[str, float], "pd.DataFrame | None"] = {}
+
+_LLM_PROMPT = """You read bank and credit-card statements.
+Extract every transaction posted in this statement: purchases, payments,
+credits, refunds, fees and interest charges. Leave out summary lines,
+totals, balances, rewards/points, and promotional text.
+
+Sign: an amount that INCREASES the statement balance is positive (on a credit
+card: purchases, fees, interest; on a bank account: deposits). An amount that
+DECREASES it is negative (card payments and credits; bank withdrawals).
+
+The statement's previous balance is {prev:.2f} and its new balance is {new:.2f},
+so the amounts must add up to {delta:.2f}.{period_line}
+
+Answer with JSON only, in this shape:
+{{"transactions": [{{"date": "YYYY-MM-DD", "description": "...", "amount": 12.34}}]}}
+
+Statement text:
+---
+{text}
+---"""
+
+
+def _amount_total(df: "pd.DataFrame") -> float | None:
+    """Sum of a parsed frame's amounts; None if its shape can't be summed
+    (separate debit/credit columns, say), in which case it isn't second-guessed."""
+    if df is None or len(df) == 0:
+        return 0.0
+    if "Amount" not in df.columns:
+        return None
+    total = 0.0
+    for v in df["Amount"]:
+        try:
+            total += float(_normalise_amount(str(v)))
+        except ValueError:
+            return None
+    return total
+
+
+def _dates_in_period(df: "pd.DataFrame", period) -> bool:
+    if period is None or df is None or len(df) == 0 or "Date" not in df.columns:
+        return True
+    from datetime import timedelta
+    start, end = period
+    for v in df["Date"]:
+        try:
+            d = datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return False
+        if not (start - timedelta(days=10) <= d <= end + timedelta(days=10)):
+            return False
+    return True
+
+
+def _llm_rows(text: str, prev: float, new: float, period) -> "pd.DataFrame | None":
+    import json
+    from app.config import settings
+    from app.services.ollama_client import generate
+
+    period_line = (
+        f"\nThe billing period is {period[0].isoformat()} to {period[1].isoformat()}; "
+        "every date falls inside it." if period else ""
+    )
+    prompt = _LLM_PROMPT.format(prev=prev, new=new, delta=new - prev,
+                                period_line=period_line, text=text[:30000])
+    raw = generate(prompt, num_predict=4096, response_format="json",
+                   timeout=settings.pdf_llm_timeout)
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    items = data.get("transactions") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return None
+    rows = []
+    for it in items:
+        if not isinstance(it, dict):
+            return None
+        try:
+            d = datetime.strptime(str(it["date"])[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+            amt = round(float(it["amount"]), 2)
+        except (KeyError, TypeError, ValueError):
+            return None
+        rows.append({"Date": d, "Description": str(it.get("description") or "Transaction").strip(),
+                     "Amount": str(amt)})
+    return pd.DataFrame(rows, columns=["Date", "Description", "Amount"])
+
+
+def _llm_fallback(filepath: str, df: "pd.DataFrame") -> "pd.DataFrame | None":
+    """Rows from the local model when the fixed parse doesn't reconcile with
+    the statement and the model's does; otherwise None (keep the fixed parse)."""
+    from app.config import settings
+    if not settings.pdf_llm_fallback:
+        return None
+    import os
+    key = (os.path.abspath(filepath), os.path.getmtime(filepath))
+    if key in _LLM_CACHE:
+        return _LLM_CACHE[key]
+
+    meta = extract_cc_metadata(filepath) or {}
+    prev, new = meta.get("previous_balance"), meta.get("new_balance")
+    if prev is None or new is None:
+        return None
+    import pdfplumber
+    with pdfplumber.open(filepath) as pdf:
+        text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    period = _statement_period(text)
+
+    # A frame whose shape can't be summed (a table the extractor mistook
+    # for transactions, say) counts as not reconciling: the model's answer
+    # still has to add up before it replaces anything.
+    fixed_total = _amount_total(df)
+    if (fixed_total is not None and abs(fixed_total - (new - prev)) < 0.01
+            and _dates_in_period(df, period)):
+        return None          # the fixed parse already agrees with the statement
+
+    log.info("PDF rows don't reconcile (%s vs %.2f) — asking the local model: %s",
+             "unreadable" if fixed_total is None else f"{fixed_total:.2f}",
+             new - prev, os.path.basename(filepath))
+    result = None
+    cand = _llm_rows(text, prev, new, period)
+    if cand is not None:
+        total = _amount_total(cand)
+        if total is not None and abs(total - (new - prev)) < 0.01 and _dates_in_period(cand, period):
+            log.info("Local model read %d transactions and they reconcile", len(cand))
+            result = cand
+        else:
+            log.warning("Local model's rows don't reconcile either (%s vs %.2f); keeping the parsed rows",
+                        total, new - prev)
+    _LLM_CACHE[key] = result
+    return result

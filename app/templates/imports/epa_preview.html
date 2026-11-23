@@ -2,6 +2,8 @@
 {% block title %}Pension Statement Preview &mdash; Financial Hygiene{% endblock %}
 
 {% block content %}
+{% import "imports/_run.html" as runui %}
+{{ runui.banner(run, filepath) }}
 <hgroup>
     <h1>Pension Fund Balance Preview</h1>
     <p>Review the funds extracted from your ePA statement. The account will be valued at <strong>units &times; unit price</strong> per fund.</p>
@@ -51,10 +53,12 @@
 </div>
 
 <form method="post" action="/import/epa-confirm">
+    {{ runui.fields(run) }}
     <input type="hidden" name="account_id" value="{{ account_id }}">
     <input type="hidden" name="filepath" value="{{ filepath }}">
     <div style="display:flex;gap:1rem;margin-top:1rem">
         <button type="submit">Import Pension Funds</button>
+        {{ runui.skip(run) }}
         <a href="/import" role="button" class="outline">Cancel</a>
     </div>
 </form>

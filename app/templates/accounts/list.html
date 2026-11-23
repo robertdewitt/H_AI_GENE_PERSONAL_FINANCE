@@ -25,6 +25,35 @@
             {{ sym }}{{ "{:,.2f}".format(net_worth) }}
         </div>
     </div>
+    {% if credit_use and credit_use.total_limit > 0 %}
+    {% set cu_pct = credit_use.pct %}
+    <div class="summary-card">
+        <div class="label">Card Credit Used</div>
+        <div class="value {% if cu_pct >= 30 %}negative{% else %}positive{% endif %}">{{ "%.1f"|format(cu_pct) }}%</div>
+        <div style="font-size:0.8rem;color:var(--pico-muted-color);margin-top:0.25rem">
+            {{ sym }}{{ "{:,.2f}".format(credit_use.total_owed) }} of {{ sym }}{{ "{:,.0f}".format(credit_use.total_limit) }}
+            across {{ credit_use.cards|length }} card{{ 's' if credit_use.cards|length != 1 else '' }}
+        </div>
+        <div style="background:var(--pico-muted-border-color);height:5px;border-radius:3px;margin-top:0.4rem;overflow:hidden">
+            <div style="background:{% if cu_pct >= 50 %}#dc2626{% elif cu_pct >= 30 %}#f59e0b{% else %}#16a34a{% endif %};height:5px;width:{{ [cu_pct, 100]|min }}%"></div>
+        </div>
+        <details style="margin-top:0.4rem;font-size:0.8rem">
+            <summary style="cursor:pointer;color:var(--pico-muted-color)">By card</summary>
+            <table style="margin:0.3rem 0 0;font-size:0.8rem">
+                {% for c in credit_use.cards|sort(attribute="pct", reverse=true) %}
+                <tr>
+                    <td><a href="/accounts/{{ c.account.id }}">{{ c.account.name }}</a></td>
+                    <td style="text-align:right">{{ "%.1f"|format(c.pct) }}%</td>
+                    <td style="text-align:right;color:var(--pico-muted-color)">{{ sym }}{{ "{:,.0f}".format(c.limit) }}</td>
+                </tr>
+                {% endfor %}
+                {% for a in credit_use.no_limit %}
+                <tr><td><a href="/accounts/{{ a.id }}">{{ a.name }}</a></td><td colspan="2" style="color:var(--pico-muted-color)">no limit set</td></tr>
+                {% endfor %}
+            </table>
+        </details>
+    </div>
+    {% endif %}
 </div>
 
 <p><a href="/accounts/new" role="button">+ Add Account</a></p>

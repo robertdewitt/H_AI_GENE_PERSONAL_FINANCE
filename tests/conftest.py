@@ -17,4 +17,5 @@ from app.config import settings
 @pytest.fixture(autouse=True)
 def _no_live_models(monkeypatch):
     monkeypatch.setattr(settings, "use_embeddings", False)
+    monkeypatch.setattr(settings, "pdf_llm_fallback", False)
     yield

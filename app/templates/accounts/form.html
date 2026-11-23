@@ -139,6 +139,19 @@
         </div>
     </div>
 
+    <div id="credit-limit-fields" style="display:none;background:var(--pico-muted-border-color,#f3f4f6);padding:1rem;border-radius:8px;margin:1rem 0">
+        <h4 style="margin-bottom:0.25rem">Credit Limit</h4>
+        <p style="font-size:0.85rem;color:var(--pico-muted-color);margin-bottom:0.75rem">
+            Picked up from each statement that states it. Set it here for a card whose
+            statements don't (or leave blank for a charge card with no preset limit).
+        </p>
+        <label for="credit_limit">Credit Limit</label>
+        <input type="number" id="credit_limit" name="credit_limit" step="0.01" min="0"
+               value="{{ account.credit_limit if account and account.credit_limit is not none else '' }}"
+               placeholder="e.g., 25000">
+        {% if account and account.credit_limit_as_of %}<small>As of {{ account.credit_limit_as_of.strftime("%b %d, %Y") }}</small>{% endif %}
+    </div>
+
     <div style="background:var(--pico-muted-border-color,#f3f4f6);padding:1rem;border-radius:8px;margin:1rem 0">
         <h4 style="margin-bottom:0.25rem">Overdraft Facility</h4>
         <p style="font-size:0.85rem;color:var(--pico-muted-color);margin-bottom:0.75rem">
@@ -200,6 +213,8 @@ function updateAssetFields() {
         _INTEREST_TYPES.includes(val) ? 'block' : 'none';
     document.getElementById('payment-due-fields').style.display =
         _LIABILITY_TYPES.includes(val) ? 'block' : 'none';
+    document.getElementById('credit-limit-fields').style.display =
+        val === 'credit_card' ? 'block' : 'none';
 }
 document.getElementById('account_type').addEventListener('change', updateAssetFields);
 updateAssetFields();

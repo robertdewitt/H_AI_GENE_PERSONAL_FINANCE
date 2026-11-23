@@ -130,6 +130,11 @@ class Account(Base):
     overdraft_limit: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     overdraft_as_of: Mapped[datetime | None] = mapped_column(DateTime)
 
+    # Credit card limit — from the latest statement that states one, or set
+    # by hand. Balance owed over this is the card's utilisation.
+    credit_limit: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    credit_limit_as_of: Mapped[datetime | None] = mapped_column(DateTime)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )

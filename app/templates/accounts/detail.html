@@ -114,6 +114,24 @@
         </div>
     </div>
     {% endif %}
+    {% if account.account_type.value == "credit_card" and account.credit_limit %}
+    {% set owed = balance if balance > 0 else 0 %}
+    {% set used_pct = owed|float / account.credit_limit|float * 100 %}
+    <div class="summary-card">
+        <div class="label">Credit Used</div>
+        <div class="value {% if used_pct >= 30 %}negative{% else %}positive{% endif %}" style="font-size:1.4rem">
+            {{ "%.1f"|format(used_pct) }}%
+        </div>
+        <div style="font-size:0.8rem;color:var(--pico-muted-color);margin-top:0.25rem">
+            {{ account.currency_symbol }}{{ "{:,.2f}".format(owed) }} of
+            {{ account.currency_symbol }}{{ "{:,.0f}".format(account.credit_limit) }} limit
+            &middot; {{ account.currency_symbol }}{{ "{:,.2f}".format(account.credit_limit|float - owed|float) }} available{% if account.credit_limit_as_of %} &middot; limit as of {{ account.credit_limit_as_of.strftime("%b %d, %Y") }}{% endif %}
+        </div>
+        <div style="background:var(--pico-muted-border-color);height:5px;border-radius:3px;margin-top:0.4rem;overflow:hidden">
+            <div style="background:{% if used_pct >= 50 %}#dc2626{% elif used_pct >= 30 %}#f59e0b{% else %}#16a34a{% endif %};height:5px;width:{{ [used_pct, 100]|min }}%"></div>
+        </div>
+    </div>
+    {% endif %}
     {% if account.overdraft_limit is not none and account.overdraft_limit > 0 %}
     {# Headroom = limit - drawn (drawn is |balance| when balance is negative) #}
     {% set drawn = (-balance) if balance < 0 else 0 %}

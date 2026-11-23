@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     # separate timeout.
     ollama_vision_model: str = "gemma4"
     ollama_vision_timeout: int = 120
+    # When a PDF statement's parsed rows don't add up to its own balance
+    # change, ask the local text model to read the transactions instead.
+    # Its answer is used only if it reconciles exactly.
+    pdf_llm_fallback: bool = True
+    pdf_llm_timeout: int = 240
 
     @model_validator(mode="after")
     def _ollama_url_must_be_loopback(self):

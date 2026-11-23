@@ -2,6 +2,8 @@
 {% block title %}Map Columns &mdash; Financial Hygiene{% endblock %}
 
 {% block content %}
+{% import "imports/_run.html" as runui %}
+{{ runui.banner(run, filepath) }}
 <hgroup>
     <h1>Map Columns</h1>
     <p>{{ total_rows }} rows found. Map the file columns to transaction fields.</p>
@@ -16,6 +18,7 @@
 {% endif %}
 
 <form method="post" action="/import/confirm" class="mapping-form">
+    {{ runui.fields(run) }}
     <input type="hidden" name="account_id" value="{{ account_id }}">
     <input type="hidden" name="filepath" value="{{ filepath }}">
 
@@ -191,6 +194,7 @@
 
     <div class="btn-group">
         <button type="submit" onclick="return validateAmount()">Import {{ total_rows }} Transactions</button>
+        {{ runui.skip(run) }}
         <a href="/import" role="button" class="outline">Cancel</a>
     </div>
 </form>

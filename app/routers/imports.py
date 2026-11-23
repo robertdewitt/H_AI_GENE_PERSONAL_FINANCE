@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 
 from app.config import settings
 from app.database import get_db
+from app.services.clock import naive_utc_now
 from app.models.user import User
 from app.services.scoping import (
     owned_accounts, owner_of_account,
@@ -40,6 +41,153 @@ from app.services.epa_pension_import import (
 )
 
 router = APIRouter(prefix="/import", tags=["import"])
+
+
+# ── Multi-file runs ────────────────────────────────────────────────────
+#
+# Several files can be uploaded at once. They are imported one after
+# another: each goes through its usual review page in turn ("File 2 of 5"),
+# and the rest of the run rides along in hidden form fields — ``queue``
+# (files still to do), ``done`` (what happened to each one so far) and
+# ``prev_mapping`` (the last column mapping confirmed). A spreadsheet with
+# exactly the columns of the one just mapped is imported with that mapping
+# without stopping, so a stack of exports from one bank needs one review.
+# Every entry is JSON; paths travel as bare names inside the user's own
+# upload directory and are re-checked on every step.
+
+import json as _json
+import re as _re
+from urllib.parse import parse_qs as _parse_qs, urlsplit as _urlsplit
+
+_STAMP = _re.compile(r"^\d{8}T\d{6}Z_[0-9a-f]{8}_")
+_SHEET_EXTS = (".csv", ".xls", ".xlsx")
+
+
+def _display_name(path) -> str:
+    """The name the user picked, without the upload timestamp prefix."""
+    return _STAMP.sub("", Path(str(path)).name)
+
+
+def _load_entries(entries) -> list[dict]:
+    out = []
+    for e in entries or []:
+        try:
+            v = _json.loads(e)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(v, dict):
+            out.append(v)
+    return out
+
+
+def _run_ctx(queue: list[dict], done: list[dict], prev_mapping: dict | None) -> dict | None:
+    """Template context for a page shown partway through a run, or None
+    for an ordinary single-file import."""
+    if not queue and not done:
+        return None
+    return {
+        "queue": [_json.dumps(q) for q in queue],
+        "done": [_json.dumps(d) for d in done],
+        "prev_mapping": _json.dumps(prev_mapping) if prev_mapping else "",
+        "position": len(done) + 1,
+        "total": len(done) + 1 + len(queue),
+    }
+
+
+def _run_from_form(queue, done, prev_mapping) -> tuple[list[dict], list[dict], dict | None]:
+    prev = None
+    if prev_mapping:
+        try:
+            prev = _json.loads(prev_mapping)
+        except ValueError:
+            prev = None
+    return _load_entries(queue), _load_entries(done), prev if isinstance(prev, dict) else None
+
+
+def _result_from_url(name: str, account, url: str) -> dict:
+    """What a finished import reported, read back off its redirect URL."""
+    q = _parse_qs(_urlsplit(url).query)
+    notes = q.get("warning", []) + q.get("stmt_warning", [])
+    first = lambda k: (q.get(k) or [""])[0]
+    return {
+        "name": name,
+        "account_id": account.id if account else None,
+        "account_name": account.name if account else "",
+        "status": "imported",
+        "imported": first("imported"),
+        "duplicates": first("duplicates"),
+        "url": url,
+        "notes": notes,
+    }
+
+
+def _upload_error(request, db, user, message: str, run: dict | None = None):
+    return templates.TemplateResponse(request, "imports/upload.html", {
+        "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
+        "error": message,
+        "run": run,
+    })
+
+
+def _finish(request, db, user, url: str, *, filepath: str, account_id: int,
+            queue, done, prev_mapping, mapping_used: dict | None = None):
+    """End of one file's import: an ordinary import goes where it always
+    did; inside a run, record the result and move on to the next file."""
+    q, d, prev = _run_from_form(queue, done, prev_mapping)
+    if not q and not d:
+        return RedirectResponse(url=url, status_code=303)
+    from app.services.scoping import get_owned_account
+    d.append(_result_from_url(_display_name(filepath), get_owned_account(db, user, account_id), url))
+    return _advance(request, db, user, q, d, mapping_used or prev)
+
+
+def _advance(request, db, user, queue: list[dict], done: list[dict], prev: dict | None):
+    """Take the next file of the run: import it straight away when it has
+    the columns just mapped, otherwise show its review page. With nothing
+    left, show what happened to each file."""
+    from app.services.scoping import get_owned_account
+    from app.services.upload_safety import (
+        UnsafeFilenameError, assert_user_owns_path, user_upload_dir,
+    )
+    while queue:
+        item = queue.pop(0)
+        name = str(item.get("name") or "")
+        shown = _display_name(name)
+        try:
+            path = assert_user_owns_path(
+                settings.upload_dir, user.id, user_upload_dir(settings.upload_dir, user.id) / Path(name).name,
+            )
+        except UnsafeFilenameError:
+            done.append({"name": shown, "status": "failed", "notes": ["The uploaded file could not be found."]})
+            continue
+        account = get_owned_account(db, user, int(item.get("account_id") or 0))
+        if account is None:
+            done.append({"name": shown, "status": "failed", "notes": ["No account was chosen for this file."]})
+            continue
+
+        ext = path.suffix.lower()
+        if (prev and ext in _SHEET_EXTS
+                and not (ext == ".csv" and (is_merrill_rsu_csv(str(path)) or is_ibkr_file(str(path))))):
+            try:
+                same = preview_file(str(path))["columns"] == prev.get("columns")
+            except Exception:
+                same = False
+            if same:
+                m = prev.get("fields", {})
+                url = _confirm_core(
+                    db, account.id, str(path),
+                    col_date=m.get("col_date", ""), col_description=m.get("col_description", ""),
+                    col_amount=m.get("col_amount", ""), col_debit=m.get("col_debit", ""),
+                    col_credit=m.get("col_credit", ""), col_balance=m.get("col_balance", ""),
+                    col_currency=m.get("col_currency", ""), date_format=m.get("date_format", "auto"),
+                )
+                result = _result_from_url(shown, account, url)
+                result["auto"] = True
+                done.append(result)
+                continue
+        return _preview_for(request, db, user, account.id, path, _run_ctx(queue, done, prev))
+
+    return templates.TemplateResponse(request, "imports/summary.html", {"results": done})
 
 
 @router.post("/detect-account")
@@ -85,58 +233,101 @@ async def detect_account_endpoint(
 
 
 @router.get("", response_class=HTMLResponse)
-def import_form(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def import_form(request: Request, account: int | None = None,
+                db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The upload page. ``?account=`` (the account page's Import button)
+    preselects that account; detection then only suggests a different one."""
     accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
+    selected = account if account in {a.id for a in accounts} else None
     return templates.TemplateResponse(request, "imports/upload.html", {
         "accounts": accounts,
+        "selected_account_id": selected,
     })
 
 
 @router.post("/upload")
 async def upload_file(
     request: Request,
-    account_id: int = Form(...),
-    file: UploadFile = File(...),
+    account_id: int | None = Form(None),
+    file: UploadFile | None = File(None),
+    files: list[UploadFile] = File(default=[]),
+    file_account_ids: list[int] = Form(default=[]),
     db: Session = Depends(get_db),
     user = Depends(get_current_user),
 ):
-    from app.services.upload_safety import safe_upload_dest, UnsafeFilenameError
-    try:
-        dest = safe_upload_dest(settings.upload_dir, file.filename, user_id=user.id)
-    except UnsafeFilenameError:
-        return templates.TemplateResponse(request, "imports/upload.html", {
-            "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
-            "error": "Invalid filename. Try renaming the file and upload again.",
-        })
-    ext = dest.suffix.lower()
-    if ext not in (".csv", ".xls", ".xlsx", ".pdf"):
-        return templates.TemplateResponse(request, "imports/upload.html", {
-            "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
-            "error": f"Unsupported file type '{ext}'. Please upload a CSV, XLS, XLSX, or PDF.",
-        })
+    """Save the uploaded file(s), then show the first one's review page.
 
-    from app.services.upload_safety import UploadTooLarge, copy_with_limit
-    try:
-        copy_with_limit(file.file, dest, settings.max_upload_bytes)
-    except UploadTooLarge:
-        limit_mb = settings.max_upload_bytes // (1024 * 1024)
-        return templates.TemplateResponse(request, "imports/upload.html", {
-            "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
-            "error": (
-                f"That file is larger than the {limit_mb} MB upload limit. "
+    One file is the classic flow (``file`` + ``account_id``). Several files
+    (``files``, each with its own entry in ``file_account_ids``, falling back
+    to ``account_id``) start a run — see _advance."""
+    from app.services.scoping import get_owned_account
+    from app.services.upload_safety import (
+        UnsafeFilenameError, UploadTooLarge, copy_with_limit, safe_upload_dest,
+    )
+    uploads = [f for f in ([file] if file is not None else []) + list(files) if f is not None and f.filename]
+    if not uploads:
+        return _upload_error(request, db, user, "Choose a file to import.")
+
+    saved: list[tuple[Path, int]] = []
+    for i, up in enumerate(uploads):
+        acct_id = file_account_ids[i] if i < len(file_account_ids) and file_account_ids[i] else account_id
+        label = f"{up.filename}: " if len(uploads) > 1 else ""
+        if not acct_id or get_owned_account(db, user, acct_id) is None:
+            return _upload_error(request, db, user, f"{label}choose the account this file belongs to.")
+        try:
+            dest = safe_upload_dest(settings.upload_dir, up.filename, user_id=user.id)
+        except UnsafeFilenameError:
+            return _upload_error(request, db, user,
+                                 f"{label}invalid filename. Try renaming the file and upload again.")
+        ext = dest.suffix.lower()
+        if ext not in (".csv", ".xls", ".xlsx", ".pdf"):
+            return _upload_error(request, db, user,
+                                 f"{label}unsupported file type '{ext}'. Please upload a CSV, XLS, XLSX, or PDF.")
+        try:
+            copy_with_limit(up.file, dest, settings.max_upload_bytes)
+        except UploadTooLarge:
+            limit_mb = settings.max_upload_bytes // (1024 * 1024)
+            return _upload_error(request, db, user, (
+                f"{label}that file is larger than the {limit_mb} MB upload limit. "
                 "A statement export should be well under that."
-            ),
-        })
+            ))
+        saved.append((dest, acct_id))
+
+    if len(saved) == 1:
+        dest, acct_id = saved[0]
+        return _preview_for(request, db, user, acct_id, dest, None)
+    queue = [{"name": d.name, "account_id": a} for d, a in saved]
+    return _advance(request, db, user, queue, [], None)
+
+
+@router.post("/skip")
+def skip_file(
+    request: Request,
+    filepath: str = Form(""),
+    queue: list[str] = Form(default=[]),
+    done: list[str] = Form(default=[]),
+    prev_mapping: str = Form(""),
+    db: Session = Depends(get_db),
+    user = Depends(get_current_user),
+):
+    """Leave the current file of a run unimported and go on to the next."""
+    q, d, prev = _run_from_form(queue, done, prev_mapping)
+    if filepath:
+        d.append({"name": _display_name(filepath), "status": "skipped"})
+    return _advance(request, db, user, q, d, prev)
+
+
+def _preview_for(request, db, user, account_id: int, dest: Path, run: dict | None):
+    """The review page for one saved upload — the right preview for the kind
+    of file it is, or the column mapping for an ordinary statement."""
+    ext = dest.suffix.lower()
 
     # Detect Revolut GBP PDF statement
     if ext == ".pdf" and is_revolut_pdf(str(dest)):
         try:
             sections = detect_revolut_sections(str(dest))
         except Exception as exc:
-            return templates.TemplateResponse(request, "imports/upload.html", {
-                "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
-                "error": f"Failed to read Revolut PDF: {exc}",
-            })
+            return _upload_error(request, db, user, f"Failed to read Revolut PDF: {exc}", run)
         account = db.get(Account, account_id)
         # Revolut exports one file per currency and names them by hash, so
         # a USD statement lands on the GBP account by a slip of the mouse —
@@ -147,14 +338,12 @@ async def upload_file(
             matching = [a for a in owned_accounts(db, user) if (a.currency or "").upper() == stmt_ccy]
             hint = (f" Accounts in {stmt_ccy}: " + ", ".join(a.name for a in matching) + "."
                     if matching else "")
-            return templates.TemplateResponse(request, "imports/upload.html", {
-                "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
-                "error": (
+            return _upload_error(request, db, user, (
                     f"This is a {stmt_ccy} statement but {account.name} is a "
                     f"{account.currency} account. Pick the {stmt_ccy} account.{hint}"
-                ),
-            })
+                ), run)
         return templates.TemplateResponse(request, "imports/revolut_preview.html", {
+            "run": run,
             "account_id": account_id,
             "account_name": account.name if account else f"Account {account_id}",
             "filepath": str(dest),
@@ -167,12 +356,10 @@ async def upload_file(
         try:
             parsed_rsu = parse_merrill_rsu_csv(str(dest))
         except Exception as exc:
-            return templates.TemplateResponse(request, "imports/upload.html", {
-                "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
-                "error": f"Failed to parse RSU award summary: {exc}",
-            })
+            return _upload_error(request, db, user, f"Failed to parse RSU award summary: {exc}", run)
         account = db.get(Account, account_id)
         return templates.TemplateResponse(request, "imports/rsu_preview.html", {
+            "run": run,
             "account_id": account_id,
             "account_name": account.name if account else f"Account {account_id}",
             "filepath": str(dest),
@@ -191,6 +378,7 @@ async def upload_file(
             if parsed_pension is not None and parsed_pension.is_valid:
                 account = db.get(Account, account_id)
                 return templates.TemplateResponse(request, "imports/epa_preview.html", {
+                    "run": run,
                     "account_id": account_id,
                     "account_name": account.name if account else f"Account {account_id}",
                     "filepath": str(dest),
@@ -211,25 +399,20 @@ async def upload_file(
                     f"{settings.ollama_vision_model}) or enter the values "
                     "manually on the account page."
                 )
-            return templates.TemplateResponse(request, "imports/upload.html", {
-                "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
-                "error": (
+            return _upload_error(request, db, user, (
                     "This PDF contains no text — it looks like a screenshot or "
                     f"a scan. {detail}"
-                ),
-            })
+                ), run)
 
     # Detect WTW ePA pension "My Fund Balance" PDF — dedicated preview
     if ext == ".pdf" and is_epa_pension_pdf(str(dest)):
         try:
             parsed_pension = parse_epa_pension_pdf(str(dest))
         except Exception as exc:
-            return templates.TemplateResponse(request, "imports/upload.html", {
-                "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
-                "error": f"Failed to parse ePA pension statement: {exc}",
-            })
+            return _upload_error(request, db, user, f"Failed to parse ePA pension statement: {exc}", run)
         account = db.get(Account, account_id)
         return templates.TemplateResponse(request, "imports/epa_preview.html", {
+            "run": run,
             "account_id": account_id,
             "account_name": account.name if account else f"Account {account_id}",
             "filepath": str(dest),
@@ -241,12 +424,10 @@ async def upload_file(
         try:
             parsed = parse_ibkr_csv(str(dest))
         except Exception as exc:
-            return templates.TemplateResponse(request, "imports/upload.html", {
-                "accounts": sorted(owned_accounts(db, user), key=lambda a: a.name),
-                "error": f"Failed to parse IBKR statement: {exc}",
-            })
+            return _upload_error(request, db, user, f"Failed to parse IBKR statement: {exc}", run)
         account = db.get(Account, account_id)
         return templates.TemplateResponse(request, "imports/ibkr_preview.html", {
+            "run": run,
             "account_id": account_id,
             "account_name": account.name if account else f"Account {account_id}",
             "filepath": str(dest),
@@ -258,6 +439,7 @@ async def upload_file(
     account = db.get(Account, account_id)
 
     return templates.TemplateResponse(request, "imports/mapping.html", {
+        "run": run,
         "account_id": account_id,
         "account_currency": account.currency if account else "USD",
         "filepath": str(dest),
@@ -283,6 +465,9 @@ def confirm_import(
     col_balance: str = Form(""),
     col_currency: str = Form(""),
     date_format: str = Form("auto"),
+    queue: list[str] = Form(default=[]),
+    done: list[str] = Form(default=[]),
+    prev_mapping: str = Form(""),
     db: Session = Depends(get_db),
     user = Depends(get_current_user),
 ):
@@ -295,6 +480,32 @@ def confirm_import(
         assert_user_owns_path(settings.upload_dir, user.id, filepath)
     except UnsafeFilenameError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    fields = {
+        "col_date": col_date, "col_description": col_description,
+        "col_amount": col_amount, "col_debit": col_debit, "col_credit": col_credit,
+        "col_balance": col_balance, "col_currency": col_currency,
+        "date_format": date_format,
+    }
+    url = _confirm_core(db, account_id, filepath, **fields)
+    mapping_used = None
+    if Path(filepath).suffix.lower() in _SHEET_EXTS:
+        try:
+            mapping_used = {"columns": preview_file(filepath)["columns"], "fields": fields}
+        except Exception:
+            mapping_used = None
+    return _finish(request, db, user, url, filepath=filepath, account_id=account_id,
+                   queue=queue, done=done, prev_mapping=prev_mapping, mapping_used=mapping_used)
+
+
+def _confirm_core(
+    db: Session, account_id: int, filepath: str, *,
+    col_date: str, col_description: str, col_amount: str = "", col_debit: str = "",
+    col_credit: str = "", col_balance: str = "", col_currency: str = "",
+    date_format: str = "auto",
+) -> str:
+    """Import one mapped file and run everything that follows an import;
+    returns the account-page URL that reports the result. The caller has
+    already checked the file is the user's."""
     mapping: dict[str, str] = {
         "date": col_date,
         "description": col_description,
@@ -352,8 +563,11 @@ def confirm_import(
         # A loan payment posted in parts (regular + extra principal) is
         # linked to the single outflow that paid it once both sides are in.
         from app.services.loan_payment_linking import link_all_loan_payments
-        link_all_loan_payments(db, user_id=user.id)
+        link_all_loan_payments(db, user_id=owner_of_account(db, account_id))
         db.commit()
+        # A card payment seen only at the bank goes onto the card it paid.
+        from app.services.card_payment_mirror import mirror_card_payments
+        mirror_card_payments(db, user_id=owner_of_account(db, account_id))
     except Exception as exc:
         log.warning(
             "scheduled_matcher.match_batch failed for batch %s: %s",
@@ -370,7 +584,6 @@ def confirm_import(
             meta = extract_mortgage_metadata(filepath)
             if meta:
                 from datetime import datetime as _dt
-                from app.services.clock import naive_utc_now
                 from decimal import Decimal as _Dec
                 from app.models.snapshots import LiabilityBalanceSnapshot
 
@@ -680,6 +893,19 @@ def confirm_import(
                 loan_rate = cc_meta.get("interest_rate")
                 loan_principal = cc_meta.get("amount_of_credit")
 
+                # 0) The card's credit limit, from the newest statement that
+                #    states one (an older statement imported later must not
+                #    roll it back).
+                limit = cc_meta.get("credit_limit")
+                if limit is not None and account.account_type == AccountType.CREDIT_CARD:
+                    lim_dt = (
+                        _dt.combine(stmt_date, _dt.min.time())
+                        if stmt_date is not None else naive_utc_now()
+                    )
+                    if account.credit_limit_as_of is None or lim_dt >= account.credit_limit_as_of:
+                        account.credit_limit = _Dec(str(limit))
+                        account.credit_limit_as_of = lim_dt
+
                 # 1) Persist balance + snapshot whenever we can extract them.
                 if new_bal is not None:
                     stmt_dt = (
@@ -780,7 +1006,7 @@ def confirm_import(
                     as_of_dt = (
                         _dt.combine(stmt_date, _dt.min.time())
                         if stmt_date is not None
-                        else __import__("datetime").naive_utc_now()
+                        else naive_utc_now()
                     )
                     db.execute(
                         _sel(PlanItPlan)
@@ -898,7 +1124,7 @@ def confirm_import(
     # successes are never silent.
     for warning in extraction_warnings:
         url += f"&warning={_u.quote(warning)}"
-    return RedirectResponse(url=url, status_code=303)
+    return url
 
 
 @router.post("/ibkr-confirm")
@@ -906,6 +1132,9 @@ def ibkr_confirm(
     request: Request,
     account_id: int = Form(...),
     filepath: str = Form(...),
+    queue: list[str] = Form(default=[]),
+    done: list[str] = Form(default=[]),
+    prev_mapping: str = Form(""),
     db: Session = Depends(get_db),
     user = Depends(get_current_user),
 ):
@@ -919,19 +1148,14 @@ def ibkr_confirm(
         parsed = parse_ibkr_csv(filepath)
         stats = apply_ibkr_statement(db, account_id, parsed)
     except Exception as exc:
-        accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
-        return templates.TemplateResponse(request, "imports/upload.html", {
-            "accounts": accounts,
-            "error": f"IBKR import failed: {exc}",
-        })
+        q, d, prev = _run_from_form(queue, done, prev_mapping)
+        return _upload_error(request, db, user, f"IBKR import failed: {exc}", _run_ctx(q, d + [{"name": _display_name(filepath), "status": "failed", "notes": [f"IBKR import failed: {exc}"]}], prev))
 
     positions = stats["positions_updated"]
     trades = stats["trades_added"]
     dividends = stats["dividends_added"]
-    return RedirectResponse(
-        url=f"/portfolio?ibkr_imported=1&positions={positions}&trades={trades}&dividends={dividends}",
-        status_code=303,
-    )
+    return _finish(request, db, user, f"/portfolio?ibkr_imported=1&positions={positions}&trades={trades}&dividends={dividends}", filepath=filepath, account_id=account_id,
+                   queue=queue, done=done, prev_mapping=prev_mapping)
 
 
 @router.post("/rsu-confirm")
@@ -939,6 +1163,9 @@ def rsu_confirm(
     request: Request,
     account_id: int = Form(...),
     filepath: str = Form(...),
+    queue: list[str] = Form(default=[]),
+    done: list[str] = Form(default=[]),
+    prev_mapping: str = Form(""),
     db: Session = Depends(get_db),
     user = Depends(get_current_user),
 ):
@@ -956,17 +1183,12 @@ def rsu_confirm(
         parsed = parse_merrill_rsu_csv(filepath)
         stats = import_rsu_grants(db, account, parsed)
     except Exception as exc:
-        accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
-        return templates.TemplateResponse(request, "imports/upload.html", {
-            "accounts": accounts,
-            "error": f"RSU import failed: {exc}",
-        })
+        q, d, prev = _run_from_form(queue, done, prev_mapping)
+        return _upload_error(request, db, user, f"RSU import failed: {exc}", _run_ctx(q, d + [{"name": _display_name(filepath), "status": "failed", "notes": [f"RSU import failed: {exc}"]}], prev))
 
     grants = stats["grants_created"] + stats["grants_updated"]
-    return RedirectResponse(
-        url=f"/accounts/{account_id}?rsu_imported=1&grants={grants}&vests={stats['vests_created']}",
-        status_code=303,
-    )
+    return _finish(request, db, user, f"/accounts/{account_id}?rsu_imported=1&grants={grants}&vests={stats['vests_created']}", filepath=filepath, account_id=account_id,
+                   queue=queue, done=done, prev_mapping=prev_mapping)
 
 
 @router.post("/epa-confirm")
@@ -974,6 +1196,9 @@ def epa_confirm(
     request: Request,
     account_id: int = Form(...),
     filepath: str = Form(...),
+    queue: list[str] = Form(default=[]),
+    done: list[str] = Form(default=[]),
+    prev_mapping: str = Form(""),
     db: Session = Depends(get_db),
     user = Depends(get_current_user),
 ):
@@ -991,16 +1216,11 @@ def epa_confirm(
         parsed = parse_epa_pension_pdf(filepath)
         stats = import_pension_positions(db, account, parsed)
     except Exception as exc:
-        accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
-        return templates.TemplateResponse(request, "imports/upload.html", {
-            "accounts": accounts,
-            "error": f"ePA pension import failed: {exc}",
-        })
+        q, d, prev = _run_from_form(queue, done, prev_mapping)
+        return _upload_error(request, db, user, f"ePA pension import failed: {exc}", _run_ctx(q, d + [{"name": _display_name(filepath), "status": "failed", "notes": [f"ePA pension import failed: {exc}"]}], prev))
 
-    return RedirectResponse(
-        url=f"/accounts/{account_id}?epa_imported=1&funds={stats['funds']}",
-        status_code=303,
-    )
+    return _finish(request, db, user, f"/accounts/{account_id}?epa_imported=1&funds={stats['funds']}", filepath=filepath, account_id=account_id,
+                   queue=queue, done=done, prev_mapping=prev_mapping)
 
 
 @router.post("/revolut-confirm")
@@ -1009,6 +1229,9 @@ def revolut_confirm(
     account_id: int = Form(...),
     filepath: str = Form(...),
     sections: list[str] = Form(default=[]),
+    queue: list[str] = Form(default=[]),
+    done: list[str] = Form(default=[]),
+    prev_mapping: str = Form(""),
     db: Session = Depends(get_db),
     user = Depends(get_current_user),
 ):
@@ -1031,11 +1254,8 @@ def revolut_confirm(
 
     stmt_ccy = revolut_statement_currency(filepath)
     if stmt_ccy and (account.currency or "").upper() != stmt_ccy:
-        accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
-        return templates.TemplateResponse(request, "imports/upload.html", {
-            "accounts": accounts,
-            "error": f"This is a {stmt_ccy} statement but {account.name} is a {account.currency} account.",
-        })
+        q, d, prev = _run_from_form(queue, done, prev_mapping)
+        return _upload_error(request, db, user, f"This is a {stmt_ccy} statement but {account.name} is a {account.currency} account.", _run_ctx(q, d + [{"name": _display_name(filepath), "status": "failed", "notes": [f"This is a {stmt_ccy} statement but {account.name} is a {account.currency} account."]}], prev))
 
     from app.services.revolut_import import import_revolut_statement
     try:
@@ -1044,11 +1264,8 @@ def revolut_confirm(
             account_currency=account.currency or "GBP",
         )
     except Exception as exc:
-        accounts = sorted(owned_accounts(db, user), key=lambda a: a.name)
-        return templates.TemplateResponse(request, "imports/upload.html", {
-            "accounts": accounts,
-            "error": f"Revolut PDF import failed: {exc}",
-        })
+        q, d, prev = _run_from_form(queue, done, prev_mapping)
+        return _upload_error(request, db, user, f"Revolut PDF import failed: {exc}", _run_ctx(q, d + [{"name": _display_name(filepath), "status": "failed", "notes": [f"Revolut PDF import failed: {exc}"]}], prev))
 
     # Same scheduled-payment matching every other import runs — without it a
     # Revolut statement never settled its direct debits and subscriptions.
@@ -1066,7 +1283,5 @@ def revolut_confirm(
 
     imported = batch.row_count
     dupes = getattr(batch, "_duplicates_skipped", 0)
-    return RedirectResponse(
-        url=f"/accounts/{account_id}?imported={imported}&duplicates={dupes}",
-        status_code=303,
-    )
+    return _finish(request, db, user, f"/accounts/{account_id}?imported={imported}&duplicates={dupes}", filepath=filepath, account_id=account_id,
+                   queue=queue, done=done, prev_mapping=prev_mapping)

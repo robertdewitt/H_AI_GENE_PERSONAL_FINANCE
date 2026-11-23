@@ -46,6 +46,24 @@ from app.services.property_valuation import estimate_property_value, provider_st
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
 
+def _set_credit_limit(db: Session, acct: "Account", raw: str) -> None:
+    """A card's limit from the form: a number sets it (dated today), blank
+    clears it — the next statement that states one fills it in again."""
+    raw = (raw or "").strip()
+    if raw:
+        try:
+            value = Decimal(raw)
+        except InvalidOperation:
+            return
+        if acct.credit_limit is None or Decimal(str(acct.credit_limit)) != value:
+            acct.credit_limit = value
+            acct.credit_limit_as_of = naive_utc_now()
+    else:
+        acct.credit_limit = None
+        acct.credit_limit_as_of = None
+    db.commit()
+
+
 @router.get("/address-search")
 def address_search(q: str = Query(..., min_length=3), user: User = Depends(get_current_user)):
     """Server-side proxy to Nominatim so the browser isn't blocked by CORS/UA rules."""
@@ -179,6 +197,11 @@ def accounts_list(
         for item in items
         if not item["account"].is_asset
     )
+
+    from app.services.credit_utilisation import household_utilisation
+    credit_use = household_utilisation(db, [
+        (item["account"], item["balance"]) for items in groups.values() for item in items
+    ], display_ccy)
 
     # Closed accounts still count toward the totals above — closing is
     # organisational only. Split them out so the active list stays uncluttered.
@@ -399,6 +422,7 @@ def accounts_list(
         "total_assets": total_assets,
         "total_liabilities": total_liabilities,
         "net_worth": total_assets - total_liabilities,
+        "credit_use": credit_use,
         "display_currency": display_ccy,
         "preset": preset,
         "presets": _SPEND_PRESETS,
@@ -449,6 +473,7 @@ def account_create(
     statement_balance_as_of: str = Form(""),
     overdraft_limit: str = Form(""),
     overdraft_as_of: str = Form(""),
+    credit_limit: str = Form(""),
     payment_due_date: str = Form(""),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -564,6 +589,9 @@ def account_create(
             db.commit()
         except (ValueError, InvalidOperation):
             db.rollback()
+
+    if acct_type == AccountType.CREDIT_CARD:
+        _set_credit_limit(db, acct, credit_limit)
 
     if acct_type in LIABILITY_TYPES and payment_due_date.strip():
         try:
@@ -1122,6 +1150,7 @@ def account_update(
     statement_balance_as_of: str = Form(""),
     overdraft_limit: str = Form(""),
     overdraft_as_of: str = Form(""),
+    credit_limit: str = Form(""),
     payment_due_date: str = Form(""),
     payment_account_id: str = Form(""),
     db: Session = Depends(get_db),
@@ -1248,6 +1277,9 @@ def account_update(
         acct.overdraft_limit = None
         acct.overdraft_as_of = None
         db.commit()
+
+    if acct_type == AccountType.CREDIT_CARD:
+        _set_credit_limit(db, acct, credit_limit)
 
     if acct_type in LIABILITY_TYPES and payment_due_date.strip():
         try:

@@ -66,6 +66,17 @@ from app.services.secret_box import mask as _mask_secret
 templates.env.filters["mask_secret"] = _mask_secret
 
 
+# ── An uploaded file's name as the user picked it (the upload step prefixes
+# a timestamp and short id to keep names unique on disk).
+def _basename_upload(path) -> str:
+    import re
+    from pathlib import PurePath
+    return re.sub(r"^\d{8}T\d{6}Z_[0-9a-f]{8}_", "", PurePath(str(path or "")).name)
+
+
+templates.env.filters["basename_upload"] = _basename_upload
+
+
 def _nav_accounts(request) -> dict[str, list]:
     """The signed-in user's open accounts for the nav menu, grouped and
     ordered as on the Accounts page: {group: [(id, name), ...]}.
